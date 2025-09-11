@@ -26,8 +26,11 @@ class StoryState:
     decisions: List[str] = field(default_factory=list)
     current_chapter_id: int = 1
     scene_id: int = 1
+    story_title: str = "None"
     messages: List[Any] = field(default_factory=list)
     next_action: str = ""
+    user_id: str = ""
+    story_id: str = ""
 
 class SceneBundle(BaseModel):
     story_summary: str = Field(
@@ -75,6 +78,7 @@ class DirectorGraph:
         self.llm = llm_client
         self.scene_planner_agent = sceneplanner
         self.memory = memory_system
+        
 
 
         self.graph = StateGraph(StoryState)
@@ -97,14 +101,14 @@ class DirectorGraph:
 
         self.compiled = self.graph.compile()
         self.current_chap_summary = ""
-
+    
+    # --- helper utilities ---
     def strip_code_fences(self, text: str) -> str:
         if text.startswith("```"):
             # remove leading/trailing ```json ... ```
             return re.sub(r"^```[a-zA-Z]*\n|\n```$", "", text).strip()
         return text
-
-    # --- helper utilities ---
+    
     def extract_content(self, resp: Any) -> str:
         """
         Normalize LLM responses to plain string content.
@@ -258,6 +262,7 @@ You are a JSON repair agent.
         clean_resp = self.strip_code_fences(raw_text)
         return clean_resp
 
+    # Graph Functions
     async def generate_and_ingest_node(self, state: "StoryState"):
         """Generates a new scene and ingests it, with streaming chunks."""
         print("Called Generate and Ingest Node!")
@@ -272,7 +277,8 @@ You are a JSON repair agent.
             scene_bundle=scene_bundle,
             full_scene_text=scene_text,
             metadata={"scene_id": state.scene_id,
-                      "chapter_id": state.current_chapter_id},
+                      "chapter_id": state.current_chapter_id,
+                      "story_title": state.story_title},
         )
         state.scene_id += 1
 
@@ -309,7 +315,7 @@ You are a JSON repair agent.
             resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = self.extract_content(resp)
             clean_resp = self.strip_code_fences(raw_text)
-            #print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
+            print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
 
             if isinstance(clean_resp, dict):
                 clean_resp = json.dumps(clean_resp)
@@ -359,7 +365,7 @@ You are a JSON repair agent.
         char_world_details = self.memory.get_long_term_characters_and_worlds()
         self.memory.add_story_chapter(
             text=chapter_content,
-            metadata={"chapter_id": state.current_chapter_id}
+            metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
         )
 
         system_prompt = (
@@ -395,7 +401,7 @@ You are a JSON repair agent.
             # 1) try model_validate/parse_obj first, then parser
             success, result, exc = self._try_validate_with_model_then_parser(clean_resp, ChapterBundle, chapter_parser)
             if success:
-                self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id})
+                self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                 return result
 
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
@@ -409,7 +415,7 @@ You are a JSON repair agent.
 
                 success, result, exc = self._try_validate_with_model_then_parser(fixed_clean, ChapterBundle, chapter_parser)
                 if success:
-                    self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id})
+                    self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                     return result
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)

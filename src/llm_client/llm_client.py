@@ -1,5 +1,5 @@
 from urllib import response
-from langchain_ollama import ChatOllama
+from langchain_ollama import ChatOllama  # for local deployment only not render
 from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
@@ -18,10 +18,10 @@ class LLMClient:
         groq_api_key = os.environ.get("GROQ_API_KEY")
         openai_api_key = os.environ.get("OPENAI_API_KEY")
         google_api_key = os.environ.get("GOOGLE_API_KEY")
-        self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.3)
-        self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.3, openai_api_key=openai_api_key)
-        self.llm_groq = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.3, groq_api_key=groq_api_key)
-        self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.3, google_api_key=google_api_key)
+        self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
+        self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
+        self.llm_groq = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.5, groq_api_key=groq_api_key)
+        self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.5, google_api_key=google_api_key)
 
     def llama3_1_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call — returns the full response."""

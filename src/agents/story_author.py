@@ -6,7 +6,7 @@ class StoryAuthor:
         self.llm = llm_client
         self.memory = memory_system
 
-    def set_story_premise(self, user_context: str) -> str:
+    def set_story_premise(self, user_context: str, story_title) -> str:
         print("Setting story Premise...")
         if not self.memory.get_long_term_document(name="story_user_context"):
             self.memory.add_long_term_document(text=user_context, metadata={"chapter_id":"story_user_context"})
@@ -15,10 +15,10 @@ class StoryAuthor:
                                                     "Include potential characters, world contexts, etc, which are relevant to the story.",
                                                     human_prompt=f"User Context: {user_context}")
             detailed_premise = detailed_premise.content.strip()
-            self.memory.add_long_term_document(text=detailed_premise, metadata={"chapter_id":"story_premise"})
+            self.memory.add_long_term_document(text=detailed_premise, metadata={"chapter_id":"story_premise", "story_title": story_title})
         else:
             detailed_premise = self.memory.get_long_term_document(name="story_premise")
-            detailed_premise = detailed_premise["text"]
+            #detailed_premise = detailed_premise["text"]
 
         try:
             #print(detailed_premise)
@@ -26,15 +26,15 @@ class StoryAuthor:
         except:
             return "An error occured, Please try again."
 
-    def set_story_synopsis(self, detailed_premise: str) -> str:
+    def set_story_synopsis(self, detailed_premise: str, story_title: str) -> str:
         print("Setting story Synopsis...")
         if not self.memory.get_long_term_document(name="story_synopsis"):
             synopsis = self.llm.gemini_client(human_prompt=f"Create a summarised version of the following detailed premise: {detailed_premise}\nKeeping all important points needed for the director to create the story.")
             synopsis = synopsis.content.strip()
-            self.memory.add_long_term_document(text=synopsis, metadata={"chapter_id":"story_synopsis"})
+            self.memory.add_long_term_document(text=synopsis, metadata={"chapter_id":"story_synopsis", "story_title": story_title})
         else:
             synopsis = self.memory.get_long_term_document(name="story_synopsis")
-            synopsis = synopsis["text"]
+            #synopsis = synopsis["text"]
         try:
             return synopsis
         except:

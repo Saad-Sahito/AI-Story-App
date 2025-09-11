@@ -13,3 +13,5 @@ qdrant-client
 pymongo
 langchain-openai
 langchain-google-genai
+langchain-ollama #for local deployment only not render
+supabase
