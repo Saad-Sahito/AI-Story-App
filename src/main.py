@@ -153,4 +153,14 @@ choice_input.visible = False
 choice_btn.visible = False
 decision_output.visible = False
 
-ui.run(title="Interactive Story App", port=8080)
+
+
+import os
+
+if __name__ in ('__main__', '__mp_main__'):
+    port = int(os.environ.get("PORT", 8080))  # Render sets $PORT
+    ui.run(
+        title="Interactive Story App",
+        host="0.0.0.0",  # Must be 0.0.0.0 on Render
+        port=port,
+    )
