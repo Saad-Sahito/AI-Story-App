@@ -1,0 +1,8 @@
+graph TD
+    __start__ --> scene_planner
+    scene_planner --> character_interaction_agent
+    scene_planner --> world_context_agent
+    character_interaction_agent --> dialogue_agent
+    world_context_agent --> dialogue_agent
+    dialogue_agent --> scene_writer_agent
+    scene_writer_agent --> __end__
