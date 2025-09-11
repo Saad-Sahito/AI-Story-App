@@ -1,0 +1,15 @@
+openai
+langgraph>=0.3.27
+pinecone-client
+streamlit
+requests
+langgraph-prebuilt
+faiss-cpu
+sentence-transformers
+fastapi
+nicegui
+anthropic
+qdrant-client
+pymongo
+langchain-openai
+langchain-google-genai
