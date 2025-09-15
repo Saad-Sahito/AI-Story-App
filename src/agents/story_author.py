@@ -12,7 +12,9 @@ class StoryAuthor:
             self.memory.add_long_term_document(text=user_context, metadata={"chapter_id":"story_user_context"})
             detailed_premise = self.llm.gemini_client(system_prompt="You are a text based Novel author, Create a detailed outline/premise for the entire story for " \
                                                     "the director to follow, given the user context. " \
-                                                    "Include potential characters, world contexts, etc, which are relevant to the story.",
+                                                    "Include potential characters, world contexts, etc, which are relevant to the story. " \
+                                                    "Include these details: guide prose, tone, genre, setting, POV, length, title and additional themes. For the director " \
+                                                    "to follow.",
                                                     human_prompt=f"User Context: {user_context}")
             detailed_premise = detailed_premise.content.strip()
             self.memory.add_long_term_document(text=detailed_premise, metadata={"chapter_id":"story_premise", "story_title": story_title})

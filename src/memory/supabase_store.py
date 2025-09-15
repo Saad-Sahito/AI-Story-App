@@ -43,6 +43,44 @@ class SupabaseStore:
             "metadata": metadata.copy() if metadata else {}
         }).execute()
 
+    def put_progress(
+        self,
+        metadata: Optional[Dict[str, Any]] = None,
+    ):
+        """
+        Insert or update story progress (chapter_id, scene_id, story_title) 
+        for this user + story. Flexible for any table.
+        """
+        # Extract metadata fields
+        chapter_id = (metadata or {}).get("chapter_id", "")
+        scene_id = (metadata or {}).get("scene_id", "")
+        story_title = (metadata or {}).get("story_title", "")
+        word_count = (metadata or {}).get("word_count", 0)
+
+        # Build minimal metadata
+        clean_meta = {
+            "chapter_id": chapter_id,
+            "scene_id": scene_id,
+            "story_title": story_title,
+            "word_count": word_count,
+        }
+
+        # Upsert row
+        response = (
+            self.client.table(self.table)
+            .upsert({
+                "user_id": self.user_id,
+                "story_id": self.story_id,
+                "latest_chapter_id": chapter_id,
+                "continue_scene_id": scene_id,
+                "word_count": word_count,
+                "metadata": clean_meta,
+            })
+            .execute()
+        )
+
+        return response
+
     def put_characters_or_world(
         self,
         details_dict: Dict[str, str],
@@ -97,6 +135,23 @@ class SupabaseStore:
             .execute()
         )
         return result.data[0]["text"] if result.data else None
+    
+    def get_progress(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the latest story progress (chapter_id, scene_id, story_title) 
+        for this user + story.
+        """
+        result = (
+            self.client.table(self.table)
+            .select("latest_chapter_id, continue_scene_id, word_count, metadata")
+            .eq("user_id", self.user_id)
+            .eq("story_id", self.story_id)
+            .limit(1)
+            .execute()
+        )
+
+        return result.data[0] if result.data else None
+
 
     def get_character_or_world(self, name: str) -> Optional[Dict[str, Any]]:
         result = (

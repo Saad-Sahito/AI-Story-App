@@ -3,7 +3,6 @@ import re
 
 from typing import Any, Dict, Tuple, Optional, List, Literal
 from langgraph.graph import StateGraph, END
-
 from langchain_core.messages import AIMessage, ToolMessage
 from dataclasses import dataclass, field
 
@@ -15,22 +14,19 @@ from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
 
 
-
 # -----------------------------
 # State model
 # -----------------------------
 @dataclass
 class StoryState:
-    characters: List[Dict] = field(default_factory=list)
-    world: Dict = field(default_factory=dict)
-    decisions: List[str] = field(default_factory=list)
     current_chapter_id: int = 1
     scene_id: int = 1
     story_title: str = "None"
+    word_count: int = 0
     messages: List[Any] = field(default_factory=list)
     next_action: str = ""
-    user_id: str = ""
-    story_id: str = ""
+    # user_id: str = ""
+    # story_id: str = ""
 
 class SceneBundle(BaseModel):
     story_summary: str = Field(
@@ -72,7 +68,6 @@ director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
 # -----------------------------
 # Main director class
 # -----------------------------
-
 class DirectorGraph:
     def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem, sceneplanner: ScenePlannerGraph):
         self.llm = llm_client
@@ -103,13 +98,16 @@ class DirectorGraph:
         self.current_chap_summary = ""
     
     # --- helper utilities ---
-    def strip_code_fences(self, text: str) -> str:
+    def _count_words_split(self, text: str) -> int:
+        return len(text.split())
+    
+    def _strip_code_fences(self, text: str) -> str:
         if text.startswith("```"):
             # remove leading/trailing ```json ... ```
             return re.sub(r"^```[a-zA-Z]*\n|\n```$", "", text).strip()
         return text
     
-    def extract_content(self, resp: Any) -> str:
+    def _extract_content(self, resp: Any) -> str:
         """
         Normalize LLM responses to plain string content.
         Handles LangChain AIMessage, dicts, objects with .content,
@@ -245,7 +243,7 @@ class DirectorGraph:
 
         return False, None, last_exc
     
-    def json_fixer(self, text):
+    def _json_fixer(self, text):
         system_prompt = """
 You are a JSON repair agent. 
 - Input may be malformed JSON text. 
@@ -258,19 +256,19 @@ You are a JSON repair agent.
 
         prompt = f"Fix the following json: {text}\n, if it is correct, then output as is, DO NOT add anything else, no leading or ending remarks."
         resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=prompt)
-        raw_text = self.extract_content(resp)
-        clean_resp = self.strip_code_fences(raw_text)
+        raw_text = self._extract_content(resp)
+        clean_resp = self._strip_code_fences(raw_text)
         return clean_resp
 
     # Graph Functions
-    async def generate_and_ingest_node(self, state: "StoryState"):
+    async def generate_and_ingest_node(self, state: StoryState):
         """Generates a new scene and ingests it, with streaming chunks."""
         print("Called Generate and Ingest Node!")
         scene_text = await self.scene_planner_agent.run(state, self.scene_chunk_callback)
         #print("FINAL SCENE TEXT: ", scene_text)
         # After streaming is complete, store in memory
         self.memory.set_current_chapter(scene_text)
-        scene_bundle = self._ingest_scene(scene_text)
+        scene_bundle = self._ingest_scene(state, scene_text)
 
         #print("SCENE BUNDLE: ", scene_bundle)
         self.memory.add_post_scene_bundle(
@@ -280,7 +278,7 @@ You are a JSON repair agent.
                       "chapter_id": state.current_chapter_id,
                       "story_title": state.story_title},
         )
-        state.scene_id += 1
+        #state.scene_id += 1
 
         # Return the final state for the next node
         yield {
@@ -295,7 +293,7 @@ You are a JSON repair agent.
         }
 
 
-    def _ingest_scene(self, scene_text: str, max_retries: int = 3) -> Dict[str, str]:
+    def _ingest_scene(self, state: StoryState, scene_text: str, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON using schema + parser.
         Retries with LLM if parse_obj + parse + json_fixer all fail.
         """
@@ -313,8 +311,8 @@ You are a JSON repair agent.
 
         for attempt in range(1, max_retries + 1):
             resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
-            raw_text = self.extract_content(resp)
-            clean_resp = self.strip_code_fences(raw_text)
+            raw_text = self._extract_content(resp)
+            clean_resp = self._strip_code_fences(raw_text)
             print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
 
             if isinstance(clean_resp, dict):
@@ -328,13 +326,15 @@ You are a JSON repair agent.
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
 
             try:
-                fixed_resp = self.json_fixer(clean_resp)
-                fixed_clean = self.strip_code_fences(fixed_resp)
+                fixed_resp = self._json_fixer(clean_resp)
+                fixed_clean = self._strip_code_fences(fixed_resp)
                 if isinstance(fixed_clean, dict):
                     fixed_clean = json.dumps(fixed_clean)
 
                 success, result, exc = self._try_validate_with_model_then_parser(fixed_clean, SceneBundle, scene_parser)
                 if success:
+                    state.word_count = self._count_words_split(scene_text)
+                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.chapter_id, "continue_scene_id": state.scene_id+1, "word_count": state.word_count, "story_title": state.story_title})
                     return result
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
@@ -355,7 +355,7 @@ You are a JSON repair agent.
     # -----------------------------
     # Maintain continuity, by adding episodic memory
     # -----------------------------
-    def ingest_chapter(self, state: "StoryState", max_retries: int = 3) -> Dict[str, Any]:
+    def ingest_chapter(self, state: StoryState, max_retries: int = 3) -> Dict[str, Any]:
         """Summarize and extract structured details about a full chapter.
         Retries with LLM if parse_obj + parse + json_fixer all fail.
         """
@@ -389,33 +389,37 @@ You are a JSON repair agent.
 
         for attempt in range(1, max_retries + 1):
             resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
-            raw_text = self.extract_content(resp)
-            clean_resp = self.strip_code_fences(raw_text)
+            raw_text = self._extract_content(resp)
+            clean_resp = self._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW INGEST CHAPTER RESPONSE:", clean_resp)
 
             # make sure we have a string
             if isinstance(clean_resp, dict):
                 clean_resp = json.dumps(clean_resp)
-            print("TYPE OF CLEAN_RESP:", type(clean_resp))
+            #print("TYPE OF CLEAN_RESP:", type(clean_resp))
 
             # 1) try model_validate/parse_obj first, then parser
             success, result, exc = self._try_validate_with_model_then_parser(clean_resp, ChapterBundle, chapter_parser)
             if success:
                 self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
+                self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                print("Chapter Complete!")
                 return result
 
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
 
             # 2) try json_fixer, then same validation sequence
             try:
-                fixed_resp = self.json_fixer(clean_resp)
-                fixed_clean = self.strip_code_fences(fixed_resp)
+                fixed_resp = self._json_fixer(clean_resp)
+                fixed_clean = self._strip_code_fences(fixed_resp)
                 if isinstance(fixed_clean, dict):
                     fixed_clean = json.dumps(fixed_clean)
 
                 success, result, exc = self._try_validate_with_model_then_parser(fixed_clean, ChapterBundle, chapter_parser)
                 if success:
                     self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
+                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id+1, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                    print("Chapter Complete!")
                     return result
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
@@ -437,8 +441,17 @@ You are a JSON repair agent.
     # -----------------------------
     # Director node
     # -----------------------------
-    def director_node(self, state: "StoryState") -> Dict:
+    def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
+        story_dictionary = self.memory.get_story_progress()
+        if story_dictionary and "latest_chapter_id" in story_dictionary:
+            state.current_chapter_id = story_dictionary["latest_chapter_id"]
+        if story_dictionary and "continue_scene_id" in story_dictionary:
+            state.scene_id = story_dictionary["continue_scene_id"]
+        if story_dictionary and "story_title" in story_dictionary["metadata"]:
+            state.story_title = story_dictionary["metadata"]["story_title"]
+        if story_dictionary and "word_count" in story_dictionary:
+            state.word_count = story_dictionary["word_count"]
 
         # Short system prompt
         system_prompt = (
@@ -493,8 +506,8 @@ You are a JSON repair agent.
 
         for attempt in range(1, max_retries + 1):
             resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
-            raw_text = self.extract_content(resp)
-            clean_resp = self.strip_code_fences(raw_text)
+            raw_text = self._extract_content(resp)
+            clean_resp = self._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW DIRECTOR RESPONSE:", clean_resp)
 
             if isinstance(clean_resp, dict):
@@ -512,8 +525,8 @@ You are a JSON repair agent.
 
             # json_fixer attempt
             try:
-                fixed_resp = self.json_fixer(clean_resp)
-                fixed_clean = self.strip_code_fences(fixed_resp)
+                fixed_resp = self._json_fixer(clean_resp)
+                fixed_clean = self._strip_code_fences(fixed_resp)
                 if isinstance(fixed_clean, dict):
                     fixed_clean = json.dumps(fixed_clean)
 
@@ -535,8 +548,8 @@ You are a JSON repair agent.
                 scenario = clean_resp
                 action = "END"
 
-        if state.scene_id == 2: # DEBUGGING Code
-            action = "DEBUG" # DEBUGGING Code
+        # if state.scene_id == 2: # DEBUGGING Code
+        #     action = "DEBUG" # DEBUGGING Code
 
         # finalize and return (same as you had)
         messages = state.messages or []
@@ -551,12 +564,16 @@ You are a JSON repair agent.
     # -----------------------------
     # Public interface
     # -----------------------------
-    async def run(self, state, scene_chunk_callback):
+    async def run(self, scene_chunk_callback):
         print("Running director agent...")
         self.memory.reset_current_chapter()
         self.scene_chunk_callback = scene_chunk_callback
-        result = await self.compiled.ainvoke(state, {"recursion_limit": 50})
+        initialized_state = {
+            "messages": [],
+            "next_action": ""
+        }
+        result = await self.compiled.ainvoke(initialized_state, {"recursion_limit": 50})
         #text = result["scene_memory"].get("scene_so_far", "")
-        print("Chapter Complete!")
+        print("Director Node Finished: ", result)
         return result
 

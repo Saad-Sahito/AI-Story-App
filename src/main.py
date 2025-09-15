@@ -1,8 +1,9 @@
 # src/main.py
-from nicegui import ui
 import asyncio
-import re
 import uuid
+import time
+from fastapi import FastAPI, BackgroundTasks
+from contextlib import asynccontextmanager
 
 # Import your helper functions / classes
 from llm_client.llm_client import LLMClient
@@ -11,174 +12,286 @@ from agents.story_author import StoryAuthor
 from agents.director_agent import DirectorGraph
 from agents.scene_creation_subgraph.scene_planner_agent import ScenePlannerGraph
 
-# --- Global Backend Objects (shared) ---
-llm_client = LLMClient()  # this is safe to share
+# auth_supabase.py
+import os
+import jwt
+import requests
+from fastapi import Depends, HTTPException, status
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 
-# --- Top Inputs for User Identification ---
-ui.label("User & Story Setup").classes("text-lg font-bold mt-4 text-gray-700")
-user_id_input = ui.input(label="User ID")
-story_id_input = ui.input(label="Story ID (leave blank to auto-generate)")
-start_btn = ui.button("Start / Initialize Story")
+# --- Config ---
+SESSION_TTL = 1800  # 30 min in seconds
 
-# --- UI Elements (rest of your app) ---
-story_title_input = ui.input(label="Story Title")
-setting_input = ui.input(label="Setting")
-main_character_input = ui.input(label="Main Character")
-genre_input = ui.input(label="Genre")
-tone_input = ui.input(label="Tone")
-submit_btn = ui.button("Create Story Synopsis")
+# --- Global shared objects ---
+llm_client = LLMClient()
+SESSIONS = {}  # your global session dict
 
-ui.label('Story Synopsis').classes('text-lg font-bold mt-4 text-gray-700')
-story_output = ui.markdown("")
+# --- Auth / Supabase JWT ---
+security = HTTPBearer()
 
-ui.label('Chapter Output').classes('text-lg font-bold mt-4 text-gray-700')
-scene_output = ui.markdown("")
-decision_output = ui.markdown("")
-choice_input = ui.textarea(label="Your Decision")
-choice_btn = ui.button("Submit Decision", on_click=lambda: None)
-next_chapter_btn = ui.button("Generate Next Chapter", on_click=lambda: None)
+# Get this from your Supabase project settings (API → JWT secret)
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+ALGORITHM = "HS256"  # Supabase default
 
-# --- Session-specific backend instances ---
-session_data = {}
+def verify_supabase_token(
+    credentials: HTTPAuthorizationCredentials = Depends(security),
+) -> str:
+    """
+    Verifies a Supabase JWT and extracts the user_id (sub).
+    """
+    token = credentials.credentials
+    try:
+        payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=[ALGORITHM])
+        user_id: str = payload.get("sub")
+        if user_id is None:
+            raise HTTPException(
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid token: no subject",
+                headers={"WWW-Authenticate": "Bearer"},
+            )
+        return user_id
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Token expired",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    except jwt.PyJWTError:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid Supabase token",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
 
-def initialize_story():
-    """Called when user clicks Start / Initialize Story"""
-    user_id = user_id_input.value.strip()
-    if not user_id:
-        story_output.content = "Please enter a valid User ID."
-        story_output.update()
-        return
 
-    story_id = story_id_input.value.strip() or str(uuid.uuid4())
+# --- FastAPI app ---
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    async def cleanup_loop():
+        try:
+            while True:
+                cleanup_sessions()
+                await asyncio.sleep(600)  # every 10 minutes
+        except asyncio.CancelledError:
+            pass
 
+    task = asyncio.create_task(cleanup_loop())
+    print("Cleanup loop started")
+
+    yield  # <-- App runs here
+
+    task.cancel()
+    print("Cleanup loop stopped")
+
+app = FastAPI(lifespan=lifespan)
+
+# ---------------- Session Management ----------------
+def touch_session(user_id: str):
+    """Update last_active timestamp on each request."""
+    if user_id in SESSIONS:
+        SESSIONS[user_id]["last_active"] = time.time()
+
+def cleanup_sessions():
+    import time
+    now = time.time()
+    expired = []
+    for user_id, session in list(SESSIONS.items()):
+        if now - session["last_access"] > SESSION_TTL:
+            expired.append(user_id)
+    for user_id in expired:
+        del SESSIONS[user_id]
+        print(f"Session {user_id} expired and removed")
+
+# ---------------- User Setup Handlers ----------------
+# Common function to set session data
+def setup_user_SESSION(user_id: str, story_id: str, memory_system: StoryMemorySystem = None, story_author: StoryAuthor = None):
     # Create per-user instances
-    memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id, story_title=story_title_input.value)
-    story_author = StoryAuthor(llm_client=llm_client, memory_system=memory_system)
     sceneplanner = ScenePlannerGraph(llm_client=llm_client)
     director = DirectorGraph(llm_client=llm_client, memory_system=memory_system, sceneplanner=sceneplanner)
 
-    # Store in session_data dictionary keyed by user_id
-    session_data[user_id] = {
+    # Store in SESSIONS
+    SESSIONS[user_id] = {
         "story_id": story_id,
         "memory_system": memory_system,
         "story_author": story_author,
         "sceneplanner": sceneplanner,
         "director": director,
-        "state": {
-            "premise": None,
-            "chapter_id": 1,
-            "story_title": story_title_input.value,
-            "current_scene": None,
-            "synopsis": None,
-            "waiting_for_user_choice": False,
-            "word_count": 0
-        }
+        "waiting_for_user_choice": False,
+        "last_active": time.time(),
     }
 
-    story_output.content = f"Story initialized! User ID: {user_id}, Story ID: {story_id}"
-    story_output.update()
+# When user continues a story, we may want to load their last progress
+def continue_story(user_id: str, story_id: str) -> dict:
+    """Start a new session for a user."""
+    if not user_id:
+        raise ValueError("Please enter a valid User ID.")
+    
+    memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
+    #memory_system_story_progress = memory_system.get_story_progress()
+    # chapter_id = memory_system_story_progress.get("latest_chapter_id")
+    # scene_id = memory_system_story_progress.get("continue_scene_id")
+    # word_count = memory_system_story_progress.get("word_count")
 
-start_btn.on_click(initialize_story)
+    setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system)
 
-# --- Handlers (modified to use session_data per user) ---
-async def create_premise(user_id):
-    data = session_data.get(user_id)
+    return {"message": f"Session started for {user_id}", "story_id": story_id}
+    
+# When user starts a new story we initialize everything
+def initialize_story(user_id: str, story_title: str = "") -> dict:
+    """Initialize story session for a user."""
+    if not user_id:
+        raise ValueError("Please enter a valid User ID.")
+
+    story_id = str(uuid.uuid4())
+
+    memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
+    story_author = StoryAuthor(llm_client=llm_client, memory_system=memory_system)
+    memory_system.update_story_progress(metadata={"latest_chapter_id": 1, "continue_scene_id": 1, "story_title": story_title, "word_count": 0})
+
+    setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
+
+    return {"message": f"Story initialized for {user_id}", "story_id": story_id}
+
+# ------------- Story Flow Handlers -------------
+# If new story is started, this is called after initialize_story
+async def create_premise(user_id: str, initial_story_data: dict) -> dict:
+    touch_session(user_id)
+    data = SESSIONS.get(user_id)
     if not data:
-        story_output.content = "Please initialize your story first!"
-        story_output.update()
-        return
+        return {"error": "Please initialize your story first!"}
+    
+    title = initial_story_data.get("title", "")
+    setting = initial_story_data.get("setting", "")
+    pov = initial_story_data.get("pov", "")
+    length = initial_story_data.get("length", "")
+    guide_prose = initial_story_data.get("guide_prose", "")
+    additional_themes = initial_story_data.get("additional_themes", "")
+    genre = initial_story_data.get("genre", "")
+    tone = initial_story_data.get("tone", "")
 
     form_string = f"""
-    Title: {story_title_input.value}
-    Setting: {setting_input.value}
-    Main Character: {main_character_input.value}
-    Genre: {genre_input.value}
-    Tone: {tone_input.value}
+    Title: {title}
+    Setting: {setting}
+    POV: {pov}
+    Length: {length}
+    Guide Prose: {guide_prose}
+    Additional Themes: {additional_themes}
+    Genre: {genre}
+    Tone: {tone}
     """
+
     premise = data["story_author"].set_story_premise(form_string, data["state"]["story_title"])
     if premise == "An error occured, Please try again.":
-        story_output.content = premise
-        story_output.update()
-    else:
-        data["state"]["premise"] = premise
-        story_output.content = premise
-        story_output.update()
-        create_synopsis(user_id, )
+        return {"error": premise}
 
-def create_synopsis(user_id):
-    data = session_data.get(user_id)
-    synopsis = data["story_author"].set_story_synopsis(data["state"]["premise"], data["state"]["story_title"])
-    data["state"]["synopsis"] = synopsis
-    next_chapter_btn.visible = True
+    data["state"]["premise"] = premise
+    #synopsis = create_synopsis(user_id)
+    return {"premise": premise }   #"synopsis": synopsis
 
-def count_words_regex(text: str) -> int:
-    return len(re.findall(r'\b\w+\b', text))
 
-async def handle_scene_chunk(user_id, chunk: str):
-    data = session_data.get(user_id)
+# def create_synopsis(user_id: str) -> str:
+#     data = SESSIONS.get(user_id)
+#     synopsis = data["story_author"].set_story_synopsis(
+#         data["state"]["premise"], data["state"]["story_title"]
+#     )
+#     data["state"]["synopsis"] = synopsis
+#     return synopsis
+
+
+def count_words_split(text: str) -> int:
+    return len(text.split())
+
+
+async def handle_scene_chunk(user_id: str, chunk: str):
+    data = SESSIONS.get(user_id)
     if chunk.strip().startswith("<DECISION_POINT>"):
-        data["state"]["waiting_for_user_choice"] = True
-        decision_output.content = chunk.strip()
-        decision_output.visible = True
-        choice_input.visible = True
-        choice_btn.visible = True
-        return
-    data["state"]["word_count"] += count_words_regex(chunk)
-    scene_output.content += "\n\n" + chunk
-    scene_output.update()
+        data["waiting_for_user_choice"] = True
+        return {"decision_point": chunk.strip()}
 
-async def handle_user_choice(user_id):
-    data = session_data.get(user_id)
-    if not choice_input.value.strip():
-        return
-    choice = choice_input.value.strip()
-    choice_input.value = ""
-    decision_output.content = ""
-    decision_output.visible = False
-    choice_input.visible = False
-    choice_btn.visible = False
-    data["state"]["waiting_for_user_choice"] = False
+    data["state"]["word_count"] += count_words_split(chunk)
+    return {"scene_chunk": chunk}
+
+
+async def handle_user_choice(user_id: str, choice: str):
+    touch_session(user_id)
+    data = SESSIONS.get(user_id)
+    if not choice.strip():
+        return {"error": "Empty choice."}
+
+    data["waiting_for_user_choice"] = False
     data["sceneplanner"].receive_user_input(choice)
+    return {"message": "Choice received."}
 
-async def generate_next_chapter(user_id):
-    data = session_data.get(user_id)
-    chapter_id = data["state"]["chapter_id"]
-    story_title = data["state"]["story_title"]
-    scene_output.content = ""
-    decision_output.content = ""
-    scene_output.update()
-    decision_output.update()
-    next_chapter_btn.visible = False
 
-    initial_state = {
-        "messages": [],
-        "current_chapter_id": chapter_id,
-        "story_title": story_title,
-        "story_id": data["story_id"],
-        "user_id": user_id,
-    }
+async def generate_next_chapter(user_id: str):
+    touch_session(user_id)
+    data = SESSIONS.get(user_id)
+    #story_id = data["story_id"]
+
+    # initial_state = {
+    #     "story_id": story_id,
+    #     "user_id": user_id,
+    # }
+
+    output_chunks = []
 
     async def director_runner():
-        await data["director"].run(initial_state, scene_chunk_callback=lambda chunk: handle_scene_chunk(user_id, chunk))
-        data["state"]["chapter_id"] += 1
-        next_chapter_btn.visible = True
-        scene_output.content += f"\n\n**Chapter Complete!**\nStory Word Count: {data['state']['word_count']}\n"
-        scene_output.update()
+        state = await data["director"].run(
+            #initial_state,
+            scene_chunk_callback=lambda chunk: output_chunks.append(
+                asyncio.run(handle_scene_chunk(user_id, chunk))
+            ),
+        )
+        #data["state"]["chapter_id"] = state.get("current_chapter_id")
+        output_chunks.append(
+            {"chapter_complete": True, "word_count": state.word_count}
+        )
 
-    asyncio.create_task(director_runner())
+    await director_runner()
+    return output_chunks
 
-# --- Bind UI actions ---
-submit_btn.on_click(lambda: asyncio.create_task(create_premise(user_id_input.value.strip())))
-next_chapter_btn.on_click(lambda: asyncio.create_task(generate_next_chapter(user_id_input.value.strip())))
-choice_btn.on_click(lambda: asyncio.create_task(handle_user_choice(user_id_input.value.strip())))
 
-# Hide elements initially
-next_chapter_btn.visible = False
-choice_input.visible = False
-choice_btn.visible = False
-decision_output.visible = False
+# ---------------- API Routes ----------------
+@app.post("/initialize")
+def api_initialize(user_id: str = Depends(verify_supabase_token), story_title: str = "", story_id: str = None, background_tasks: BackgroundTasks = None):
+    background_tasks.add_task(cleanup_sessions)  # cleanup on each call
+    return initialize_story(user_id, story_title, story_id)
 
-# --- Run NiceGUI app ---
-import os
-port = 8080 # int(os.environ.get("PORT", 8080))
-ui.run(title="Interactive Story App", host="localhost", port=port)
+
+@app.post("/premise")
+async def api_premise(user_id: str = Depends(verify_supabase_token), initial_story_data: dict = None, background_tasks: BackgroundTasks = None):
+    background_tasks.add_task(cleanup_sessions)
+    return await create_premise(user_id=user_id, initial_story_data=initial_story_data)
+
+
+@app.post("/next_chapter")
+async def api_next_chapter(user_id: str = Depends(verify_supabase_token), background_tasks: BackgroundTasks = None):
+    background_tasks.add_task(cleanup_sessions)
+    return await generate_next_chapter(user_id)
+
+
+@app.post("/choice")
+async def api_choice(user_id: str = Depends(verify_supabase_token), choice: str = None, background_tasks: BackgroundTasks = None):
+    background_tasks.add_task(cleanup_sessions)
+    return await handle_user_choice(user_id, choice)
+
+
+@app.post("/logout")
+def api_logout(user_id: str = Depends(verify_supabase_token)):
+    """Explicitly clear a session when user logs out."""
+    if user_id in SESSIONS:
+        del SESSIONS[user_id]
+        return {"message": f"Session for {user_id} deleted."}
+    return {"message": "No active session for this user."}
+
+@app.post("/touch")
+def api_touch(user_id: str = Depends(verify_supabase_token)):
+    """Touch the session to keep it alive."""
+    touch_session(user_id)
+    return {"message": "Session touched."}
+
+
+
+
+
+

@@ -5,10 +5,10 @@ from .qdrant_store import QdrantStore
 from .supabase_store import SupabaseStore
 
 class StoryMemorySystem:
-    def __init__(self, user_id: str, story_id: str, story_title: str):
+    def __init__(self, user_id: str, story_id: str):
         self.user_id = user_id
         self.story_id = story_id  # must be provided
-        self.story_title = story_title
+        #self.story_title = story_title
 
 
         # Short-Term: simple dict
@@ -26,6 +26,9 @@ class StoryMemorySystem:
         )
         self.long_term_docs = SupabaseStore(
             table="director_notes", user_id=self.user_id, story_id=self.story_id
+        )
+        self.long_term_story_progress = SupabaseStore(
+            table="story_progress", user_id=self.user_id, story_id=self.story_id
         )
 
         # Qdrant (episodic) - unique collection per user + story
@@ -109,6 +112,13 @@ class StoryMemorySystem:
     def get_long_term_document(self, name: str) -> str:
         doc = self.long_term_docs.get_text(name)
         return doc if doc else ""
+    
+    # ----------- Story Progress (Long-Term) ----------
+    def update_story_progress(self, metadata: dict = None):
+        self.long_term_story_progress.put_progress(metadata=metadata or {})
+    
+    def get_story_progress(self) -> dict:
+        return self.long_term_story_progress.get_progress() or {}
 
     # ---------- Unified scene ingestion ----------
     def add_post_scene_bundle(self, scene_bundle: Dict[str, Any], full_scene_text, metadata: Dict[str, Any]):
