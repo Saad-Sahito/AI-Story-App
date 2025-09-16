@@ -52,8 +52,8 @@ class SupabaseStore:
         for this user + story. Flexible for any table.
         """
         # Extract metadata fields
-        chapter_id = (metadata or {}).get("chapter_id", "")
-        scene_id = (metadata or {}).get("scene_id", "")
+        chapter_id = (metadata or {}).get("latest_chapter_id", "")
+        scene_id = (metadata or {}).get("continue_scene_id", "")
         story_title = (metadata or {}).get("story_title", "")
         word_count = (metadata or {}).get("word_count", 0)
 
@@ -71,8 +71,8 @@ class SupabaseStore:
             .upsert({
                 "user_id": self.user_id,
                 "story_id": self.story_id,
-                "latest_chapter_id": chapter_id,
-                "continue_scene_id": scene_id,
+                "latest_chapter_id": int(chapter_id) if chapter_id is not None else None,
+                "continue_scene_id": int(scene_id) if scene_id is not None else None,
                 "word_count": word_count,
                 "metadata": clean_meta,
             })
@@ -149,7 +149,6 @@ class SupabaseStore:
             .limit(1)
             .execute()
         )
-
         return result.data[0] if result.data else None
 
 

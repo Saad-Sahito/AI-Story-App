@@ -33,10 +33,10 @@ class SceneBundle(BaseModel):
         description="Detailed but short summary of the scene."
     )
     character_details: Dict[str, str] = Field(
-        description="Dictionary: {character_name: details about traits/actions/motivations inline all of it str not dict, also mention the chapter/scene number} "
+        description="Dictionary: {character_name: details about traits/actions/motivations this scene inline all of it str not dict, also mention the chapter/scene number} "
     )
     world_details: Dict[str, str] = Field(
-        description="Dictionary: {world_element: atmosphere, culture, or environment details all of it str not dict, also mention the chapter/scene number} "
+        description="Dictionary: {world_element: atmosphere, culture, or environment details this scene inline all of it str not dict, also mention the chapter/scene number} "
     )
 
 scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
@@ -267,9 +267,9 @@ You are a JSON repair agent.
         scene_text = await self.scene_planner_agent.run(state, self.scene_chunk_callback)
         #print("FINAL SCENE TEXT: ", scene_text)
         # After streaming is complete, store in memory
-        self.memory.set_current_chapter(scene_text)
+        #self.memory.set_current_chapter(scene_text)
         scene_bundle = self._ingest_scene(state, scene_text)
-
+        self.memory.add_story_chapter(text=scene_text, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id})
         #print("SCENE BUNDLE: ", scene_bundle)
         self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,
@@ -290,6 +290,8 @@ You are a JSON repair agent.
                 )
             ],
             "scene_id": state.scene_id,
+            "current_chapter_id": state.current_chapter_id,
+            "word_count": state.word_count,
         }
 
 
@@ -299,16 +301,21 @@ You are a JSON repair agent.
         """
 
         system_prompt = "You are the Scene Breakdown Agent. Extract structured info from the scene. "
-        "Always include chapter and scene id in character and world details, in order to keep track later."
+        "Always include chapter and scene id in character and world details, in order to keep track later. "
+        "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, "
+        "if any need to be changed then create new entries, if not present then create new names as needed."
 
         human_prompt = f"""
         Scene:
         {scene_text}
 
+        Character and World Names:
+        {self.memory.get_long_term_characters_and_worlds().keys()}
+
         Respond ONLY in JSON with this schema:
         {scene_parser.get_format_instructions()}
         """
-
+        print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
         for attempt in range(1, max_retries + 1):
             resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = self._extract_content(resp)
@@ -321,6 +328,9 @@ You are a JSON repair agent.
 
             success, result, exc = self._try_validate_with_model_then_parser(clean_resp, SceneBundle, scene_parser)
             if success:
+                state.word_count += self._count_words_split(scene_text)
+                state.scene_id += 1
+                self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "word_count": state.word_count, "story_title": state.story_title})
                 return result
 
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
@@ -333,8 +343,9 @@ You are a JSON repair agent.
 
                 success, result, exc = self._try_validate_with_model_then_parser(fixed_clean, SceneBundle, scene_parser)
                 if success:
-                    state.word_count = self._count_words_split(scene_text)
-                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.chapter_id, "continue_scene_id": state.scene_id+1, "word_count": state.word_count, "story_title": state.story_title})
+                    state.word_count += self._count_words_split(scene_text)
+                    state.scene_id += 1
+                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "word_count": state.word_count, "story_title": state.story_title})
                     return result
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
@@ -361,12 +372,12 @@ You are a JSON repair agent.
         """
         print("Ingesting chapter...")
 
-        chapter_content = self.memory.get_current_chapter()
+        #chapter_content = self.memory.get_current_chapter()
         char_world_details = self.memory.get_long_term_characters_and_worlds()
-        self.memory.add_story_chapter(
-            text=chapter_content,
-            metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
-        )
+        # self.memory.add_story_chapter(
+        #     text=chapter_content,
+        #     metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
+        # )
 
         system_prompt = (
             "You are the Chapter Breakdown Agent. Extract structured info from the "
@@ -402,8 +413,15 @@ You are a JSON repair agent.
             success, result, exc = self._try_validate_with_model_then_parser(clean_resp, ChapterBundle, chapter_parser)
             if success:
                 self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
+                state.current_chapter_id += 1
+                state.scene_id = 1
                 self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
                 print("Chapter Complete!")
+                result.update({
+                    "current_chapter_id": state.current_chapter_id,
+                    "scene_id": state.scene_id,
+                    "word_count": state.word_count,
+                })
                 return result
 
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
@@ -418,8 +436,15 @@ You are a JSON repair agent.
                 success, result, exc = self._try_validate_with_model_then_parser(fixed_clean, ChapterBundle, chapter_parser)
                 if success:
                     self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
-                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id+1, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                    state.current_chapter_id += 1
+                    state.scene_id = 1
+                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
                     print("Chapter Complete!")
+                    result.update({
+                        "current_chapter_id": state.current_chapter_id,
+                        "scene_id": state.scene_id,
+                        "word_count": state.word_count,
+                    })
                     return result
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
@@ -435,23 +460,27 @@ You are a JSON repair agent.
                 return {
                     "summary": "",
                     "character_summary": {},
-                    "world_summary": {}
+                    "world_summary": {},
+                    "current_chapter_id": state.current_chapter_id,
+                    "scene_id": state.scene_id,
+                    "word_count": state.word_count,
                 }
+
 
     # -----------------------------
     # Director node
     # -----------------------------
     def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
-        story_dictionary = self.memory.get_story_progress()
-        if story_dictionary and "latest_chapter_id" in story_dictionary:
-            state.current_chapter_id = story_dictionary["latest_chapter_id"]
-        if story_dictionary and "continue_scene_id" in story_dictionary:
-            state.scene_id = story_dictionary["continue_scene_id"]
-        if story_dictionary and "story_title" in story_dictionary["metadata"]:
-            state.story_title = story_dictionary["metadata"]["story_title"]
-        if story_dictionary and "word_count" in story_dictionary:
-            state.word_count = story_dictionary["word_count"]
+        # story_dictionary = self.memory.get_story_progress()
+        # if story_dictionary and "latest_chapter_id" in story_dictionary:
+        #     state.current_chapter_id = story_dictionary["latest_chapter_id"]
+        # if story_dictionary and "continue_scene_id" in story_dictionary:
+        #     state.scene_id = story_dictionary["continue_scene_id"]
+        # if story_dictionary and "story_title" in story_dictionary["metadata"]:
+        #     state.story_title = story_dictionary["metadata"]["story_title"]
+        # if story_dictionary and "word_count" in story_dictionary:
+        #     state.word_count = story_dictionary["word_count"]
 
         # Short system prompt
         system_prompt = (
@@ -465,15 +494,15 @@ You are a JSON repair agent.
             "The Scene Writer should NEVER invent characters, settings, dialogue, decision points, or events. "
             "Prohibit generic phrasing such as 'mundane small talk,' 'subtle hints,' or 'something happens.' Always give exact lines or examples. "
             "Your output must be in the given JSON format. "
-            "The 'instructions' value must be 200–500 words string, not a dictionary and contain the following sections:\n\n"
-            "1. **Recap** – A concise summary of the story so far. Be concrete, include all key facts the Scene Writer needs. \n"
-            "2. **Characters** – List all relevant characters with names, ages, traits, and current state of mind. If a side character appears, provide their exact role and tone. \n"
-            "3. **Detailed Scene Blueprint** – A numbered, step-by-step breakdown of the scene’s beats in strict order. Each beat must describe: location, action, at least one visual detail, at least one sound detail, suggest general dialogue idea. "
+            "The 'instructions' value must be 200-500 words string, not a dictionary and contain the following sections:\n\n"
+            "1. **Recap** - A concise summary of the story so far. Be concrete, include all key facts the Scene Writer needs. \n"
+            "2. **Characters** - List all relevant characters with names, ages, traits, and current state of mind. If a side character appears, provide their exact role and tone. \n"
+            "3. **Detailed Scene Blueprint** - A numbered, step-by-step breakdown of the scene's beats in strict order. Each beat must describe: location, action, at least one visual detail, at least one sound detail, suggest general dialogue idea. "
             "Do not allow ambiguity. Do not say 'the writer should show this.' You must say 'this happens, in this way.' \n"
-            "4. **Main Character’s (User) Decision Points** – Describe 1–2 explicit points in the scene where the scene writer prompts the user to make a choice, either dialogue or action.\n"
-            "5. **Screenplay Notes** – A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass,' 'Include two internal monologue lines showing anxiety'). "
+            "4. **Main Character's (User) Decision Points** - Describe 1-2 explicit points in the scene where the scene writer prompts the user to make a choice, either dialogue or action.\n"
+            "5. **Screenplay Notes** - A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass,' 'Include two internal monologue lines showing anxiety'). "
             "These are mandatory, not suggestions. \n"
-            "6. **Chapter/Scene ID** – Exact chapter and scene number. \n\n"
+            "6. **Chapter/Scene ID** - Exact chapter and scene number. \n\n"
             "Always be concrete, exhaustive, and prescriptive. "
             "Never leave the Scene Writer to guess or invent. "
             "Call END if you think the chapter should end now. "
@@ -491,8 +520,8 @@ You are a JSON repair agent.
         context = (
             f"Premise: {self.memory.get_long_term_document('story_premise')}\n"
             f"Scene ID: {state.scene_id}\n"
-            f"Relevant Chapter Context: {director_context}\n"
             f"Current Chapter So Far: {self.current_chap_summary}\n"
+            f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
         )
         print("CONTEXT TO DIRECTOR:", context)
@@ -505,7 +534,7 @@ You are a JSON repair agent.
         scenario, action = None, None
 
         for attempt in range(1, max_retries + 1):
-            resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = self._extract_content(resp)
             clean_resp = self._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW DIRECTOR RESPONSE:", clean_resp)
@@ -559,6 +588,7 @@ You are a JSON repair agent.
             "messages": messages,
             "scene_id": state.scene_id,
             "current_chapter_id": state.current_chapter_id,
+            "word_count": state.word_count,
             "next_action": "generate_and_ingest" if action == "generate_and_ingest" else "END",
         }
     # -----------------------------
@@ -566,12 +596,29 @@ You are a JSON repair agent.
     # -----------------------------
     async def run(self, scene_chunk_callback):
         print("Running director agent...")
-        self.memory.reset_current_chapter()
+        #self.memory.reset_current_chapter()
         self.scene_chunk_callback = scene_chunk_callback
-        initialized_state = {
-            "messages": [],
-            "next_action": ""
-        }
+        story_progress = self.memory.get_story_progress()
+        if story_progress:
+            # Use existing state from memory if available
+            initialized_state = StoryState(
+                current_chapter_id=story_progress.get("latest_chapter_id", 1),
+                scene_id=story_progress.get("continue_scene_id", 1),
+                story_title=story_progress.get("metadata", {}).get("story_title", "None"),
+                word_count=story_progress.get("word_count", 0),
+                messages=[],  # Messages can be reset per run
+                next_action=""
+            )
+        else:
+            # Otherwise, initialize a new state
+            initialized_state = StoryState(
+                current_chapter_id=1,
+                scene_id=1,
+                story_title="None",
+                word_count=0,
+                messages=[],
+                next_action=""
+            )
         result = await self.compiled.ainvoke(initialized_state, {"recursion_limit": 50})
         #text = result["scene_memory"].get("scene_so_far", "")
         print("Director Node Finished: ", result)

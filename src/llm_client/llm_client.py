@@ -20,7 +20,7 @@ class LLMClient:
         google_api_key = os.environ.get("GOOGLE_API_KEY")
         self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
         self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
-        self.llm_groq = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.5, groq_api_key=groq_api_key)
+        self.llm_groq = ChatGroq(model="llama-3.3-70b-versatile", temperature=0.5, groq_api_key=groq_api_key)
         self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.5, google_api_key=google_api_key)
 
     def llama3_1_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
@@ -62,7 +62,7 @@ class LLMClient:
         print(f"Completion Tokens (Output): {completion_tokens}")
         print(f"Total Tokens: {total_tokens}")
         print("-------------------")
-
+        time.sleep(4)  # delay to avoid rate limits
         return response
     
 
@@ -104,5 +104,5 @@ class LLMClient:
         # print(f"Completion Tokens (Output): {completion_tokens}")
         # print(f"Total Tokens: {total_tokens}")
         # print("-------------------")
-        time.sleep(5)  # delay to avoid rate limits
+        time.sleep(3)  # delay to avoid rate limits
         return response

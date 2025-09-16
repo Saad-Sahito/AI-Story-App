@@ -127,10 +127,6 @@ def continue_story(user_id: str, story_id: str) -> dict:
         raise ValueError("Please enter a valid User ID.")
     
     memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
-    #memory_system_story_progress = memory_system.get_story_progress()
-    # chapter_id = memory_system_story_progress.get("latest_chapter_id")
-    # scene_id = memory_system_story_progress.get("continue_scene_id")
-    # word_count = memory_system_story_progress.get("word_count")
 
     setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system)
 
@@ -180,7 +176,7 @@ async def create_premise(user_id: str, initial_story_data: dict) -> dict:
     Tone: {tone}
     """
 
-    premise = data["story_author"].set_story_premise(form_string, data["state"]["story_title"])
+    premise = data["story_author"].set_story_premise(form_string, title)
     if premise == "An error occured, Please try again.":
         return {"error": premise}
 
@@ -198,9 +194,6 @@ async def create_premise(user_id: str, initial_story_data: dict) -> dict:
 #     return synopsis
 
 
-def count_words_split(text: str) -> int:
-    return len(text.split())
-
 
 async def handle_scene_chunk(user_id: str, chunk: str):
     data = SESSIONS.get(user_id)
@@ -208,7 +201,6 @@ async def handle_scene_chunk(user_id: str, chunk: str):
         data["waiting_for_user_choice"] = True
         return {"decision_point": chunk.strip()}
 
-    data["state"]["word_count"] += count_words_split(chunk)
     return {"scene_chunk": chunk}
 
 
@@ -226,13 +218,8 @@ async def handle_user_choice(user_id: str, choice: str):
 async def generate_next_chapter(user_id: str):
     touch_session(user_id)
     data = SESSIONS.get(user_id)
-    #story_id = data["story_id"]
-
-    # initial_state = {
-    #     "story_id": story_id,
-    #     "user_id": user_id,
-    # }
-
+    if not data:
+        return {"error": "Initialize story first"}
     output_chunks = []
 
     async def director_runner():

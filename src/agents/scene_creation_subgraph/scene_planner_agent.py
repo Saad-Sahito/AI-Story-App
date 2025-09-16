@@ -24,6 +24,9 @@ class SceneMemory(BaseModel):
     UserInput: Optional[str] = Field(
         default="", description="The latest user input choice, if any."
     )
+    scene_so_far_for_scene_planner: Optional[str] = Field(
+        default="", description="Accumulated text of the scene, ai questions and user responses for the scene planner."
+    )
 
 
 class SceneState(BaseModel):
@@ -92,6 +95,12 @@ class ScenePlannerGraph:
         self.question_boolean = False
         self._user_input_future = None
 
+    def _strip_code_fences(self, text: str) -> str:
+        if text.startswith("```"):
+            # remove leading/trailing ```json ... ```
+            return re.sub(r"^```[a-zA-Z]*\n|\n```$", "", text).strip()
+        return text
+    
     async def wait_for_user_input(self):
         self._user_input_future = asyncio.Future()
         return await self._user_input_future
@@ -127,24 +136,34 @@ class ScenePlannerGraph:
         """
         scene_memory: SceneMemory = state.scene_memory
 
-        system_prompt = "You are a scene context guard. See if the scene blueprint is completed, disregard the decision points. " \
+        if scene_memory.ai_question:
+            scene_memory.scene_so_far_for_scene_planner += f" (The AI asked: {scene_memory.ai_question})\n"
+        if scene_memory.UserInput:
+            scene_memory.scene_so_far_for_scene_planner += f" (The user chose: {scene_memory.UserInput})\n"
+
+        state.scene_memory = scene_memory
+
+        system_prompt = "You are a scene context guard. See if the scene blueprint is completed, including the decision points. " \
         "Output strictly according to schema."
         human_prompt = f"""
         Director Instructions:
         {scene_memory.DirectorInstructions}
 
         Scene So Far:
-        {scene_memory.scene_so_far}
+        {scene_memory.scene_so_far_for_scene_planner}
 
         {scene_planner_parser.get_format_instructions()}
         """
-
-        llm_response = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
-        clean_resp = llm_response.content.strip()
-        
+        print("SCENE PLANNER HUMAN PROMPT: ", human_prompt)
+        llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        strip = self._strip_code_fences(llm_response.content)
+        match = re.search(r'(\{[\s\S]*?\})', strip)
+        #print("PLANNER RESPONSE: ", strip)
         try:
-            parsed = scene_planner_parser.parse(clean_resp)
-            next_node = "Complete" if parsed.action.lower() == "complete" else "Not Complete"
+            extracted_str = match.group(1)
+            clean_resp_parsed = json.loads(extracted_str)
+            #print("CLEAN RESP PARSED: ", clean_resp_parsed)
+            next_node = "Complete" if clean_resp_parsed["action"].lower() == "complete" else "Not Complete"
         except Exception as e:
             print("ScenePlanner parsing failed:", e)
             next_node = "Not Complete"
@@ -154,15 +173,17 @@ class ScenePlannerGraph:
         if next_node == "Not Complete":
             if self.question_boolean:
                 
-                await self.scene_chunk_callback(f"<DECISION_POINT>{scene_memory.ai_question.strip()}")
+                self.scene_chunk_callback(json.dumps({"decision_point": scene_memory.ai_question.strip()}) + "\n")
+
                 user_choice = await self.wait_for_user_input()
+                print("USER CHOICE RECEIVED: ", user_choice)
                 scene_memory.UserInput = user_choice
-                state.scene_memory = scene_memory.model_dump()
+                state.scene_memory = scene_memory
 
             else:
                 # No question to ask, just continue
                 scene_memory.UserInput = ""
-                state.scene_memory = scene_memory.model_dump()
+                state.scene_memory = scene_memory
                 
         state.next_node = next_node
         return state
@@ -179,6 +200,7 @@ class ScenePlannerGraph:
         "You do not know anything beyond what the Director tells you, so be sure to include all relevant context in your writing. " \
         "Write in a vivid, engaging style, with rich descriptions and immersive details. " \
         "If the Director's Instructions include a decision point question for the user, end your paragraph output with that question. " \
+        "Do not produce more user decision points than what the Director includes. " \
         "Do not make up any new characters or worlds that the Director has not mentioned. " \
         "Do not repeat the entire scene so far, only continue it with one new paragraph. " \
         "If the scene is complete, just write the next paragraph of the scene. " 
@@ -196,7 +218,7 @@ class ScenePlannerGraph:
     {scene_writer_parser.get_format_instructions()}
     """
         #print("SCENE WRITER HUMAN PROMPT: ", human_prompt)
-        llm_response = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
         clean_resp = llm_response.content.strip()
         #print("SCENE WRITER RESPONSE: ", clean_resp)
 
@@ -213,9 +235,10 @@ class ScenePlannerGraph:
 
         #if scene_text.strip():
         scene_memory.scene_so_far += " " + scene_text + "\n"
+        scene_memory.scene_so_far_for_scene_planner += " " + scene_text + "\n"
         scene_memory.ai_question = question_text if question_text.strip() else ""
         state.scene_memory = scene_memory   # keep object, not dict
-        await self.scene_chunk_callback(scene_text)
+        self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n") #await
 
         if question_text.strip():
             self.question_boolean = True

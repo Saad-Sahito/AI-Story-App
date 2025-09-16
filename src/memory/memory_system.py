@@ -12,7 +12,7 @@ class StoryMemorySystem:
 
 
         # Short-Term: simple dict
-        self.short_term: Dict[str, Any] = {}
+        #self.short_term: Dict[str, Any] = {}
 
         # Supabase (long-term) - all operations automatically scoped by user_id + story_title
         self.long_term_story = SupabaseStore(
@@ -31,6 +31,7 @@ class StoryMemorySystem:
             table="story_progress", user_id=self.user_id, story_id=self.story_id
         )
 
+    def qdrant_initialize(self):
         # Qdrant (episodic) - unique collection per user + story
         collection_name = f"{self.user_id}_{self.story_id}_episodic_story_memory"
         base = QdrantStore(collection=collection_name, user_id=self.user_id, story_id=self.story_id)
@@ -39,22 +40,22 @@ class StoryMemorySystem:
         self.episodic_world = base.with_namespace("episodic_world")
 
     # ---------- Short-Term Current Chapter ----------
-    def set_current_chapter(self, chapter_text: str):
-        self.short_term["current_chapter"] = (
-            (self.short_term.get("current_chapter", "") + "\n" + chapter_text)
-            if self.short_term.get("current_chapter")
-            else chapter_text
-        )
+    # def set_current_chapter(self, chapter_text: str):
+    #     self.short_term["current_chapter"] = (
+    #         (self.short_term.get("current_chapter", "") + "\n" + chapter_text)
+    #         if self.short_term.get("current_chapter")
+    #         else chapter_text
+    #     )
 
-    def get_current_chapter(self) -> str:
-        return self.short_term.get("current_chapter", "Chapter has not started yet.")
+    # def get_current_chapter(self) -> str:
+    #     return self.short_term.get("current_chapter", "Chapter has not started yet.")
 
-    def reset_current_chapter(self):
-        self.short_term.pop("current_chapter", None)
+    # def reset_current_chapter(self):
+    #     self.short_term.pop("current_chapter", None)
 
-    # ---------- Short-Term Scene Context ----------
-    def clear_scene_context_cache(self):
-        self.short_term.pop("scene_context", None)
+    # # ---------- Short-Term Scene Context ----------
+    # def clear_scene_context_cache(self):
+    #     self.short_term.pop("scene_context", None)
     
     # ---------- Episodic ----------
     def add_story_summary(self, summary: str, metadata: dict = None):
@@ -86,7 +87,7 @@ class StoryMemorySystem:
         return episodic_raw
     
     # ---------- Long-Term (Supabase) ----------
-    def add_story_chapter(self, text: str, metadata: dict[str, int] = None):
+    def add_story_chapter(self, text: str, metadata: dict[str, Any] = None):
         self.long_term_story.put_text(text, metadata=metadata or {})
 
     def add_character_detail(self, scene_bundle, metadata):
@@ -99,8 +100,8 @@ class StoryMemorySystem:
             details_dict=scene_bundle, metadata=metadata
         )
 
-    def get_long_term_story(self, limit=10):
-        return self.long_term_story.get_texts(limit=limit)
+    def get_long_term_story(self, chapter_id):
+        return self.long_term_story.get_text(chapter_id=chapter_id)
 
     def get_long_term_characters_and_worlds(self):
         return self.long_term_characters.get_all_characters_or_worlds()
