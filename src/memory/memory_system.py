@@ -103,8 +103,11 @@ class StoryMemorySystem:
     def get_long_term_story(self, chapter_id):
         return self.long_term_story.get_text(chapter_id=chapter_id)
 
-    def get_long_term_characters_and_worlds(self):
+    def get_long_term_characters(self):
         return self.long_term_characters.get_all_characters_or_worlds()
+    
+    def get_long_term_worlds(self):
+        return self.long_term_world.get_all_characters_or_worlds()
 
     # ---------- Director Docs (Long-Term) ----------
     def add_long_term_document(self, text: str, metadata: dict = None):

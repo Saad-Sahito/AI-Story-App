@@ -1,5 +1,5 @@
-from llm_client.llm_client import LLMClient
-from memory.memory_system import StoryMemorySystem
+from src.llm_client.llm_client import LLMClient
+from src.memory.memory_system import StoryMemorySystem
 
 class StoryAuthor:
     def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem):

@@ -7,9 +7,9 @@ from langchain_core.messages import AIMessage, ToolMessage
 from dataclasses import dataclass, field
 
 # Assuming a memory system is defined elsewhere
-from memory.memory_system import StoryMemorySystem
+from src.memory.memory_system import StoryMemorySystem
 from .scene_creation_subgraph.scene_planner_agent import ScenePlannerGraph
-from llm_client.llm_client import LLMClient
+from src.llm_client.llm_client import LLMClient
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
 
@@ -269,7 +269,7 @@ You are a JSON repair agent.
         # After streaming is complete, store in memory
         #self.memory.set_current_chapter(scene_text)
         scene_bundle = self._ingest_scene(state, scene_text)
-        self.memory.add_story_chapter(text=scene_text, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id})
+        self.memory.add_story_chapter(text=scene_text, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id, "word_count": state.word_count})
         #print("SCENE BUNDLE: ", scene_bundle)
         self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,
@@ -303,14 +303,19 @@ You are a JSON repair agent.
         system_prompt = "You are the Scene Breakdown Agent. Extract structured info from the scene. "
         "Always include chapter and scene id in character and world details, in order to keep track later. "
         "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, "
-        "if any need to be changed then create new entries, if not present then create new names as needed."
+        "if any need to be changed then create new entry for that entity mentioning previous name in the new entry, "
+        "if not present then create new names as needed."
 
         human_prompt = f"""
         Scene:
         {scene_text}
 
         Character and World Names:
-        {self.memory.get_long_term_characters_and_worlds().keys()}
+        Characters:
+        {self.memory.get_long_term_characters().keys()}
+
+        Worlds:
+        {self.memory.get_long_term_worlds().keys()}
 
         Respond ONLY in JSON with this schema:
         {scene_parser.get_format_instructions()}

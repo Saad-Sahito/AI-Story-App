@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langgraph.store.memory import InMemoryStore
-from llm_client.llm_client import LLMClient
+from src.llm_client.llm_client import LLMClient
 
 from langchain.output_parsers import PydanticOutputParser
 
@@ -136,13 +136,6 @@ class ScenePlannerGraph:
         """
         scene_memory: SceneMemory = state.scene_memory
 
-        if scene_memory.ai_question:
-            scene_memory.scene_so_far_for_scene_planner += f" (The AI asked: {scene_memory.ai_question})\n"
-        if scene_memory.UserInput:
-            scene_memory.scene_so_far_for_scene_planner += f" (The user chose: {scene_memory.UserInput})\n"
-
-        state.scene_memory = scene_memory
-
         system_prompt = "You are a scene context guard. See if the scene blueprint is completed, including the decision points. " \
         "Output strictly according to schema."
         human_prompt = f"""
@@ -158,15 +151,28 @@ class ScenePlannerGraph:
         llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
         strip = self._strip_code_fences(llm_response.content)
         match = re.search(r'(\{[\s\S]*?\})', strip)
-        #print("PLANNER RESPONSE: ", strip)
-        try:
-            extracted_str = match.group(1)
-            clean_resp_parsed = json.loads(extracted_str)
-            #print("CLEAN RESP PARSED: ", clean_resp_parsed)
-            next_node = "Complete" if clean_resp_parsed["action"].lower() == "complete" else "Not Complete"
-        except Exception as e:
-            print("ScenePlanner parsing failed:", e)
-            next_node = "Not Complete"
+
+        if match:
+            try:
+                extracted_str = match.group(1)
+                clean_resp_parsed = json.loads(extracted_str)
+                next_node = "Complete" if clean_resp_parsed.get("action", "").lower() == "complete" else "Not Complete"
+            except Exception as e:
+                print("ScenePlanner JSON parsing failed:", e)
+                # fallback: treat as incomplete
+                next_node = "Not Complete"
+        else:
+            print("ScenePlanner: No valid JSON found, retrying...")
+            # retry with stricter format instructions
+            retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
+            retry_resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
+            try:
+                retry_clean = self._strip_code_fences(retry_resp.content)
+                retry_json = json.loads(retry_clean)
+                next_node = "Complete" if retry_json.get("action", "").lower() == "complete" else "Not Complete"
+            except:
+                next_node = "Not Complete"
+
 
         print("SCENE PLANNER RESPONSE: ", next_node)
         #print("QUESTION: ", scene_memory.ai_question)
@@ -193,69 +199,93 @@ class ScenePlannerGraph:
     # ------------------------
     async def scene_writer_agent(self, state: dict) -> dict:
         scene_memory = state.scene_memory
-        #print("SCENE MEMORY AT START OF SCENE WRITER: ", scene_memory.scene_so_far)
-        system_prompt = "You are the Scene Writer Agent. Follow schema strictly. " \
-        "The Director's Instructions will include a recap of the story so far, " \
-        "relevant characters/worlds to the current scene, and the scene blueprint that you need to follow strictly for this scene. " \
-        "You do not know anything beyond what the Director tells you, so be sure to include all relevant context in your writing. " \
-        "Write in a vivid, engaging style, with rich descriptions and immersive details. " \
-        "If the Director's Instructions include a decision point question for the user, end your paragraph output with that question. " \
-        "Do not produce more user decision points than what the Director includes. " \
-        "Do not make up any new characters or worlds that the Director has not mentioned. " \
-        "Do not repeat the entire scene so far, only continue it with one new paragraph. " \
-        "If the scene is complete, just write the next paragraph of the scene. " 
-
+        system_prompt = (
+            "You are the Scene Writer Agent. Follow schema strictly. "
+            "The Director's Instructions will include a recap of the story so far, "
+            "relevant characters/worlds to the current scene, and the scene blueprint that you need to follow strictly for this scene. "
+            "You do not know anything beyond what the Director tells you, so be sure to include all relevant context in your writing. "
+            "Write in a vivid, engaging style, with rich descriptions and immersive details. "
+            "If the Director's Instructions include a decision point question for the user, end your paragraph output with that question. "
+            "Do not produce more user decision points than what the Director includes. "
+            "Do not make up any new characters or worlds that the Director has not mentioned. "
+            "Do not repeat the entire scene so far, only continue it with one new paragraph. "
+            "If the scene is complete, just write the next paragraph of the scene."
+        )
 
         human_prompt = f"""
-    Director's Instructions:
-    {scene_memory.DirectorInstructions}
+        Director's Instructions:
+        {scene_memory.DirectorInstructions}
 
-    {f"Scene so far (DO NOT rewrite this, only output text that continues from here): {scene_memory.scene_so_far}" if scene_memory.scene_so_far else ""}
+        {f"Scene so far (DO NOT rewrite this, only output text that continues from here): {scene_memory.scene_so_far}" if scene_memory.scene_so_far else ""}
 
-    {f"Your Question: {scene_memory.ai_question}" if scene_memory.ai_question else ""}
-    {f"(The user chose: {scene_memory.UserInput})" if scene_memory.UserInput else ""}
+        {f"Your Question: {scene_memory.ai_question}" if scene_memory.ai_question else ""}
+        {f"(The user chose: {scene_memory.UserInput})" if scene_memory.UserInput else ""}
 
-    {scene_writer_parser.get_format_instructions()}
-    """
-        #print("SCENE WRITER HUMAN PROMPT: ", human_prompt)
+        {scene_writer_parser.get_format_instructions()}
+        """
+        print("SCENE WRITER HUMAN PROMPT: ", human_prompt)
+
         llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
         clean_resp = llm_response.content.strip()
-        #print("SCENE WRITER RESPONSE: ", clean_resp)
 
+        # Try parsing
         try:
             parsed = scene_writer_parser.parse(clean_resp)
             scene_text = parsed.scene
             question_text = parsed.question
         except Exception as e:
             print("SceneWriter parsing failed:", e)
-            scene_text = clean_resp
-            question_text = ""
 
-        scene_memory: SceneMemory = state.scene_memory
+            # Retry with stricter reminder
+            retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
+            retry_resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
+            retry_clean = retry_resp.content.strip()
+            try:
+                parsed = scene_writer_parser.parse(retry_clean)
+                scene_text = parsed.scene
+                question_text = parsed.question
+            except Exception as retry_e:
+                print("SceneWriter retry parsing failed:", retry_e)
 
-        #if scene_text.strip():
-        scene_memory.scene_so_far += " " + scene_text + "\n"
-        scene_memory.scene_so_far_for_scene_planner += " " + scene_text + "\n"
-        scene_memory.ai_question = question_text if question_text.strip() else ""
-        state.scene_memory = scene_memory   # keep object, not dict
-        self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n") #await
+                # Try regex-based JSON recovery
+                match = re.search(r'(\{[\s\S]*\})', retry_clean)
+                if match:
+                    try:
+                        recovered = json.loads(match.group(1))
+                        scene_text = recovered.get("scene", "")
+                        question_text = recovered.get("question", "")
+                    except Exception as inner_e:
+                        print("SceneWriter JSON recovery failed:", inner_e)
+                        scene_text = retry_clean
+                        question_text = ""
+                else:
+                    # fallback: plain text
+                    scene_text = retry_clean
+                    question_text = ""
+
+
+        # --- update scene memory ---
+        if scene_memory.UserInput:
+            scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
+
+        scene_memory.scene_so_far += " " + scene_text + "\n\n"
+        scene_memory.scene_so_far_for_scene_planner += scene_text + "\n"
 
         if question_text.strip():
+            scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
+            scene_memory.ai_question = question_text.strip()
             self.question_boolean = True
-        #     await self.scene_chunk_callback(f"<DECISION_POINT>{question_text.strip()}")
-        #     user_choice = await self.wait_for_user_input()
-        #     scene_memory.UserInput = user_choice
-        #     state.scene_memory = scene_memory.model_dump()
-            #state.messages.append(HumanMessage(content=f"(User chose: {user_choice})"))
-            # next_node = "SceneWriter"
         else:
+            scene_memory.ai_question = ""
             self.question_boolean = False
-        #     next_node = "ScenePlanner"
-        #     scene_memory.UserInput = ""
-        #     state.scene_memory = scene_memory.model_dump()
 
-        # state.next_node = next_node
+        state.scene_memory = scene_memory
+
+        # Stream the scene chunk back
+        self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n")
+
         return state
+
 
     # ------------------------
     # Run full scene

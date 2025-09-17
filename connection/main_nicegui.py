@@ -2,8 +2,12 @@ from nicegui import ui
 import asyncio
 import json
 import httpx
+import websockets
+
 
 API_URL = "http://127.0.0.1:8000"
+WS_URL = "ws://127.0.0.1:8000/ws/next_chapter"
+
 waiting_for_choice = False
 
 # --- UI Elements ---
@@ -77,55 +81,108 @@ async def create_premise():
             story_output.update()
             next_chapter_btn.update()
 
-async def generate_next_chapter():
-    async with httpx.AsyncClient(timeout=None) as client:
-        async with client.stream("POST", f"{API_URL}/next_chapter", params={"user_id": user_id_input.value, "story_id": story_id_input.value}) as resp:
-            chapter_output.content = ""
-            chapter_output.update()  # reset UI at start
+# async def generate_next_chapter():
+#     async with httpx.AsyncClient(timeout=None) as client:
+#         async with client.stream("POST", f"{API_URL}/next_chapter", params={"user_id": user_id_input.value, "story_id": story_id_input.value}) as resp:
+#             chapter_output.content = ""
+#             chapter_output.update()  # reset UI at start
             
-            async for line in resp.aiter_lines():
-                if not line.strip():
-                    continue
-                try:
-                    chunk = json.loads(line)
-                except Exception as e:
-                    print("Invalid chunk:", line, e)
-                    continue
+#             async for line in resp.aiter_lines():
+#                 if not line.strip():
+#                     continue
+#                 try:
+#                     chunk = json.loads(line)
+#                 except Exception as e:
+#                     print("Invalid chunk:", line, e)
+#                     continue
 
-                if "scene_chunk" in chunk:
-                    chapter_output.content += f"\n\n{chunk['scene_chunk']}"
-                    chapter_output.update()
+#                 if "scene_chunk" in chunk:
+#                     chapter_output.content += f"\n\n{chunk['scene_chunk']}"
+#                     chapter_output.update()
 
-                if "decision_point" in chunk:
-                    chapter_output.content += f"\n\n👉 Decision: {chunk['decision_point']}"
-                    choice_input.visible = True
-                    choice_btn.visible = True
-                    chapter_output.update()
-                    choice_input.update()
-                    choice_btn.update()
+#                 if "decision_point" in chunk:
+#                     chapter_output.content += f"\n\n👉 Decision: {chunk['decision_point']}"
+#                     choice_input.visible = True
+#                     choice_btn.visible = True
+#                     chapter_output.update()
+#                     choice_input.update()
+#                     choice_btn.update()
 
-                    future = asyncio.get_event_loop().create_future()
-                    choice_input.user_future = future
-                    await future  # wait for user submission
+#                     future = asyncio.get_event_loop().create_future()
+#                     choice_input.user_future = future
+#                     await future  # wait for user submission
 
-                    choice_input.visible = False
-                    choice_btn.visible = False
-                    choice_input.update()
-                    choice_btn.update()
+#                     choice_input.visible = False
+#                     choice_btn.visible = False
+#                     choice_input.update()
+#                     choice_btn.update()
 
-                if "chapter_complete" in chunk:
-                    chapter_output.content += "\n\n✅ Chapter complete!"
-                    chapter_output.update()
+#                 if "chapter_complete" in chunk:
+#                     chapter_output.content += "\n\n✅ Chapter complete!"
+#                     chapter_output.update()
 
+
+# Keep a global reference to the WebSocket
+ws_connection = None  
+
+async def generate_next_chapter():
+    global ws_connection
+    WS_URL = "ws://127.0.0.1:8000/ws/next_chapter"
+
+    ws_connection = await websockets.connect(WS_URL)
+
+    # Send user_id and story_id first
+    await ws_connection.send(json.dumps({
+        "user_id": user_id_input.value,
+        "story_id": story_id_input.value
+    }))
+
+    chapter_output.content = ""
+    chapter_output.update()
+
+    async for message in ws_connection:
+        try:
+            chunk = json.loads(message)
+        except Exception as e:
+            print("Invalid WS chunk:", message, e)
+            continue
+
+        if "scene_chunk" in chunk:
+            chapter_output.content += f"\n\n{chunk['scene_chunk']}"
+            chapter_output.update()
+
+        if "decision_point" in chunk:
+            chapter_output.content += f"\n\n👉 Decision: {chunk['decision_point']}"
+            choice_input.visible = True
+            choice_btn.visible = True
+            chapter_output.update()
+            choice_input.update()
+            choice_btn.update()
+
+            # Pause until user makes a choice
+            future = asyncio.get_event_loop().create_future()
+            choice_input.user_future = future
+            await future
+
+            choice_input.visible = False
+            choice_btn.visible = False
+            choice_input.update()
+            choice_btn.update()
+
+        if "chapter_complete" in chunk:
+            chapter_output.content += "\n\n✅ Chapter complete!"
+            chapter_output.update()
+            break  # optional: stop loop when chapter ends
 
 
 async def submit_choice():
+    global ws_connection
     choice = choice_input.value.strip()
-    if not choice:
+    if not choice or not ws_connection:
         return
 
-    async with httpx.AsyncClient(timeout=None) as client:
-        await client.post(f"{API_URL}/choice", params={"user_id": user_id_input.value, "story_id": story_id_input.value, "choice": choice})
+    # Send choice back through WebSocket
+    await ws_connection.send(json.dumps({"choice": choice}))
 
     # Resolve the future so generate_next_chapter() continues
     if hasattr(choice_input, "user_future") and choice_input.user_future:
