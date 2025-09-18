@@ -5,8 +5,8 @@ import httpx
 import websockets
 
 
-API_URL = "http://127.0.0.1:8000"
-WS_URL = "ws://127.0.0.1:8000/ws/next_chapter"
+API_URL = "https://ai-story-app.onrender.com"
+WS_URL = "wss://ai-story-app.onrender.com/ws/next_chapter"
 
 waiting_for_choice = False
 

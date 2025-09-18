@@ -4,7 +4,7 @@ pinecone-client
 streamlit
 requests
 langgraph-prebuilt
-faiss-cpu
+torch
 sentence-transformers
 fastapi
 nicegui
@@ -13,5 +13,8 @@ qdrant-client
 pymongo
 langchain-openai
 langchain-google-genai
-langchain-ollama #for local deployment only not render
+#langchain-ollama #for local deployment only not render
 supabase
+uvicorn
+websockets
+httpx

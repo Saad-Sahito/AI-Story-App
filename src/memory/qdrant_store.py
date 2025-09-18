@@ -1,8 +1,10 @@
 from typing import List, Dict 
+from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer 
 from qdrant_client import QdrantClient 
 from qdrant_client.http import models 
-import uuid 
+import uuid
+import os 
 import json
 
 
@@ -12,18 +14,22 @@ class QdrantStore:
         collection: str = "Episodic Form",
         user_id: str = None,
         story_id: str = None,
-        model_name: str = r"C:\Users\saadn\.cache\huggingface\hub\models--sentence-transformers--all-MiniLM-L6-v2\snapshots\c9745ed1d9f207416be6d2e6f8de32d1f16199bf",
-        host: str = "localhost",
-        port: int = 6333
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
     ):
         self.collection = collection
         self.user_id = user_id
         self.story_id = story_id
-        self.host = host
-        self.port = port
+        # self.host = host
+        # self.port = port
 
-        self.client = QdrantClient(host=host, port=port)
+        #self.client = QdrantClient(host=host, port=port)
+        
+        load_dotenv()
 
+        self.client = QdrantClient(
+            url=os.getenv("QDRANT_URL"),
+            api_key=os.getenv("QDRANT_API_KEY"),
+        )
         # Reuse model if provided
         self.model_name = model_name
         self.model = SentenceTransformer(model_name)
@@ -37,15 +43,16 @@ class QdrantStore:
             )
 
     def with_namespace(self, namespace: str):
-        """Return a new QdrantStore with same model but different collection."""
-        return QdrantStore(
+        new_store = QdrantStore(
             collection=f"{self.collection}_{namespace}",
             user_id=self.user_id,
             story_id=self.story_id,
             model_name=self.model_name,
-            host=self.host,
-            port=self.port,
         )
+        new_store.client = self.client
+        new_store.model = self.model
+        return new_store
+
 
     def _embed_text(self, text: str) -> List[float]:
         return self.model.encode([text], convert_to_numpy=True)[0].tolist()
