@@ -3,12 +3,13 @@ from supabase import create_client, Client
 import uuid
 import os
 from dotenv import load_dotenv
+from memory_system import StoryMemorySystem
 
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-
+memory_system = StoryMemorySystem()
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list):
@@ -84,3 +85,50 @@ def delete_story(user_id: str, story_title: str):
         raise HTTPException(status_code=500, detail=f"❌ Error updating stories: {e}")
 
     return {"status": "success", "message": f"Story '{story_title}' deleted", "stories": current_stories}
+
+def get_progress(user_id: str, story_id: str):
+        """
+        Get the latest story progress (chapter_id, scene_id, story_title) 
+        for this user + story.
+        """
+        result = (
+            supabase.table("story_progress")
+            .select("latest_chapter_id, continue_scene_id, word_count, metadata")
+            .eq("user_id", user_id)
+            .eq("story_id", story_id)
+            .limit(1)
+            .execute()
+        )
+        return result.data[0] if result.data else None
+
+def get_user_stories(user_id: str):
+    result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
+    if not result.data:
+        raise HTTPException(status_code=404, detail="❌ User not found")
+    
+    titles = result.data[0].get("stories", [])
+
+    if not titles:  # cleaner than == []
+        return {"status": "info", "message": "No stories found"}
+
+    stories = []
+    for title in titles:
+        story_id = f"{user_id}_{title.replace(' ', '_').lower()}"
+        progress = get_progress(user_id, story_id)
+
+        story_data = {
+            "title": title,
+            "latest_chapter_id": 0,
+            "continue_scene_id": 0,
+            "word_count": 0,
+        }
+
+        if progress:
+            story_data["latest_chapter_id"] = progress.get("latest_chapter_id", 0)
+            story_data["continue_scene_id"] = progress.get("continue_scene_id", 0)
+            story_data["word_count"] = progress.get("word_count", 0)
+            story_data["title"] = f"{title} (Chapter {progress.get('latest_chapter_id', 0)})"
+
+        stories.append(story_data)
+
+    return {"status": "success", "stories": stories}

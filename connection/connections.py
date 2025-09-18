@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI, WebSocket
 from main_test import MainTest
-from src.memory.add_user import add_user, append_story, delete_story
+from src.memory.add_user import add_user, append_story, delete_story, get_user_stories
 
 app = FastAPI()
 main_test = MainTest()
@@ -45,3 +45,7 @@ def api_append_story(user_id: str, story_title: str):
 @app.post("/delete_story")
 def api_delete_story(user_id: str, story_title: str):
     return delete_story(user_id, story_title)
+
+@app.post("/get_user_stories")
+def api_get_user_stories(user_id: str):
+    return get_user_stories(user_id)

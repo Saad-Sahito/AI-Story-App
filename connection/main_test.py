@@ -57,13 +57,13 @@ class MainTest:
             raise HTTPException(status_code=403, detail="Please enter a valid User ID.")
 
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
-        story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
-        memory_system.qdrant_initialize()
+        #story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
+        #memory_system.qdrant_initialize()
         story_progress_data = memory_system.get_story_progress()
         if not story_progress_data:
             raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
 
-        self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
+        self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system)
         story_text = (
             memory_system.get_long_term_story(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
