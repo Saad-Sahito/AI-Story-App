@@ -19,3 +19,4 @@ supabase
 uvicorn
 websockets
 httpx
+python-dotenv
