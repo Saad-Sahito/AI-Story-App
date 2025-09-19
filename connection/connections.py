@@ -2,17 +2,17 @@
 from fastapi import FastAPI, WebSocket
 from connection.main_test import MainTest
 from src.memory.user_management import add_user, append_story, delete_story, get_user_stories, get_progress
-from fastapi.middleware.cors import CORSMiddleware
+#from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
-# --- Add this block ---
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["http://localhost:8080"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
+# --- Add this block (for local use only) ---
+# app.add_middleware(
+#     CORSMiddleware,
+#     allow_origins=["http://localhost:8080"],
+#     allow_credentials=True,
+#     allow_methods=["*"],
+#     allow_headers=["*"],
+# )
 main_test = MainTest()
 
 # ---------------- Story Management API Routes ----------------

@@ -7,12 +7,13 @@ langgraph-prebuilt
 torch
 sentence-transformers
 fastapi
-nicegui
+#nicegui
 anthropic
 qdrant-client
 pymongo
 langchain-openai
 langchain-google-genai
+langchain-groq
 #langchain-ollama #for local deployment only not render
 supabase
 uvicorn

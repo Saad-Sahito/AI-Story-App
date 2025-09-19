@@ -47,6 +47,7 @@ async def initialize_story():
             f"{API_URL}/initialize_story",
             params={"user_id": user_id_input.value, "story_title": story_title_input.value},
         )
+        print("✅ Story initialized:", resp)
         if resp.is_success:
             story_output.content = "✅ Story initialized"
             premise_btn.visible = True
@@ -60,8 +61,10 @@ async def continue_story():
             f"{API_URL}/continue_story",
             params={"user_id": user_id_input.value, "story_id": story_id_input.value},
         )
+        print("✅ Story continued:", resp)
         if resp.is_success:
             data = resp.json()
+            print(data)
             story_output.content = f"✅ Story continued\n\n{data.get('story_text')}"
             premise_btn.visible = True
             story_output.update()
@@ -84,6 +87,7 @@ async def create_premise():
     }
     async with httpx.AsyncClient(timeout=None) as client:
         resp = await client.post(f"{API_URL}/premise", json=payload)
+        print("✅ Premise created:", resp)
         if resp.is_success:
             data = resp.json()
             story_output.content = f"📖 Premise:\n\n{data.get('premise')}"
