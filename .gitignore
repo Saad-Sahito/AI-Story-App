@@ -208,5 +208,5 @@ __marimo__/
 
 
 # Ignore specific app scripts
-connections/main_nicegui.py
-connections/main.py
+connection/main_nicegui.py
+connection/main.py
