@@ -15,6 +15,14 @@ app = FastAPI()
 # )
 main_test = MainTest()
 
+
+
+
+# This is the health check endpoint
+@app.get("/")
+def read_root():
+    return {"status": "ok"}
+
 # ---------------- Story Management API Routes ----------------
 @app.post("/premise")
 async def api_create_premise(initial_story_data: dict):
@@ -25,39 +33,47 @@ async def websocket_next_chapter(websocket: WebSocket):
     # Just delegate everything to the handler
     await main_test.handle_story_websocket(websocket)
 
-@app.post("/initialize_story")
-def api_initialize(user_id: str, story_title: str = ""):
+# Use POST to initialize/create a new story
+@app.post("/stories")
+def api_initialize_story(user_id: str, story_title: str = ""):
     return main_test.initialize_story(user_id=user_id, story_title=story_title)
 
-@app.post("/continue_story")
-def api_continue_story(user_id: str, story_id: str = ""):
+# Use PUT to update an existing story
+@app.put("/stories/{story_id}")
+def api_continue_story(user_id: str, story_id: str):
     return main_test.continue_story(user_id=user_id, story_id=story_id)
 
-@app.post("/get_story_progress")
+# Use GET to retrieve the progress of a specific story
+@app.get("/stories/{story_id}/progress")
 def api_get_story_progress(user_id: str, story_id: str):
     return get_progress(user_id=user_id, story_id=story_id)
 
+
+
 # ---------------- User Session Management Routes ----------------
-@app.post("/logout")
+# Use DELETE to end a user's session (logout)
+@app.delete("/users/{user_id}/session")
 def api_logout(user_id: str):
     return main_test.logout(user_id)
 
 
 # ---------------- User Data Management Routes ----------------
-@app.post("/add_user")
+# Use POST to create a new user
+@app.post("/users")
 def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], user_id: str = None):
     return add_user(nickname=nickname, user_tag=user_tag, age=age, user_id=user_id, stories=stories)
 
-
-@app.post("/append_story")
+# Use PUT to update a story associated with a user
+@app.put("/users/{user_id}/stories/{story_title}")
 def api_append_story(user_id: str, story_title: str):
     return append_story(user_id, story_title)
 
-
-@app.post("/delete_story")
+# Use DELETE to remove a story associated with a user
+@app.delete("/users/{user_id}/stories/{story_title}")
 def api_delete_story(user_id: str, story_title: str):
     return delete_story(user_id, story_title)
 
-@app.post("/get_user_stories")
+# Use GET to retrieve a list of a user's stories
+@app.get("/users/{user_id}/stories")
 def api_get_user_stories(user_id: str):
     return get_user_stories(user_id)
