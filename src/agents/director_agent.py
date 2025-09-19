@@ -269,7 +269,7 @@ You are a JSON repair agent.
         # After streaming is complete, store in memory
         #self.memory.set_current_chapter(scene_text)
         scene_bundle = self._ingest_scene(state, scene_text)
-        self.memory.add_story_chapter(text=scene_text, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id, "word_count": state.word_count})
+        #self.memory.add_story_chapter(text=scene_text, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id, "word_count": state.word_count})
         #print("SCENE BUNDLE: ", scene_bundle)
         self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,
@@ -378,7 +378,8 @@ You are a JSON repair agent.
         print("Ingesting chapter...")
 
         #chapter_content = self.memory.get_current_chapter()
-        char_world_details = self.memory.get_long_term_characters_and_worlds()
+        world_details = self.memory.get_long_term_worlds()
+        char_details = self.memory.get_long_term_characters()
         # self.memory.add_story_chapter(
         #     text=chapter_content,
         #     metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
@@ -396,8 +397,11 @@ You are a JSON repair agent.
         Chapter Text:
         {self.current_chap_summary}
 
-        Character and World Details:
-        {char_world_details}
+        Character Details:
+        {char_details}
+
+        World Details:
+        {world_details}
 
         Respond ONLY in JSON with this schema:
         {chapter_parser.get_format_instructions()}
@@ -582,8 +586,8 @@ You are a JSON repair agent.
                 scenario = clean_resp
                 action = "END"
 
-        # if state.scene_id == 2: # DEBUGGING Code
-        #     action = "DEBUG" # DEBUGGING Code
+        if state.scene_id == 2: # DEBUGGING Code
+            action = "DEBUG" # DEBUGGING Code
 
         # finalize and return (same as you had)
         messages = state.messages or []

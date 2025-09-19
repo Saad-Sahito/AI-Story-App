@@ -1,15 +1,15 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import HTTPException
 from supabase import create_client, Client
 import uuid
 import os
 from dotenv import load_dotenv
-from memory_system import StoryMemorySystem
+
 
 load_dotenv()
 
 SUPABASE_URL = os.getenv("SUPABASE_URL")
 SUPABASE_KEY = os.getenv("SUPABASE_KEY")
-memory_system = StoryMemorySystem()
+
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
 def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list):
@@ -113,7 +113,7 @@ def get_user_stories(user_id: str):
 
     stories = []
     for title in titles:
-        story_id = f"{user_id}_{title.replace(' ', '_').lower()}"
+        story_id = f"{title.lower().replace(' ', '_').lower()}_{user_id}"
         progress = get_progress(user_id, story_id)
 
         story_data = {
@@ -127,8 +127,11 @@ def get_user_stories(user_id: str):
             story_data["latest_chapter_id"] = progress.get("latest_chapter_id", 0)
             story_data["continue_scene_id"] = progress.get("continue_scene_id", 0)
             story_data["word_count"] = progress.get("word_count", 0)
-            story_data["title"] = f"{title} (Chapter {progress.get('latest_chapter_id', 0)})"
+            story_data["title"] = f"{title}"
 
         stories.append(story_data)
 
     return {"status": "success", "stories": stories}
+
+res = get_progress("saad","lost_kingdom_saad")
+print(res)

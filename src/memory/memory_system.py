@@ -32,12 +32,15 @@ class StoryMemorySystem:
         )
 
     def qdrant_initialize(self):
-        # Qdrant (episodic) - unique collection per user + story
-        collection_name = f"{self.user_id}_{self.story_id}_episodic_story_memory"
+        # Qdrant (episodic) - one shared collection, filtered by user_id + story_id
+        collection_name = "episodic_story_memory"  # single collection
         base = QdrantStore(collection=collection_name, user_id=self.user_id, story_id=self.story_id)
+
+        # Use namespaces (payload key) to separate story/characters/world
         self.episodic_story = base.with_namespace("episodic_story")
         self.episodic_characters = base.with_namespace("episodic_characters")
         self.episodic_world = base.with_namespace("episodic_world")
+
 
     # ---------- Short-Term Current Chapter ----------
     # def set_current_chapter(self, chapter_text: str):
@@ -87,7 +90,7 @@ class StoryMemorySystem:
         return episodic_raw
     
     # ---------- Long-Term (Supabase) ----------
-    def add_story_chapter(self, text: str, metadata: dict[str, Any] = None):
+    def add_story_chapter(self, text: list, metadata: dict[str, Any] = None):
         self.long_term_story.put_text(text, metadata=metadata or {})
 
     def add_character_detail(self, scene_bundle, metadata):
@@ -100,6 +103,7 @@ class StoryMemorySystem:
             details_dict=scene_bundle, metadata=metadata
         )
 
+    # used in main_test.py
     def get_long_term_story(self, chapter_id):
         return self.long_term_story.get_text(chapter_id=chapter_id)
 

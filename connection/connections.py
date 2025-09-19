@@ -1,9 +1,18 @@
 
 from fastapi import FastAPI, WebSocket
-from main_test import MainTest
-from src.memory.add_user import add_user, append_story, delete_story, get_user_stories
+from connection.main_test import MainTest
+from src.memory.user_management import add_user, append_story, delete_story, get_user_stories, get_progress
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
+# --- Add this block ---
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:8080"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 main_test = MainTest()
 
 # ---------------- Story Management API Routes ----------------
@@ -20,10 +29,13 @@ async def websocket_next_chapter(websocket: WebSocket):
 def api_initialize(user_id: str, story_title: str = ""):
     return main_test.initialize_story(user_id=user_id, story_title=story_title)
 
-
 @app.post("/continue_story")
 def api_continue_story(user_id: str, story_id: str = ""):
     return main_test.continue_story(user_id=user_id, story_id=story_id)
+
+@app.post("/get_story_progress")
+def api_get_story_progress(user_id: str, story_id: str):
+    return get_progress(user_id=user_id, story_id=story_id)
 
 # ---------------- User Session Management Routes ----------------
 @app.post("/logout")

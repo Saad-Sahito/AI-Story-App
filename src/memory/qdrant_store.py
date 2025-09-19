@@ -1,58 +1,78 @@
-from typing import List, Dict 
+from typing import List, Dict
 from dotenv import load_dotenv
-from sentence_transformers import SentenceTransformer 
-from qdrant_client import QdrantClient 
-from qdrant_client.http import models 
+from sentence_transformers import SentenceTransformer
+from qdrant_client import QdrantClient
+from qdrant_client.http import models
 import uuid
-import os 
-import json
+import os
 
 
 class QdrantStore:
     def __init__(
         self,
-        collection: str = "Episodic Form",
+        collection: str = "episodic_story_memory",
         user_id: str = None,
         story_id: str = None,
-        model_name: str = "sentence-transformers/all-MiniLM-L6-v2"
+        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
+        namespace: str = None,
     ):
         self.collection = collection
         self.user_id = user_id
         self.story_id = story_id
-        # self.host = host
-        # self.port = port
+        self.namespace = namespace  # ✅ store namespace
 
-        #self.client = QdrantClient(host=host, port=port)
-        
         load_dotenv()
 
         self.client = QdrantClient(
             url=os.getenv("QDRANT_URL"),
             api_key=os.getenv("QDRANT_API_KEY"),
         )
+
         # Reuse model if provided
         self.model_name = model_name
         self.model = SentenceTransformer(model_name)
         self.dim = self.model.get_sentence_embedding_dimension()
 
-        # Only create if doesn't exist
-        if self.collection not in [c.name for c in self.client.get_collections().collections]:
+        # --- Ensure collection exists ---
+        existing_collections = [c.name for c in self.client.get_collections().collections]
+        if self.collection not in existing_collections:
             self.client.create_collection(
                 collection_name=self.collection,
                 vectors_config=models.VectorParams(size=self.dim, distance=models.Distance.COSINE),
+                on_disk_payload=True,
             )
 
+        # --- Ensure payload indexes exist ---
+        required_indexes = {
+            "user_id": models.PayloadSchemaType.KEYWORD,
+            "story_id": models.PayloadSchemaType.KEYWORD,
+            "namespace": models.PayloadSchemaType.KEYWORD,
+            "character_name": models.PayloadSchemaType.KEYWORD,
+            "world_element": models.PayloadSchemaType.KEYWORD,
+            "chapter_id": models.PayloadSchemaType.INTEGER,  # 🔑 fix: integer not keyword
+        }
+
+        for field, schema in required_indexes.items():
+            try:
+                self.client.create_payload_index(
+                    collection_name=self.collection,
+                    field_name=field,
+                    field_schema=schema,
+                )
+            except Exception as e:
+                # Skip if index already exists
+                if "already exists" not in str(e):
+                    raise
+
     def with_namespace(self, namespace: str):
-        new_store = QdrantStore(
-            collection=f"{self.collection}_{namespace}",
+        """Return a new store bound to a namespace (same collection)."""
+        return QdrantStore(
+            collection=self.collection,   # ✅ same collection
             user_id=self.user_id,
             story_id=self.story_id,
             model_name=self.model_name,
+            namespace=namespace,
         )
-        new_store.client = self.client
-        new_store.model = self.model
-        return new_store
-
 
     def _embed_text(self, text: str) -> List[float]:
         return self.model.encode([text], convert_to_numpy=True)[0].tolist()
@@ -64,7 +84,8 @@ class QdrantStore:
         payload.update({
             "text": text,
             "user_id": self.user_id,
-            "story_id": self.story_id
+            "story_id": self.story_id,
+            "namespace": self.namespace,   # ✅ add namespace
         })
 
         self.client.upsert(
@@ -74,11 +95,11 @@ class QdrantStore:
 
     def put_dict_replace_character(self, data: Dict[str, str], metadata: Dict[str, int] = None):
         for k, v in data.items():
-            # Filter by user + story + character
             filter_conds = [
                 models.FieldCondition(key="character_name", match=models.MatchValue(value=k)),
                 models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                 models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
             ]
             search_results, _ = self.client.scroll(
                 collection_name=self.collection,
@@ -96,7 +117,8 @@ class QdrantStore:
                 "text": v,
                 "character_name": k,
                 "user_id": self.user_id,
-                "story_id": self.story_id
+                "story_id": self.story_id,
+                "namespace": self.namespace,
             })
 
             self.client.upsert(collection_name=self.collection, points=[models.PointStruct(id=point_id, vector=vec, payload=payload)])
@@ -107,6 +129,7 @@ class QdrantStore:
                 models.FieldCondition(key="world_element", match=models.MatchValue(value=k)),
                 models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                 models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
             ]
             search_results, _ = self.client.scroll(
                 collection_name=self.collection,
@@ -124,45 +147,59 @@ class QdrantStore:
                 "text": v,
                 "world_element": k,
                 "user_id": self.user_id,
-                "story_id": self.story_id
+                "story_id": self.story_id,
+                "namespace": self.namespace,
             })
 
             self.client.upsert(collection_name=self.collection, points=[models.PointStruct(id=point_id, vector=vec, payload=payload)])
 
-    # ---------- Search ----------
+    # ---------- Search ----------(brings all other points apart from the excluded metadata)
     def search(self, query: str, k: int = 5, metadata: Dict[str, str] = None):
         vec = self._embed_text(query)
 
-        # Always filter by current user + story
         must_conds = [
             models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
-            models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id))
+            models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+            models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),  # ✅ namespace filter
         ]
 
-        # Exclude additional metadata if provided
-        must_not = []
+        must_not_conds = []  # ❌ Exclusion conditions
+
         if metadata:
             for key, val in metadata.items():
-                must_not.append(models.FieldCondition(key=key, match=models.MatchValue(value=val)))
+                must_not_conds.append(models.FieldCondition(key=key, match=models.MatchValue(value=val)))
 
-        search_filter = models.Filter(must=must_conds, must_not=must_not if must_not else None)
+        search_filter = models.Filter(
+            must=must_conds,
+            must_not=must_not_conds  # ✅ Exclude given metadata instead of including it
+        )
 
-        results = self.client.search(collection_name=self.collection, query_vector=vec, limit=k, query_filter=search_filter)
+        results = self.client.search(
+            collection_name=self.collection,
+            query_vector=vec,
+            limit=k,
+            query_filter=search_filter
+        )
 
         hits = []
         for r in results:
             payload = r.payload or {}
             base_text = payload.get("value") or payload.get("text") or ""
             merged = f"{payload.get('key', '')}: {base_text}" if "key" in payload else base_text
-            ignore_keys = {"text", "value", "key", "user_id", "story_id"}
+
+            ignore_keys = {"text", "value", "key", "user_id", "story_id", "namespace"}
             if metadata:
                 ignore_keys.update(metadata.keys())
+
             meta_parts = [f"{k}={v}" for k, v in payload.items() if k not in ignore_keys]
             if meta_parts:
                 merged = f"{merged} | {'; '.join(meta_parts)}"
+
             merged = f"{merged} (score={r.score:.3f})"
             hits.append(merged)
+
         return hits
+
 
     # ---------- Chapter retrieval ----------
     def get_chapter_content(self, chapter_number: int) -> list[str]:
@@ -173,13 +210,11 @@ class QdrantStore:
             scroll_results, next_offset = self.client.scroll(
                 collection_name=self.collection,
                 scroll_filter=models.Filter(
-                    should=[  # OR condition for int/str chapter
-                        models.FieldCondition(key="chapter_id", match=models.MatchValue(value=chapter_number)),
-                        models.FieldCondition(key="chapter_id", match=models.MatchValue(value=str(chapter_number))),
-                    ],
                     must=[
+                        models.FieldCondition(key="chapter_id", match=models.MatchValue(value=chapter_number)),  # ✅ works now
                         models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
-                        models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id))
+                        models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                        models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
                     ]
                 ),
                 limit=100,

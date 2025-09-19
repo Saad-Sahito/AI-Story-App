@@ -8,6 +8,7 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langgraph.store.memory import InMemoryStore
 from src.llm_client.llm_client import LLMClient
+from src.memory.memory_system import StoryMemorySystem
 
 from langchain.output_parsers import PydanticOutputParser
 
@@ -27,6 +28,9 @@ class SceneMemory(BaseModel):
     scene_so_far_for_scene_planner: Optional[str] = Field(
         default="", description="Accumulated text of the scene, ai questions and user responses for the scene planner."
     )
+    number_of_options: Optional[int] = Field(
+        default=0, description="Number of options available at the decision point."
+    )
 
 
 class SceneState(BaseModel):
@@ -42,6 +46,9 @@ class SceneWriterOutput(BaseModel):
     question: str = Field(
         description="Decision prompt for the user if this is the marked decision point, otherwise empty string."
     )
+    number_of_options: Optional[int] = Field(
+        description="If there is a question, how many options are provided (0 if no question)."
+    )
 
 class ScenePlannerOutput(BaseModel):
     action: str = Field(
@@ -54,7 +61,8 @@ scene_planner_parser = PydanticOutputParser(pydantic_object=ScenePlannerOutput)
 
 
 class ScenePlannerGraph:
-    def __init__(self, llm_client: LLMClient):
+    def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem):
+        self.memory_system = memory_system
         self.memory_store = InMemoryStore()
         self.llm = llm_client
         # The state is a dictionary, so we don't need a custom lambda
@@ -178,10 +186,30 @@ class ScenePlannerGraph:
         #print("QUESTION: ", scene_memory.ai_question)
         if next_node == "Not Complete":
             if self.question_boolean:
+                text={
+                        "type": "decision",
+                        "question": scene_memory.ai_question.strip(),
+                        "options": scene_memory.number_of_options,
+                        "user_choice": ""  # to be filled after user input,
+                    }
                 
-                self.scene_chunk_callback(json.dumps({"decision_point": scene_memory.ai_question.strip()}) + "\n")
+                self.scene_chunk_callback(text)
 
                 user_choice = await self.wait_for_user_input()
+                self.memory_system.add_story_chapter(
+                    text={
+                        "type": "decision",
+                        "question": scene_memory.ai_question.strip(),
+                        "options": scene_memory.number_of_options,
+                        "user_choice": user_choice.strip()
+                    },
+                    metadata={
+                        "chapter_id": state.current_chapter_id,
+                        "story_title": state.story_title,
+                        "scene_id": state.scene_id,
+                    }
+                )
+
                 print("USER CHOICE RECEIVED: ", user_choice)
                 scene_memory.UserInput = user_choice
                 state.scene_memory = scene_memory
@@ -210,6 +238,8 @@ class ScenePlannerGraph:
             "Do not make up any new characters or worlds that the Director has not mentioned. "
             "Do not repeat the entire scene so far, only continue it with one new paragraph. "
             "If the scene is complete, just write the next paragraph of the scene."
+            "You may give upto two - four options for the user to choose from, include them in the question, mark each with letters."
+            "Include the number of options in the 'number_of_options' field."
         )
 
         human_prompt = f"""
@@ -233,6 +263,7 @@ class ScenePlannerGraph:
             parsed = scene_writer_parser.parse(clean_resp)
             scene_text = parsed.scene
             question_text = parsed.question
+            number_of_options = parsed.number_of_options
         except Exception as e:
             print("SceneWriter parsing failed:", e)
 
@@ -244,6 +275,7 @@ class ScenePlannerGraph:
                 parsed = scene_writer_parser.parse(retry_clean)
                 scene_text = parsed.scene
                 question_text = parsed.question
+                number_of_options = parsed.number_of_options
             except Exception as retry_e:
                 print("SceneWriter retry parsing failed:", retry_e)
 
@@ -268,22 +300,37 @@ class ScenePlannerGraph:
         if scene_memory.UserInput:
             scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
 
+        self.memory_system.add_story_chapter(
+            text={
+                    "type": "text",
+                    "scene_text": scene_text
+                },
+            metadata={
+                "chapter_id": state.current_chapter_id, 
+                "story_title": state.story_title, 
+                "scene_id": state.scene_id,
+                # "word_count": state.word_count
+            }
+        )
+
         scene_memory.scene_so_far += " " + scene_text + "\n\n"
         scene_memory.scene_so_far_for_scene_planner += scene_text + "\n"
 
         if question_text.strip():
             scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
             scene_memory.ai_question = question_text.strip()
+            scene_memory.number_of_options = number_of_options if number_of_options>0 else 1
             self.question_boolean = True
         else:
             scene_memory.ai_question = ""
             self.question_boolean = False
+            scene_memory.number_of_options = 0
 
         state.scene_memory = scene_memory
 
         # Stream the scene chunk back
-        self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n")
-
+        #self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n")
+        self.scene_chunk_callback({"scene_chunk": scene_text})
         return state
 
 

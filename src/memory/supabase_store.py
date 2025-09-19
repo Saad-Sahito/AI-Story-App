@@ -17,11 +17,11 @@ class SupabaseStore:
         self.story_id = story_id
 
     # ---------- PUT ----------
-    def put_text(self, text: str, metadata: Optional[Dict[str, Any]] = None):
-        """Append generic story text to a chapter (scene not used)."""
+    def put_text(self, entry: dict, metadata: Optional[Dict[str, Any]] = None):
+        """Append a nested dict to the chapter's jsonb[] array."""
         chapter_id = (metadata or {}).get("chapter_id", "")
 
-        # Fetch existing text for this user + story + chapter
+        # Fetch existing list for this user + story + chapter
         existing = (
             self.client.table(self.table)
             .select("text")
@@ -31,17 +31,23 @@ class SupabaseStore:
             .execute()
         )
 
-        old_text = existing.data[0].get("text", "") if existing.data else ""
-        new_text = (old_text + " " + text).strip()
+        old_text = existing.data[0].get("text", []) if existing.data else []
+        if not isinstance(old_text, list):
+            old_text = [old_text]
+
+        # Append dict into list
+        new_text = old_text + [entry]
 
         # Upsert row
         self.client.table(self.table).upsert({
             "user_id": self.user_id,
             "story_id": self.story_id,
             "chapter_id": chapter_id,
-            "text": new_text,
+            "text": new_text,   # list of dicts
             "metadata": metadata.copy() if metadata else {}
         }).execute()
+
+
 
     def put_progress(
         self,
@@ -114,18 +120,19 @@ class SupabaseStore:
             }).execute()
 
     # ---------- GET ----------
-    def get_texts(self, limit: int = 10) -> List[Dict[str, Any]]:
-        result = (
-            self.client.table(self.table)
-            .select("*")
-            .eq("user_id", self.user_id)
-            .eq("story_id", self.story_id)
-            .limit(limit)
-            .execute()
-        )
-        return result.data or []
+    # def get_texts(self, limit: int = 10) -> List[Dict[str, Any]]:
+    #     result = (
+    #         self.client.table(self.table)
+    #         .select("*")
+    #         .eq("user_id", self.user_id)
+    #         .eq("story_id", self.story_id)
+    #         .limit(limit)
+    #         .execute()
+    #     )
+    #     return result.data or []
 
-    def get_text(self, chapter_id: str) -> Optional[str]:
+    def get_text(self, chapter_id: str) -> list[dict]:
+        """Get the full jsonb[] array (list of dicts)."""
         result = (
             self.client.table(self.table)
             .select("text")
@@ -134,7 +141,11 @@ class SupabaseStore:
             .eq("chapter_id", chapter_id)
             .execute()
         )
-        return result.data[0]["text"] if result.data else None
+
+        if result.data:
+            return result.data[0]["text"] or []
+        return []
+
     
     def get_progress(self) -> Optional[Dict[str, Any]]:
         """

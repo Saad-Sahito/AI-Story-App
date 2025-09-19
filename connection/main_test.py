@@ -9,6 +9,7 @@ from src.memory.memory_system import StoryMemorySystem
 from src.agents.story_author import StoryAuthor
 from src.agents.director_agent import DirectorGraph
 from src.agents.scene_creation_subgraph.scene_planner_agent import ScenePlannerGraph
+from src.memory.user_management import append_story
 
 
 SESSIONS = {}
@@ -24,7 +25,7 @@ class MainTest:
 
     # ---------------- Session Management ----------------
     def setup_user_SESSION(self, user_id: str, story_id: str, memory_system=None, story_author=None):
-        sceneplanner = ScenePlannerGraph(llm_client=self.llm_client)
+        sceneplanner = ScenePlannerGraph(llm_client=self.llm_client, memory_system=memory_system)
         director = DirectorGraph(llm_client=self.llm_client, memory_system=memory_system, sceneplanner=sceneplanner)
 
         if user_id not in SESSIONS:
@@ -43,41 +44,48 @@ class MainTest:
     # ---------------- Story Flow ----------------
     def initialize_story(self, user_id: str, story_title: str = ""):
         story_title_normalized = story_title.replace(" ", "_")
-        story_id = user_id + "_" + story_title_normalized
+        story_id = story_title_normalized + "_" + user_id 
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
         memory_system.qdrant_initialize()
+
         story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
-        
+        append_story(user_id=user_id, story_title=story_title)
         self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
         return {"status": "success", "message": f"Story initialized for {user_id}", "story_id": story_id}
 
 
-    def continue_story(self,user_id: str, story_id: str) -> dict:
+    def continue_story(self,user_id: str, story_id: str) -> dict: # story_progress_data
         if not user_id:
             raise HTTPException(status_code=403, detail="Please enter a valid User ID.")
 
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
         #story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
-        #memory_system.qdrant_initialize()
+        memory_system.qdrant_initialize()
         story_progress_data = memory_system.get_story_progress()
+        
         if not story_progress_data:
             raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
+        
+        if user_id not in SESSIONS:
+            self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system)
+        elif story_id not in SESSIONS[user_id]:
+            self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system)
 
-        self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system)
+
         story_text = (
             memory_system.get_long_term_story(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
         )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_text": story_text}
 
-    async def handle_user_choice(self, user_id: str, story_id: str, choice: str):
-        user_data = SESSIONS.get(user_id)
-        story_data = user_data.get(story_id) if user_data else None
-        if not story_data or not choice.strip():
-            return {"error": "Invalid session or empty choice."}
+    # async def handle_user_choice(self, user_id: str, story_id: str, choice: str):
+    #     user_data = SESSIONS.get(user_id)
+    #     story_data = user_data.get(story_id) if user_data else None
+    #     if not story_data or not choice.strip():
+    #         return {"error": "Invalid session or empty choice."}
 
-        story_data["sceneplanner"].receive_user_input(choice)
-        return {"status": "success", "message": f"Choice '{choice}' received"}
+    #     story_data["sceneplanner"].receive_user_input(choice)
+    #     return {"status": "success", "message": f"Choice '{choice}' received"}
 
     async def create_premise(self, initial_story_data: dict):
         user_id = initial_story_data["user_id"]
@@ -114,9 +122,8 @@ class MainTest:
     async def handle_story_websocket(self, websocket: WebSocket):
         """
         Handles WebSocket story session:
-        - Validates user_id and story_id
-        - Sends scene chunks to client
-        - Receives user choices
+        - Sends scene chunks and decision points to client
+        - Receives user choices and feeds them back into sceneplanner
         """
         await websocket.accept()
         try:
@@ -140,25 +147,35 @@ class MainTest:
 
             queue = asyncio.Queue()
 
-            def scene_chunk_callback(chunk: str):
-                queue.put_nowait(json.dumps({"scene_chunk": chunk}))
-
-            async def run_director():
-                await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
-                await queue.put(json.dumps({"chapter_complete": True}))
-                await queue.put(None)
-
-            # Run director in background
-            asyncio.create_task(run_director())
+            def scene_chunk_callback(chunk: dict):
+                """Receive already-formatted dicts from scene writer/planner."""
+                queue.put_nowait(chunk)
 
             async def send_loop():
+                """Send story chunks and decisions to client"""
                 while True:
                     item = await queue.get()
                     if item is None:
                         break
-                    await websocket.send_text(item)
+                    await websocket.send_json(item)   # <-- send as proper JSON
+
+
+            async def run_director():
+                # Run the director, which will call our callback
+                await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
+                # After run ends, send chapter complete
+                await queue.put({"chapter_complete": True})
+                await queue.put(None)
+
+
+            # Launch director
+            asyncio.create_task(run_director())
+
+
+
 
             async def recv_loop():
+                """Listen for user choices from client"""
                 while True:
                     try:
                         msg = await websocket.receive_json()
@@ -169,13 +186,14 @@ class MainTest:
                         choice = msg["choice"].strip()
                         if not choice:
                             continue
+                        # Fulfill the future in sceneplanner
                         sceneplanner = story_data["sceneplanner"]
                         future = getattr(sceneplanner, "_user_input_future", None)
                         if future and not future.done():
                             future.set_result(choice)
                         print(f"✅ Received choice: {choice}")
 
-            # Run send + receive in parallel
+            # Run both loops concurrently
             await asyncio.gather(send_loop(), recv_loop())
 
         except WebSocketDisconnect:
@@ -183,6 +201,7 @@ class MainTest:
         except Exception as e:
             print("⚠️ Error in handle_story_websocket:", e)
             await websocket.close()
+
 
     def logout(user_id: str):
         if user_id in SESSIONS:
