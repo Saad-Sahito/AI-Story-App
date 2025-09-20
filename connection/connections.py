@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI, WebSocket
 from connection.main_test import MainTest
-from src.memory.user_management import add_user, append_story, delete_story, get_user_stories, get_progress
+from src.memory.user_management import add_user, append_story, delete_story, get_user_stories, get_progress, get_user_profile_data, get_user_profile_with_stories
 #from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -74,6 +74,17 @@ def api_delete_story(user_id: str, story_title: str):
     return delete_story(user_id, story_title)
 
 # Use GET to retrieve a list of a user's stories
-@app.get("/users/{user_id}/stories")
-def api_get_user_stories(user_id: str):
-    return get_user_stories(user_id)
+# @app.get("/users/{user_id}/stories")
+# def api_get_user_stories(user_id: str):
+#     return get_user_stories(user_id)
+
+# Get user profile data except for stories
+# @app.get("/users/{user_id}/profile")
+# def api_get_user_profile_data(user_id: str):
+#     return get_user_profile_data(user_id)
+
+
+# Get user profile data along with stories
+@app.get("/users/{user_id}/profile")
+def api_get_user_profile_data_and_stories(user_id: str):
+    return get_user_profile_with_stories(user_id=user_id)

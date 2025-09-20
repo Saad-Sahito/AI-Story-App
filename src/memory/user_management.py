@@ -127,41 +127,120 @@ def delete_story(user_id: str, story_title: str, story_id: str):
     return {"status": "success", "message": f"Story '{story_title}' deleted", "stories": current_stories}
 
 
-def get_user_stories(user_id: str):
-    result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
-    if not result.data:
-        raise HTTPException(status_code=404, detail="❌ User not found")
+# def get_user_stories(user_id: str):
+#     result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
+#     if not result.data:
+#         raise HTTPException(status_code=404, detail="❌ User not found")
 
-    story_dicts = result.data[0].get("stories", [])
-    print(story_dicts)
+#     story_dicts = result.data[0].get("stories", [])
+#     print(story_dicts)
 
-    if not story_dicts:
-        return {"status": "info", "message": "No stories found"}
+#     if not story_dicts:
+#         return {"status": "info", "message": "No stories found"}
 
-    stories = []
-    for story in story_dicts:
-        title = story["title"]
-        story_id = story["story_id"]
+#     stories = []
+#     for story in story_dicts:
+#         title = story["title"]
+#         story_id = story["story_id"]
 
-        progress = get_progress(user_id, story_id)
+#         progress = get_progress(user_id, story_id)
 
-        story_data = {
-            "title": title,
-            "story_id": story_id,
-            "latest_chapter_id": 0,
-            "continue_scene_id": 0,
-            "word_count": 0,
+#         story_data = {
+#             "title": title,
+#             "story_id": story_id,
+#             "latest_chapter_id": 0,
+#             "continue_scene_id": 0,
+#             "word_count": 0,
+#         }
+
+#         if progress:
+#             story_data["latest_chapter_id"] = progress.get("latest_chapter_id", 0)
+#             story_data["continue_scene_id"] = progress.get("continue_scene_id", 0)
+#             story_data["word_count"] = progress.get("word_count", 0)
+
+#         stories.append(story_data)
+
+#     return {"status": "success", "stories": stories}
+
+# def get_user_profile_data(user_id):
+#     """
+#     Fetches age, nickname, and user_tag for a given user_id.
+#     Returns None if no user found.
+#     """
+#     try:
+#         response = supabase.table("users") \
+#             .select("age, nickname, user_tag") \
+#             .eq("user_id", user_id) \
+#             .single() \
+#             .execute()
+
+#         if response.data:
+#             return {"status": "success", "data": response.data}
+#         else:
+#             return {"status": "success", "data": None}
+#     except Exception as e:
+#         #print(f"⚠️ Error fetching user info: {e}")
+#         return {"status": "failed"}
+
+
+def get_user_profile_with_stories(user_id: str):
+    """
+    Fetch user profile (age, nickname, user_tag) and their stories with progress.
+    """
+    try:
+        # Fetch profile + stories in one query
+        response = (
+            supabase.table("users")
+            .select("age, nickname, user_tag, stories")
+            .eq("user_id", user_id)
+            .single()
+            .execute()
+        )
+
+        if not response.data:
+            raise HTTPException(status_code=404, detail="❌ User not found")
+
+        user_data = {
+            "age": response.data.get("age"),
+            "nickname": response.data.get("nickname"),
+            "user_tag": response.data.get("user_tag"),
         }
 
-        if progress:
-            story_data["latest_chapter_id"] = progress.get("latest_chapter_id", 0)
-            story_data["continue_scene_id"] = progress.get("continue_scene_id", 0)
-            story_data["word_count"] = progress.get("word_count", 0)
+        # Process stories
+        story_dicts = response.data.get("stories", [])
+        stories = []
 
-        stories.append(story_data)
+        for story in story_dicts:
+            title = story.get("title")
+            story_id = story.get("story_id")
 
-    return {"status": "success", "stories": stories}
+            progress = get_progress(user_id, story_id)
+
+            story_data = {
+                "title": title,
+                "story_id": story_id,
+                "latest_chapter_id": 0,
+                "continue_scene_id": 0,
+                "word_count": 0,
+            }
+
+            if progress:
+                story_data["latest_chapter_id"] = progress.get("latest_chapter_id", 0)
+                story_data["continue_scene_id"] = progress.get("continue_scene_id", 0)
+                story_data["word_count"] = progress.get("word_count", 0)
+
+            stories.append(story_data)
+
+        return {
+            "status": "success",
+            "profile": user_data,
+            "stories": stories if stories else [],
+        }
+
+    except Exception as e:
+        print(f"⚠️ Error fetching user profile with stories: {e}")
+        return {"status": "failed", "message": str(e)}
 
 
-res = get_user_stories("saad")
+res = get_user_profile_data("sad")
 print(res)
