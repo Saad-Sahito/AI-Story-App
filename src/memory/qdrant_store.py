@@ -49,7 +49,7 @@ class QdrantStore:
             "namespace": models.PayloadSchemaType.KEYWORD,
             "character_name": models.PayloadSchemaType.KEYWORD,
             "world_element": models.PayloadSchemaType.KEYWORD,
-            "chapter_id": models.PayloadSchemaType.INTEGER,  # 🔑 fix: integer not keyword
+            "chapter_id": models.PayloadSchemaType.INTEGER,
         }
 
         for field, schema in required_indexes.items():
@@ -67,7 +67,7 @@ class QdrantStore:
     def with_namespace(self, namespace: str):
         """Return a new store bound to a namespace (same collection)."""
         return QdrantStore(
-            collection=self.collection,   # ✅ same collection
+            collection=self.collection,
             user_id=self.user_id,
             story_id=self.story_id,
             model_name=self.model_name,

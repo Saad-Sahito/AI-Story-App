@@ -25,7 +25,7 @@ class MainTest:
 
     # ---------------- Session Management ----------------
     def setup_user_SESSION(self, user_id: str, story_id: str, memory_system=None, story_author=None):
-        sceneplanner = ScenePlannerGraph(llm_client=self.llm_client, memory_system=memory_system)
+        sceneplanner = ScenePlannerGraph(llm_client=self.llm_client)
         director = DirectorGraph(llm_client=self.llm_client, memory_system=memory_system, sceneplanner=sceneplanner)
 
         if user_id not in SESSIONS:
@@ -49,7 +49,7 @@ class MainTest:
         memory_system.qdrant_initialize()
 
         story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
-        append_story(user_id=user_id, story_title=story_title)
+        append_story(user_id=user_id, story_title=story_title, story_id=story_id)
         self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
         return {"status": "success", "message": f"Story initialized for {user_id}", "story_id": story_id}
 

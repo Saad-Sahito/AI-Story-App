@@ -90,8 +90,9 @@ class StoryMemorySystem:
         return episodic_raw
     
     # ---------- Long-Term (Supabase) ----------
-    def add_story_chapter(self, text: list, metadata: dict[str, Any] = None):
-        self.long_term_story.put_text(text, metadata=metadata or {})
+    def add_story_scene_cluster(self, text: list, metadata: dict[str, Any] = None):
+        for entry in text:
+            self.long_term_story.put_text(entry, metadata=metadata or {})
 
     def add_character_detail(self, scene_bundle, metadata):
         self.long_term_characters.put_characters_or_world(

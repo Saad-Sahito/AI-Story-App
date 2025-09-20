@@ -12,79 +12,6 @@ SUPABASE_KEY = os.getenv("SUPABASE_KEY")
 
 supabase: Client = create_client(SUPABASE_URL, SUPABASE_KEY)
 
-def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list):
-    # 1. Validate user_tag
-    if not user_tag.strip():
-        raise HTTPException(status_code=400, detail="❌ user_tag cannot be empty!")
-
-    # 2. Check if user_tag already exists
-    existing_tag = supabase.table("users").select("user_tag").eq("user_tag", user_tag).execute()
-    if existing_tag.data and len(existing_tag.data) > 0:
-        raise HTTPException(status_code=410, detail=f"❌ user_tag '{user_tag}' already exists!")
-
-    # 3. Generate unique user_id
-    while True:
-        new_user_id = user_id
-        existing_id = supabase.table("users").select("user_id").eq("user_id", new_user_id).execute()
-        if not existing_id.data or len(existing_id.data) == 0:
-            break  # unique user_id found
-
-    # 4. Insert new user
-    response = supabase.table("users").insert({
-        "user_id": new_user_id,
-        "nickname": nickname,
-        "user_tag": user_tag,
-        "age": age,
-        "stories": stories
-    }).execute()
-
-    if response.error:
-        raise HTTPException(status_code=500, detail=f"❌ Error adding user: {response.error}")
-
-    return {"status": "success", "user_id": new_user_id, "nickname": nickname, "user_tag": user_tag}
-
-def append_story(user_id: str, story_title: str):
-    # 1. Fetch current stories
-    result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
-    if not result.data or len(result.data) == 0:
-        raise HTTPException(status_code=404, detail="❌ User not found")
-
-    current_stories = result.data[0].get("stories", [])
-    if story_title in current_stories:
-        return {"status": "info", "message": f"Story '{story_title}' already exists"}
-
-    # 2. Append new story
-    current_stories.append(story_title)
-    try:
-        update_response = supabase.table("users").update({"stories": current_stories}).eq("user_id", user_id).execute()
-        if update_response.data is None:
-            raise HTTPException(status_code=500, detail="❌ Error updating stories")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error updating stories: {e}")
-
-    return {"status": "success", "message": f"Story '{story_title}' added", "stories": current_stories}
-
-
-
-def delete_story(user_id: str, story_title: str):
-    result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
-    if not result.data or len(result.data) == 0:
-        raise HTTPException(status_code=404, detail="❌ User not found")
-
-    current_stories = result.data[0].get("stories", [])
-    if story_title not in current_stories:
-        return {"status": "info", "message": f"Story '{story_title}' does not exist"}
-
-    current_stories.remove(story_title)
-
-    try:
-        update_response = supabase.table("users").update({"stories": current_stories}).eq("user_id", user_id).execute()
-        if update_response.data is None:
-            raise HTTPException(status_code=500, detail="❌ Error updating stories")
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"❌ Error updating stories: {e}")
-
-    return {"status": "success", "message": f"Story '{story_title}' deleted", "stories": current_stories}
 
 def get_progress(user_id: str, story_id: str):
         """
@@ -101,23 +28,126 @@ def get_progress(user_id: str, story_id: str):
         )
         return result.data[0] if result.data else None
 
+def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list):
+    # 1. Validate user_tag
+    if not user_tag.strip():
+        raise HTTPException(status_code=400, detail="❌ user_tag cannot be empty!")
+
+    # 2. Check if user_tag already exists
+    existing_tag = supabase.table("users").select("user_tag").eq("user_tag", user_tag).execute()
+    if existing_tag.data and len(existing_tag.data) > 0:
+        raise HTTPException(status_code=410, detail=f"❌ user_tag '{user_tag}' already exists!")
+
+    # 3. Generate unique user_id
+    while True:
+        new_user_id = user_id
+        existing_id = supabase.table("users").select("user_id").eq("user_id", new_user_id).execute()
+        if not existing_id.data or len(existing_id.data) == 0:
+            break
+
+    # Ensure stories are dicts [{title, story_id}, ...]
+    story_dicts = []
+    for story in stories:
+        if isinstance(story, str):
+            story_dicts.append({"title": story, "story_id": f"{story.lower().replace(' ', '_')}_{new_user_id}"})
+        elif isinstance(story, dict):
+            story_dicts.append(story)
+
+    # 4. Insert new user
+    response = supabase.table("users").insert({
+        "user_id": new_user_id,
+        "nickname": nickname,
+        "user_tag": user_tag,
+        "age": age,
+        "stories": story_dicts
+    }).execute()
+
+    if response.error:
+        raise HTTPException(status_code=500, detail=f"❌ Error adding user: {response.error}")
+
+    return {"status": "success", "user_id": new_user_id, "nickname": nickname, "user_tag": user_tag}
+
+
+def append_story(user_id: str, story_title: str, story_id: str):
+    result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
+    if not result.data or len(result.data) == 0:
+        raise HTTPException(status_code=404, detail="❌ User not found")
+
+    current_stories = result.data[0].get("stories", [])
+
+    # Check if story already exists
+    if any(s["title"] == story_title for s in current_stories):
+        return {"status": "info", "message": f"Story '{story_title}' already exists"}
+
+    # Append new story dict
+    current_stories.append({"title": story_title, "story_id": story_id})
+
+    try:
+        update_response = (
+            supabase.table("users")
+            .update({"stories": current_stories})
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if update_response.data is None:
+            raise HTTPException(status_code=500, detail="❌ Error updating stories")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"❌ Error updating stories: {e}")
+
+    return {"status": "success", "message": f"Story '{story_title}' added", "stories": current_stories}
+
+
+def delete_story(user_id: str, story_title: str, story_id: str):
+    result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
+    if not result.data or len(result.data) == 0:
+        raise HTTPException(status_code=404, detail="❌ User not found")
+
+    current_stories = result.data[0].get("stories", [])
+
+    # Find the story by title or id
+    story_exists = next((s for s in current_stories if s["title"] == story_title or s["story_id"] == story_id), None)
+    if not story_exists:
+        return {"status": "info", "message": f"Story '{story_title}' does not exist"}
+
+    # Remove story
+    current_stories = [s for s in current_stories if s["title"] != story_title and s["story_id"] != story_id]
+
+    try:
+        update_response = (
+            supabase.table("users")
+            .update({"stories": current_stories})
+            .eq("user_id", user_id)
+            .execute()
+        )
+        if update_response.data is None:
+            raise HTTPException(status_code=500, detail="❌ Error updating stories")
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"❌ Error updating stories: {e}")
+
+    return {"status": "success", "message": f"Story '{story_title}' deleted", "stories": current_stories}
+
+
 def get_user_stories(user_id: str):
     result = supabase.table("users").select("stories").eq("user_id", user_id).execute()
     if not result.data:
         raise HTTPException(status_code=404, detail="❌ User not found")
-    
-    titles = result.data[0].get("stories", [])
 
-    if not titles:  # cleaner than == []
+    story_dicts = result.data[0].get("stories", [])
+    print(story_dicts)
+
+    if not story_dicts:
         return {"status": "info", "message": "No stories found"}
 
     stories = []
-    for title in titles:
-        story_id = f"{title.lower().replace(' ', '_').lower()}_{user_id}"
+    for story in story_dicts:
+        title = story["title"]
+        story_id = story["story_id"]
+
         progress = get_progress(user_id, story_id)
 
         story_data = {
             "title": title,
+            "story_id": story_id,
             "latest_chapter_id": 0,
             "continue_scene_id": 0,
             "word_count": 0,
@@ -127,11 +157,11 @@ def get_user_stories(user_id: str):
             story_data["latest_chapter_id"] = progress.get("latest_chapter_id", 0)
             story_data["continue_scene_id"] = progress.get("continue_scene_id", 0)
             story_data["word_count"] = progress.get("word_count", 0)
-            story_data["title"] = f"{title}"
 
         stories.append(story_data)
 
     return {"status": "success", "stories": stories}
 
-res = get_progress("saad","lost_kingdom_saad")
+
+res = get_user_stories("saad")
 print(res)

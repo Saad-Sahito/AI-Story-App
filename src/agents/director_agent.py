@@ -264,12 +264,12 @@ You are a JSON repair agent.
     async def generate_and_ingest_node(self, state: StoryState):
         """Generates a new scene and ingests it, with streaming chunks."""
         print("Called Generate and Ingest Node!")
-        scene_text = await self.scene_planner_agent.run(state, self.scene_chunk_callback)
+        scene_text, scene_cluster = await self.scene_planner_agent.run(state, self.scene_chunk_callback)
         #print("FINAL SCENE TEXT: ", scene_text)
         # After streaming is complete, store in memory
         #self.memory.set_current_chapter(scene_text)
         scene_bundle = self._ingest_scene(state, scene_text)
-        #self.memory.add_story_chapter(text=scene_text, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id, "word_count": state.word_count})
+        self.memory.add_story_scene_cluster(text=scene_cluster, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "scene_id": state.scene_id, "word_count": state.word_count})
         #print("SCENE BUNDLE: ", scene_bundle)
         self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,

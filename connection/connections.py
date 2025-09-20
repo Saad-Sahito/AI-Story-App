@@ -19,7 +19,7 @@ main_test = MainTest()
 
 
 # This is the health check endpoint
-@app.get("/")
+@app.get("/health_check")
 def read_root():
     return {"status": "ok"}
 

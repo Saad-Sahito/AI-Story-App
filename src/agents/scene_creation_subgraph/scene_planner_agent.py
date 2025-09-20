@@ -8,7 +8,7 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langgraph.store.memory import InMemoryStore
 from src.llm_client.llm_client import LLMClient
-from src.memory.memory_system import StoryMemorySystem
+#from src.memory.memory_system import StoryMemorySystem
 
 from langchain.output_parsers import PydanticOutputParser
 
@@ -30,6 +30,9 @@ class SceneMemory(BaseModel):
     )
     number_of_options: Optional[int] = Field(
         default=0, description="Number of options available at the decision point."
+    )
+    scene_cluster: List = Field(
+        default=[], description="Combination of scene text, questions and user choices stored as dicts inside the list."
     )
 
 
@@ -61,8 +64,8 @@ scene_planner_parser = PydanticOutputParser(pydantic_object=ScenePlannerOutput)
 
 
 class ScenePlannerGraph:
-    def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem):
-        self.memory_system = memory_system
+    def __init__(self, llm_client: LLMClient):
+        #self.memory_system = memory_system
         self.memory_store = InMemoryStore()
         self.llm = llm_client
         # The state is a dictionary, so we don't need a custom lambda
@@ -196,18 +199,18 @@ class ScenePlannerGraph:
                 self.scene_chunk_callback(text)
 
                 user_choice = await self.wait_for_user_input()
-                self.memory_system.add_story_chapter(
-                    text={
+                scene_memory.scene_cluster.append(
+                    {
                         "type": "decision",
                         "question": scene_memory.ai_question.strip(),
                         "options": scene_memory.number_of_options,
                         "user_choice": user_choice.strip()
-                    },
-                    metadata={
-                        "chapter_id": state.current_chapter_id,
-                        "story_title": state.story_title,
-                        "scene_id": state.scene_id,
                     }
+                    # metadata={
+                    #     "chapter_id": state.current_chapter_id,
+                    #     "story_title": state.story_title,
+                    #     "scene_id": state.scene_id,
+                    # }
                 )
 
                 print("USER CHOICE RECEIVED: ", user_choice)
@@ -226,7 +229,7 @@ class ScenePlannerGraph:
     # Scene Writer
     # ------------------------
     async def scene_writer_agent(self, state: dict) -> dict:
-        scene_memory = state.scene_memory
+        scene_memory: SceneMemory = state.scene_memory
         system_prompt = (
             "You are the Scene Writer Agent. Follow schema strictly. "
             "The Director's Instructions will include a recap of the story so far, "
@@ -300,17 +303,17 @@ class ScenePlannerGraph:
         if scene_memory.UserInput:
             scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
 
-        self.memory_system.add_story_chapter(
-            text={
+        scene_memory.scene_cluster.append(
+            {
                     "type": "text",
                     "scene_text": scene_text
-                },
-            metadata={
-                "chapter_id": state.current_chapter_id, 
-                "story_title": state.story_title, 
-                "scene_id": state.scene_id,
-                # "word_count": state.word_count
-            }
+                }
+            # metadata={
+            #     "chapter_id": state.current_chapter_id, 
+            #     "story_title": state.story_title, 
+            #     "scene_id": state.scene_id,
+            #     # "word_count": state.word_count
+            # }
         )
 
         scene_memory.scene_so_far += " " + scene_text + "\n\n"
@@ -330,7 +333,10 @@ class ScenePlannerGraph:
 
         # Stream the scene chunk back
         #self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n")
-        self.scene_chunk_callback({"scene_chunk": scene_text})
+        self.scene_chunk_callback({
+                    "type": "text",
+                    "scene_text": scene_text
+                })
         return state
 
 
@@ -351,12 +357,13 @@ class ScenePlannerGraph:
         self.scene_chunk_callback = scene_chunk_callback
         result = await self.compiled.ainvoke(state, {"recursion_limit": 50})
 
-        scene_memory = result["scene_memory"]
+        scene_memory: SceneMemory = result["scene_memory"]
+        
 
         if result.get("next_node") == "END":
             print("Reached END. Stopping execution.")
-            return scene_memory.scene_so_far
+            return scene_memory.scene_so_far, scene_memory.scene_cluster
 
-        return scene_memory.scene_so_far
+        return scene_memory.scene_so_far, scene_memory.scene_cluster
 
 
