@@ -16,12 +16,13 @@ app = FastAPI()
 main_test = MainTest()
 
 
-
-
 # This is the health check endpoint
-@app.get("/health_check")
-def read_root():
+@app.get("/")
+async def root():
     return {"status": "ok"}
+
+
+
 
 # ---------------- Story Management API Routes ----------------
 @app.post("/premise")
