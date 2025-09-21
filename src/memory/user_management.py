@@ -38,6 +38,10 @@ def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list
     if existing_tag.data and len(existing_tag.data) > 0:
         raise HTTPException(status_code=410, detail=f"❌ user_tag '{user_tag}' already exists!")
 
+    existing_id = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+    if existing_id.data and len(existing_id.data) > 0:
+        raise HTTPException(status_code=420, detail=f"❌ user_id '{user_id}' already exists!")
+
     # 3. Generate unique user_id
     while True:
         new_user_id = user_id
@@ -46,12 +50,12 @@ def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list
             break
 
     # Ensure stories are dicts [{title, story_id}, ...]
-    story_dicts = []
-    for story in stories:
-        if isinstance(story, str):
-            story_dicts.append({"title": story, "story_id": f"{story.lower().replace(' ', '_')}_{new_user_id}"})
-        elif isinstance(story, dict):
-            story_dicts.append(story)
+    #story_dicts = []
+    # for story in stories:
+    #     if isinstance(story, str):
+    #         story_dicts.append({"title": story, "story_id": f"{story.lower().replace(' ', '_')}_{new_user_id}"})
+    #     elif isinstance(story, dict):
+    #         story_dicts.append(story)
 
     # 4. Insert new user
     response = supabase.table("users").insert({
@@ -59,7 +63,7 @@ def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list
         "nickname": nickname,
         "user_tag": user_tag,
         "age": age,
-        "stories": story_dicts
+        "stories": stories
     }).execute()
 
     if response.error:
