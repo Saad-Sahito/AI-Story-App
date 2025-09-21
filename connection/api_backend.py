@@ -73,7 +73,7 @@ class APIBackend:
 
 
         story_text = (
-            memory_system.get_long_term_story(chapter_id=story_progress_data.get("latest_chapter_id"))
+            memory_system.get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
         )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_text": story_text}
@@ -88,6 +88,15 @@ class APIBackend:
     #     return {"status": "success", "message": f"Choice '{choice}' received"}
 
     async def create_premise(self, initial_story_data: dict):
+        tone_dict = {
+            0: "Light",
+            20: "Humorous",
+            40: "Epic",
+            60: "Serious",
+            80: "Dark",
+            100: "Gritty"
+        }
+
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
 
@@ -99,16 +108,29 @@ class APIBackend:
         if not story_data:
             raise HTTPException(status_code=405, detail="Invalid story ID")
 
+        # ✅ Replace numeric tone with mapped string
+        if "Tone" in initial_story_data:
+            tone_value = initial_story_data["Tone"]
+            # pick closest tone if not exact match
+            mapped_tone = tone_dict.get(tone_value)
+            if mapped_tone is None:
+                # fallback: choose closest defined tone
+                mapped_tone = tone_dict[min(tone_dict.keys(), key=lambda k: abs(k - tone_value))]
+            initial_story_data["Tone"] = mapped_tone
+
+        # Filter out story_id and user_id
         filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id"]}
 
+        # Build premise string
         form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
 
-        # call set_story_premise in a thread to avoid blocking
+        # Call set_story_premise in a thread to avoid blocking
         await asyncio.to_thread(
             story_data["story_author"].set_story_premise,
             form_string,
             initial_story_data.get("title", ""),
         )
+
         story_data["memory_system"].update_story_progress(
             metadata={
                 "latest_chapter_id": 1,
@@ -117,7 +139,9 @@ class APIBackend:
                 "word_count": 0,
             }
         )
+
         return {"status": "success", "premise": "Premise set."}
+
 
     async def handle_story_websocket(self, websocket: WebSocket):
         """

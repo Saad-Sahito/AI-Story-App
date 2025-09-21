@@ -32,6 +32,10 @@ def get_progress(user_id: str, story_id: str):
 
 def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list):
     try:
+        # 3. Check if user_id already exists
+        existing_id = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+        if existing_id.data and len(existing_id.data) > 0:
+            return JSONResponse(status_code=420, content={"error": f"❌ user_id '{user_id}' already exists!"})
         # 1. Validate user_tag
         if not user_tag.strip():
             return JSONResponse(status_code=400, content={"error": "❌ user_tag cannot be empty!"})
@@ -41,10 +45,7 @@ def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list
         if existing_tag.data and len(existing_tag.data) > 0:
             return JSONResponse(status_code=410, content={"error": f"❌ user_tag '{user_tag}' already exists!"})
 
-        # 3. Check if user_id already exists
-        existing_id = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
-        if existing_id.data and len(existing_id.data) > 0:
-            return JSONResponse(status_code=420, content={"error": f"❌ user_id '{user_id}' already exists!"})
+        
 
         # 4. Insert new user
         response = supabase.table("users").insert({

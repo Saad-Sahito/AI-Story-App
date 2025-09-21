@@ -105,7 +105,7 @@ class StoryMemorySystem:
         )
 
     # used in main_test.py
-    def get_long_term_story(self, chapter_id):
+    def get_story_cluster(self, chapter_id):
         return self.long_term_story.get_text(chapter_id=chapter_id)
 
     def get_long_term_characters(self):
