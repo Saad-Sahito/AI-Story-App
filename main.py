@@ -35,6 +35,7 @@ except Exception as e:
 
 
 # ---------------- Story Management API Routes ----------------
+# Create Premise
 @app.post("/premise")
 async def api_create_premise(initial_story_data: dict):
     return await api_backend.create_premise(initial_story_data=initial_story_data)
@@ -44,17 +45,17 @@ async def websocket_next_chapter(websocket: WebSocket):
     # Just delegate everything to the handler
     await api_backend.handle_story_websocket(websocket)
 
-# Use POST to initialize/create a new story
-@app.post("/stories")
+# initialize story
+@app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):
     return api_backend.initialize_story(user_id=user_id, story_title=story_title)
 
-# Use PUT to update an existing story
+# Continue story
 @app.put("/stories/{story_id}")
 def api_continue_story(user_id: str, story_id: str):
     return api_backend.continue_story(user_id=user_id, story_id=story_id)
 
-# Use GET to retrieve the progress of a specific story
+# Get story progress
 @app.get("/stories/{story_id}/progress")
 def api_get_story_progress(user_id: str, story_id: str):
     return get_progress(user_id=user_id, story_id=story_id)
@@ -69,12 +70,12 @@ def api_logout(user_id: str):
 
 
 # ---------------- User Data Management Routes ----------------
-# Use POST to create a new user
+# Add User
 @app.post("/users")
 def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], user_id: str = None):
     return add_user(nickname=nickname, user_tag=user_tag, age=age, user_id=user_id, stories=stories)
 
-# Use PUT to update a story associated with a user
+# Append Story to user data
 @app.put("/users/{user_id}/stories/{story_title}")
 def api_append_story(user_id: str, story_title: str):
     return append_story(user_id, story_title)

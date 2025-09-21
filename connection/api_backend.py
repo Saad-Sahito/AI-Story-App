@@ -76,7 +76,7 @@ class APIBackend:
             memory_system.get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
         )
-        return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_text": story_text}
+        return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}    #, "story_text": story_text
 
     # async def handle_user_choice(self, user_id: str, story_id: str, choice: str):
     #     user_data = SESSIONS.get(user_id)
