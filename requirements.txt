@@ -4,7 +4,7 @@ pinecone-client
 #streamlit
 requests
 langgraph-prebuilt
-torch==2.2.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+torch==2.2.2
 transformers>=4.40,<4.46
 sentence-transformers>=2.2,<3.0
 fastapi[all]
