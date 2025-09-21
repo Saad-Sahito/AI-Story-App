@@ -1,7 +1,7 @@
 
 from fastapi import FastAPI, WebSocket
 from connection.api_backend import APIBackend
-from src.memory.user_management import add_user, append_story, delete_story, get_user_stories, get_progress, get_user_profile_data, get_user_profile_with_stories
+from src.memory.user_management import add_user, append_story, delete_story, get_progress, get_user_profile_with_stories
 #from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
