@@ -107,18 +107,18 @@
 # print(response.json())
 
 
-import collections
-from qdrant_client import QdrantClient
+# import collections
+# from qdrant_client import QdrantClient
 
-host: str = "localhost"
-port: int = 6333
+# host: str = "localhost"
+# port: int = 6333
 
-client = QdrantClient(host=host, port=port)
-"""Delete all collections in the Qdrant instance."""
-# Get all existing collections
-collections = client.get_collections().collections
+# client = QdrantClient(host=host, port=port)
+# """Delete all collections in the Qdrant instance."""
+# # Get all existing collections
+# collections = client.get_collections().collections
 
-# Delete each one
-for c in collections:
-    client.delete_collection(c.name)
-    print(f"Deleted collection: {c.name}")
+# # Delete each one
+# for c in collections:
+#     client.delete_collection(c.name)
+#     print(f"Deleted collection: {c.name}")

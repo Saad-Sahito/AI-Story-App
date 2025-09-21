@@ -213,4 +213,4 @@ connection/main.py
 
 # Ignore specific app scripts
 connections/main_nicegui.py
-connections/main.py
+connections/main_old.py

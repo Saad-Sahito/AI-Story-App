@@ -4,8 +4,9 @@ pinecone-client
 #streamlit
 requests
 langgraph-prebuilt
-torch
-sentence-transformers
+torch==2.2.2+cpu --extra-index-url https://download.pytorch.org/whl/cpu
+transformers>=4.40,<4.46
+sentence-transformers>=2.2,<3.0
 fastapi[all]
 #nicegui
 #anthropic
@@ -16,7 +17,7 @@ langchain-google-genai
 langchain-groq
 #langchain-ollama #for local deployment only not render
 supabase
-#uvicorn
+uvicorn
 websockets
 httpx
 python-dotenv

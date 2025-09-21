@@ -43,7 +43,7 @@ class APIBackend:
 
     # ---------------- Story Flow ----------------
     def initialize_story(self, user_id: str, story_title: str = ""):
-        story_title_normalized = story_title.replace(" ", "_")
+        story_title_normalized = story_title.lower().replace(" ", "_")
         story_id = story_title_normalized + "_" + user_id 
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
         memory_system.qdrant_initialize()
