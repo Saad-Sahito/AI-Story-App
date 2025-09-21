@@ -1,5 +1,6 @@
 from fastapi import HTTPException
 from supabase import create_client, Client
+from fastapi.responses import JSONResponse
 import uuid
 import os
 from dotenv import load_dotenv
@@ -28,48 +29,41 @@ def get_progress(user_id: str, story_id: str):
         )
         return result.data[0] if result.data else None
 
+
 def add_user(nickname: str, user_tag: str, age: int, user_id: str, stories: list):
-    # 1. Validate user_tag
-    if not user_tag.strip():
-        raise HTTPException(status_code=400, detail="❌ user_tag cannot be empty!")
+    try:
+        # 1. Validate user_tag
+        if not user_tag.strip():
+            return JSONResponse(status_code=400, content={"error": "❌ user_tag cannot be empty!"})
 
-    # 2. Check if user_tag already exists
-    existing_tag = supabase.table("users").select("user_tag").eq("user_tag", user_tag).execute()
-    if existing_tag.data and len(existing_tag.data) > 0:
-        raise HTTPException(status_code=410, detail=f"❌ user_tag '{user_tag}' already exists!")
+        # 2. Check if user_tag already exists
+        existing_tag = supabase.table("users").select("user_tag").eq("user_tag", user_tag).execute()
+        if existing_tag.data and len(existing_tag.data) > 0:
+            return JSONResponse(status_code=410, content={"error": f"❌ user_tag '{user_tag}' already exists!"})
 
-    existing_id = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
-    if existing_id.data and len(existing_id.data) > 0:
-        raise HTTPException(status_code=420, detail=f"❌ user_id '{user_id}' already exists!")
+        # 3. Check if user_id already exists
+        existing_id = supabase.table("users").select("user_id").eq("user_id", user_id).execute()
+        if existing_id.data and len(existing_id.data) > 0:
+            return JSONResponse(status_code=420, content={"error": f"❌ user_id '{user_id}' already exists!"})
 
-    # 3. Generate unique user_id
-    while True:
-        new_user_id = user_id
-        existing_id = supabase.table("users").select("user_id").eq("user_id", new_user_id).execute()
-        if not existing_id.data or len(existing_id.data) == 0:
-            break
+        # 4. Insert new user
+        response = supabase.table("users").insert({
+            "user_id": user_id,
+            "nickname": nickname,
+            "user_tag": user_tag,
+            "age": age,
+            "stories": stories
+        }).execute()
 
-    # Ensure stories are dicts [{title, story_id}, ...]
-    #story_dicts = []
-    # for story in stories:
-    #     if isinstance(story, str):
-    #         story_dicts.append({"title": story, "story_id": f"{story.lower().replace(' ', '_')}_{new_user_id}"})
-    #     elif isinstance(story, dict):
-    #         story_dicts.append(story)
+        # Safely check error
+        if hasattr(response, "error") and response.error:
+            return JSONResponse(status_code=500, content={"error": str(response.error)})
 
-    # 4. Insert new user
-    response = supabase.table("users").insert({
-        "user_id": new_user_id,
-        "nickname": nickname,
-        "user_tag": user_tag,
-        "age": age,
-        "stories": stories
-    }).execute()
+        return {"status": "success", "user_id": user_id, "nickname": nickname, "user_tag": user_tag}
 
-    if response.error:
-        raise HTTPException(status_code=500, detail=f"❌ Error adding user: {response.error}")
+    except Exception as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
 
-    return {"status": "success", "user_id": new_user_id, "nickname": nickname, "user_tag": user_tag}
 
 
 def append_story(user_id: str, story_title: str, story_id: str):
