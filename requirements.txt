@@ -1,3 +1,4 @@
+numpy==1.26.4
 openai
 langgraph>=0.3.27
 pinecone-client
