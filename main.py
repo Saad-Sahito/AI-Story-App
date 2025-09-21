@@ -2,6 +2,7 @@
 from fastapi import FastAPI, WebSocket
 from connection.api_backend import APIBackend
 from src.memory.user_management import add_user, append_story, delete_story, get_progress, get_user_profile_with_stories
+import traceback
 #from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI()
@@ -13,13 +14,25 @@ app = FastAPI()
 #     allow_methods=["*"],
 #     allow_headers=["*"],
 # )
-api_backend = APIBackend()
 
 
 # This is the health check endpoint
 @app.get("/")
 async def root():
-    return {"status": "ok"}
+    return {"message": "status ok"}
+
+
+try:
+    api_backend = APIBackend()
+    print(">>> MainTest initialized successfully")
+except Exception as e:
+    print(">>> ERROR during MainTest init:", e)
+    traceback.print_exc()
+
+
+
+
+
 
 # ---------------- Story Management API Routes ----------------
 @app.post("/premise")
