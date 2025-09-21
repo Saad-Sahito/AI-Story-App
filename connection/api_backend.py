@@ -14,7 +14,7 @@ from src.memory.user_management import append_story
 
 SESSIONS = {}
 
-class MainTest:
+class APIBackend:
     def __init__(self):
         # --- Globals ---
         self.llm_client = LLMClient()

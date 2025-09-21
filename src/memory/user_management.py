@@ -242,5 +242,5 @@ def get_user_profile_with_stories(user_id: str):
         return {"status": "failed", "message": str(e)}
 
 
-res = get_user_profile_data("sad")
-print(res)
+# res = get_user_profile_data("sad")
+# print(res)
