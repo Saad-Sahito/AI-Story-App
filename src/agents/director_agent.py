@@ -140,7 +140,7 @@ class Ingestor:
                     state.word_count += StoryHelpers._count_words_split(scene_text)
                     state.scene_id += 1
                     self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "word_count": state.word_count, "story_title": state.story_title})
-                    
+                    #self.memory.close()
                     del system_prompt, human_prompt, scene_text
                     return result
 
@@ -221,7 +221,7 @@ class Ingestor:
                 state.current_chapter_id += 1
                 state.scene_id = 1
                 self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
-                
+                #self.memory.close()
                 print("Chapter Complete!")
                 result.update({
                     "current_chapter_id": state.current_chapter_id,
@@ -249,7 +249,7 @@ class Ingestor:
                     state.current_chapter_id += 1
                     state.scene_id = 1
                     self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
-                    
+                    #self.memory.close()
                     print("Chapter Complete!")
                     result.update({
                         "current_chapter_id": state.current_chapter_id,
@@ -338,7 +338,7 @@ class DirectorGraph:
                       "chapter_id": state.current_chapter_id,
                       "story_title": state.story_title},
         )
-        
+        #self.memory.close()
         del scene_bundle, scene_cluster, scene_text
         gc.collect()
 
@@ -425,7 +425,7 @@ class DirectorGraph:
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
         )
-        
+        #self.memory.close()
         print("CONTEXT TO DIRECTOR:", context)
         human_prompt = f"""
         {context}
@@ -504,7 +504,7 @@ class DirectorGraph:
         #self.memory.reset_current_chapter()
         self.scene_chunk_callback = scene_chunk_callback
         story_progress = self.memory.get_story_progress()
-
+        #self.memory.close()
         if story_progress:
             # Use existing state from memory if available
             initialized_state = StoryState(
