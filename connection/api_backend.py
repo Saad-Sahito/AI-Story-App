@@ -87,6 +87,14 @@ class APIBackend:
             80: "Dark",
             100: "Gritty"
         }
+        length_dict = { 
+            0: "Flash Fiction (1,000 - 2,500 words)",
+            20: "Short Story (2,500 - 7,500 words)",
+            40: "Novelette (7,500 - 20,000 words)",
+            60: "Novella (20,000 - 40,000 words)",
+            80: "Novel Chapter (40,000 - 70,000 words)",
+            100: "Epic / Series (70,000 - 100,000+ words)"
+        }
 
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
@@ -99,15 +107,21 @@ class APIBackend:
         if not story_data:
             raise HTTPException(status_code=405, detail="Invalid story ID")
 
-        # ✅ Replace numeric tone with mapped string
+        # ✅ Map numeric Tone to string
         if "Tone" in initial_story_data:
             tone_value = initial_story_data["Tone"]
-            # pick closest tone if not exact match
             mapped_tone = tone_dict.get(tone_value)
             if mapped_tone is None:
-                # fallback: choose closest defined tone
                 mapped_tone = tone_dict[min(tone_dict.keys(), key=lambda k: abs(k - tone_value))]
             initial_story_data["Tone"] = mapped_tone
+
+        # ✅ Map numeric Length to string
+        if "Length" in initial_story_data:
+            length_value = initial_story_data["Length"]
+            mapped_length = length_dict.get(length_value)
+            if mapped_length is None:
+                mapped_length = length_dict[min(length_dict.keys(), key=lambda k: abs(k - length_value))]
+            initial_story_data["Length"] = mapped_length
 
         # Filter out story_id and user_id
         filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id"]}
@@ -119,14 +133,14 @@ class APIBackend:
         await asyncio.to_thread(
             story_data["story_author"].set_story_premise,
             form_string,
-            initial_story_data.get("title", ""),
+            initial_story_data.get("Title", ""),
         )
 
         story_data["memory_system"].update_story_progress(
             metadata={
                 "latest_chapter_id": 1,
                 "continue_scene_id": 1,
-                "story_title": initial_story_data["title"],
+                "story_title": initial_story_data["Title"],  # fixed capitalization
                 "word_count": 0,
             }
         )
