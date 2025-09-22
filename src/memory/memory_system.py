@@ -15,31 +15,67 @@ class StoryMemorySystem:
         #self.short_term: Dict[str, Any] = {}
 
         # Supabase (long-term) - all operations automatically scoped by user_id + story_title
-        self.long_term_story = SupabaseStore(
-            table="story_texts", user_id=self.user_id, story_id=self.story_id
-        )
-        self.long_term_characters = SupabaseStore(
-            table="characters", user_id=self.user_id, story_id=self.story_id
-        )
-        self.long_term_world = SupabaseStore(
+
+        self._long_term_story = None
+        self._long_term_characters = None
+        self._long_term_worlds = None
+        self._long_term_docs = None
+        self._long_term_story_progress = None
+
+        self.episodic_story = None
+        self.episodic_characters = None
+        self.episodic_worlds = None
+
+    @property
+    def long_term_story(self):
+        if self._long_term_story is None:
+            self._long_term_story = SupabaseStore(
+                table="story_texts", user_id=self.user_id, story_id=self.story_id
+            )
+        return self._long_term_story
+    
+    @property
+    def long_term_characters(self):
+        if self._long_term_characters is None:
+            self._long_term_characters = SupabaseStore(
+                table="characters", user_id=self.user_id, story_id=self.story_id
+            )
+        return self._long_term_characters
+
+    @property
+    def long_term_worlds(self):
+        if self._long_term_worlds is None:
+            self._long_term_worlds = SupabaseStore(
             table="world_elements", user_id=self.user_id, story_id=self.story_id
         )
-        self.long_term_docs = SupabaseStore(
+        return self._long_term_worlds
+    
+    @property
+    def long_term_docs(self):
+        if self._long_term_docs is None:
+            self._long_term_docs = SupabaseStore(
             table="director_notes", user_id=self.user_id, story_id=self.story_id
         )
-        self.long_term_story_progress = SupabaseStore(
+        return self._long_term_docs
+    
+    @property
+    def long_term_story_progress(self):
+        if self._long_term_story_progress is None:
+            self._long_term_story_progress = SupabaseStore(
             table="story_progress", user_id=self.user_id, story_id=self.story_id
         )
+        return self._long_term_story_progress
+
 
     def qdrant_initialize(self):
         # Qdrant (episodic) - one shared collection, filtered by user_id + story_id
-        collection_name = "episodic_story_memory"  # single collection
-        base = QdrantStore(collection=collection_name, user_id=self.user_id, story_id=self.story_id)
+        if self.episodic_story is None:
+            base = QdrantStore(collection="episodic_story_memory", user_id=self.user_id, story_id=self.story_id)
 
-        # Use namespaces (payload key) to separate story/characters/world
-        self.episodic_story = base.with_namespace("episodic_story")
-        self.episodic_characters = base.with_namespace("episodic_characters")
-        self.episodic_world = base.with_namespace("episodic_world")
+            # Use namespaces (payload key) to separate story/characters/world
+            self.episodic_story = base.with_namespace("episodic_story")
+            self.episodic_characters = base.with_namespace("episodic_characters")
+            self.episodic_worlds = base.with_namespace("episodic_worlds")
 
 
     # ---------- Short-Term Current Chapter ----------
@@ -70,13 +106,13 @@ class StoryMemorySystem:
         )
 
     def add_world_summary(self, summary: Dict[str,str], metadata: dict[str,int] = None):
-        self.episodic_world.put_dict_replace_world(data=summary, metadata=metadata or {})
+        self.episodic_worlds.put_dict_replace_world(data=summary, metadata=metadata or {})
 
     def search_episodic(self, query: str, metadata: dict = None, k=5):
         return {
             "story": self.episodic_story.search(query, metadata=metadata, k=k),
             "characters": self.episodic_characters.search(query, metadata=metadata, k=k),
-            "world": self.episodic_world.search(query, metadata=metadata, k=k),
+            "world": self.episodic_worlds.search(query, metadata=metadata, k=k),
         }
     
     def search_episodic_story_summary(self, chapter_number):
@@ -100,7 +136,7 @@ class StoryMemorySystem:
         )
 
     def add_world_detail(self, scene_bundle, metadata):
-        self.long_term_world.put_characters_or_world(
+        self.long_term_worlds.put_characters_or_world(
             details_dict=scene_bundle, metadata=metadata
         )
 
@@ -112,7 +148,7 @@ class StoryMemorySystem:
         return self.long_term_characters.get_all_characters_or_worlds()
     
     def get_long_term_worlds(self):
-        return self.long_term_world.get_all_characters_or_worlds()
+        return self.long_term_worlds.get_all_characters_or_worlds()
 
     # ---------- Director Docs (Long-Term) ----------
     def add_long_term_document(self, text: str, metadata: dict = None):
@@ -146,3 +182,25 @@ class StoryMemorySystem:
 
     def get_director_context(self, current_chapter_number, query: str, k=5):
         return self.get_context_for_scene(current_chapter_number, query, k)
+
+    def close(self):
+        for attr in [
+            "_long_term_story",
+            "_long_term_characters",
+            "_long_term_worlds",
+            "_long_term_docs",
+            "_long_term_story_progress",
+            "episodic_story",
+            "episodic_characters",
+            "episodic_world",
+        ]:
+            store = getattr(self, attr, None)
+            if store is not None and hasattr(store, "close"):
+                store.close()
+            setattr(self, attr, None)
+
+        import gc
+        gc.collect()
+
+    def cleanup(self):
+        self.close()

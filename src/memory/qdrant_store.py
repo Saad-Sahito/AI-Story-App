@@ -8,29 +8,26 @@ import os
 
 
 class QdrantStore:
-    def __init__(
-        self,
-        collection: str = "episodic_story_memory",
-        user_id: str = None,
-        story_id: str = None,
-        model_name: str = "sentence-transformers/all-MiniLM-L6-v2",
-        namespace: str = None,
-    ):
+    _shared_model = None   # global singleton
+
+    def __init__(self, collection: str = "episodic_story_memory", user_id: str = None, story_id: str = None, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", namespace: str = None):
         self.collection = collection
         self.user_id = user_id
         self.story_id = story_id
-        self.namespace = namespace  # ✅ store namespace
-
-        load_dotenv()
+        self.namespace = namespace
 
         self.client = QdrantClient(
             url=os.getenv("QDRANT_URL"),
             api_key=os.getenv("QDRANT_API_KEY"),
         )
 
-        # Reuse model if provided
+        # Load model only once across all instances
+        if QdrantStore._shared_model is None:
+            QdrantStore._shared_model = SentenceTransformer(model_name)
+
         self.model_name = model_name
-        self.model = SentenceTransformer(model_name)
+
+        self.model = QdrantStore._shared_model
         self.dim = self.model.get_sentence_embedding_dimension()
 
         # --- Ensure collection exists ---
@@ -63,6 +60,12 @@ class QdrantStore:
                 # Skip if index already exists
                 if "already exists" not in str(e):
                     raise
+                
+    @classmethod
+    def clear_shared_models(cls):
+        """Force clear all cached models to free memory."""
+        cls._shared_models.clear()
+        import gc; gc.collect()
 
     def with_namespace(self, namespace: str):
         """Return a new store bound to a namespace (same collection)."""
@@ -227,3 +230,12 @@ class QdrantStore:
             offset = next_offset
 
         return all_texts
+    
+    def close(self):
+        """Release Qdrant client. Model stays shared."""
+        if self.client:
+            try:
+                self.client.close()
+            except Exception:
+                pass
+        self.client = None

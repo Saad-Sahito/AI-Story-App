@@ -183,3 +183,12 @@ class SupabaseStore:
             .execute()
         )
         return {row["name"]: row["details"] for row in result.data if "name" in row}
+
+    def close(self):
+        """Release Supabase client to free memory references."""
+        if hasattr(self.client, "close") and callable(self.client.close):
+            try:
+                self.client.close()  # if supabase client supports it
+            except Exception:
+                pass
+        self.client = None

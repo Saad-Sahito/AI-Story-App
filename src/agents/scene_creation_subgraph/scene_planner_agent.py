@@ -1,6 +1,7 @@
 import asyncio
 import json
 import re
+import gc
 from typing import List, Optional
 from pydantic import BaseModel, Field
 
@@ -9,6 +10,7 @@ from langchain_core.messages import AIMessage, HumanMessage, BaseMessage
 from langgraph.store.memory import InMemoryStore
 from src.llm_client.llm_client import LLMClient
 #from src.memory.memory_system import StoryMemorySystem
+from src.utilities.story_helpers import StoryHelpers
 
 from langchain.output_parsers import PydanticOutputParser
 
@@ -105,12 +107,6 @@ class ScenePlannerGraph:
         self.compiled = self.graph.compile()
         self.question_boolean = False
         self._user_input_future = None
-
-    def _strip_code_fences(self, text: str) -> str:
-        if text.startswith("```"):
-            # remove leading/trailing ```json ... ```
-            return re.sub(r"^```[a-zA-Z]*\n|\n```$", "", text).strip()
-        return text
     
     async def wait_for_user_input(self):
         self._user_input_future = asyncio.Future()
@@ -160,14 +156,20 @@ class ScenePlannerGraph:
         """
         print("SCENE PLANNER HUMAN PROMPT: ", human_prompt)
         llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
-        strip = self._strip_code_fences(llm_response.content)
+        del human_prompt
+        strip = StoryHelpers._strip_code_fences(llm_response.content)
+        del llm_response
         match = re.search(r'(\{[\s\S]*?\})', strip)
+        del strip
 
         if match:
             try:
                 extracted_str = match.group(1)
+                del match
                 clean_resp_parsed = json.loads(extracted_str)
+                del extracted_str
                 next_node = "Complete" if clean_resp_parsed.get("action", "").lower() == "complete" else "Not Complete"
+                del clean_resp_parsed
             except Exception as e:
                 print("ScenePlanner JSON parsing failed:", e)
                 # fallback: treat as incomplete
@@ -177,8 +179,9 @@ class ScenePlannerGraph:
             # retry with stricter format instructions
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
             retry_resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
+            del system_prompt, retry_prompt
             try:
-                retry_clean = self._strip_code_fences(retry_resp.content)
+                retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
                 retry_json = json.loads(retry_clean)
                 next_node = "Complete" if retry_json.get("action", "").lower() == "complete" else "Not Complete"
             except:
@@ -221,7 +224,7 @@ class ScenePlannerGraph:
                 # No question to ask, just continue
                 scene_memory.UserInput = ""
                 state.scene_memory = scene_memory
-                
+        gc.collect()
         state.next_node = next_node
         return state
 
@@ -260,10 +263,11 @@ class ScenePlannerGraph:
 
         llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
         clean_resp = llm_response.content.strip()
-
+        del llm_response, human_prompt
         # Try parsing
         try:
             parsed = scene_writer_parser.parse(clean_resp)
+            del clean_resp
             scene_text = parsed.scene
             question_text = parsed.question
             number_of_options = parsed.number_of_options
@@ -273,7 +277,9 @@ class ScenePlannerGraph:
             # Retry with stricter reminder
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
             retry_resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
+            del system_prompt, retry_prompt
             retry_clean = retry_resp.content.strip()
+            del retry_resp
             try:
                 parsed = scene_writer_parser.parse(retry_clean)
                 scene_text = parsed.scene
@@ -287,8 +293,10 @@ class ScenePlannerGraph:
                 if match:
                     try:
                         recovered = json.loads(match.group(1))
+                        del match
                         scene_text = recovered.get("scene", "")
                         question_text = recovered.get("question", "")
+                        del recovered
                     except Exception as inner_e:
                         print("SceneWriter JSON recovery failed:", inner_e)
                         scene_text = retry_clean
@@ -296,7 +304,9 @@ class ScenePlannerGraph:
                 else:
                     # fallback: plain text
                     scene_text = retry_clean
+
                     question_text = ""
+            del retry_clean
 
 
         # --- update scene memory ---
@@ -337,6 +347,7 @@ class ScenePlannerGraph:
                     "type": "text",
                     "scene_text": scene_text
                 })
+        gc.collect()
         return state
 
 
@@ -358,12 +369,14 @@ class ScenePlannerGraph:
         result = await self.compiled.ainvoke(state, {"recursion_limit": 50})
 
         scene_memory: SceneMemory = result["scene_memory"]
-        
 
         if result.get("next_node") == "END":
             print("Reached END. Stopping execution.")
             return scene_memory.scene_so_far, scene_memory.scene_cluster
-
+        
+        # free instance internals
+        del self.graph, self.compiled, self.llm, self.memory_store  
+        gc.collect()
         return scene_memory.scene_so_far, scene_memory.scene_cluster
 
 
