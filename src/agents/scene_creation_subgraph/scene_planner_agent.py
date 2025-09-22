@@ -106,15 +106,16 @@ class ScenePlannerGraph:
 
         self.compiled = self.graph.compile()
         self.question_boolean = False
-        self._user_input_future = None
+        #self._user_input_future = None
+        self.user_input_queue = asyncio.Queue()
+
     
     async def wait_for_user_input(self):
-        self._user_input_future = asyncio.Future()
-        return await self._user_input_future
+        return await self.user_input_queue.get()
 
-    def receive_user_input(self, choice: str):
-        if self._user_input_future and not self._user_input_future.done():
-            self._user_input_future.set_result(choice)
+    # def receive_user_input(self, choice: str):
+    #     if self._user_input_future and not self._user_input_future.done():
+    #         self._user_input_future.set_result(choice)
 
     # -------------------------
     # Initializes Context
@@ -155,7 +156,7 @@ class ScenePlannerGraph:
         {scene_planner_parser.get_format_instructions()}
         """
         print("SCENE PLANNER HUMAN PROMPT: ", human_prompt)
-        llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        llm_response = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
         del human_prompt
         strip = StoryHelpers._strip_code_fences(llm_response.content)
         del llm_response
@@ -178,7 +179,7 @@ class ScenePlannerGraph:
             print("ScenePlanner: No valid JSON found, retrying...")
             # retry with stricter format instructions
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
-            retry_resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
+            retry_resp = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
             del system_prompt, retry_prompt
             try:
                 retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
@@ -261,7 +262,7 @@ class ScenePlannerGraph:
         """
         print("SCENE WRITER HUMAN PROMPT: ", human_prompt)
 
-        llm_response = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        llm_response = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
         clean_resp = llm_response.content.strip()
         del llm_response, human_prompt
         # Try parsing
@@ -276,7 +277,7 @@ class ScenePlannerGraph:
 
             # Retry with stricter reminder
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
-            retry_resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
+            retry_resp = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
             del system_prompt, retry_prompt
             retry_clean = retry_resp.content.strip()
             del retry_resp
@@ -354,7 +355,7 @@ class ScenePlannerGraph:
     # ------------------------
     # Run full scene
     # ------------------------
-    async def run(self, state: dict, scene_chunk_callback) -> str:
+    async def run(self, state: SceneState, scene_chunk_callback) -> str:
         # initialize scene memory only if it's missing
         # if not state.scene_memory:
         state.scene_memory = SceneMemory(
@@ -375,8 +376,8 @@ class ScenePlannerGraph:
             return scene_memory.scene_so_far, scene_memory.scene_cluster
         
         # free instance internals
-        del self.graph, self.compiled, self.llm, self.memory_store  
-        gc.collect()
+        # del self.graph, self.compiled, self.llm, self.memory_store  
+        # gc.collect()
         return scene_memory.scene_so_far, scene_memory.scene_cluster
 
 

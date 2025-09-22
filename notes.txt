@@ -2,9 +2,9 @@ docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
 
 docker run -d -p 27017:27017 --name mongodb mongo:7.0
 
-uvicorn connection.connections:app --reload
+uvicorn main:app --reload
 
-python -m connection.main_nicegui.py
+python -m main_nicegui.py
 
 git add .
 git commit -m "some text"

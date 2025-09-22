@@ -192,7 +192,7 @@ class StoryMemorySystem:
             "_long_term_story_progress",
             "episodic_story",
             "episodic_characters",
-            "episodic_world",
+            "episodic_worlds",
         ]:
             store = getattr(self, attr, None)
             if store is not None and hasattr(store, "close"):

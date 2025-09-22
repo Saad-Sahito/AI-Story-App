@@ -101,7 +101,7 @@ class Ingestor:
         Respond ONLY in JSON with this schema:
         {scene_parser.get_format_instructions()}
         """
-        self.memory.close()
+        
         print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
         for attempt in range(1, max_retries + 1):
             resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
@@ -140,7 +140,7 @@ class Ingestor:
                     state.word_count += StoryHelpers._count_words_split(scene_text)
                     state.scene_id += 1
                     self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "word_count": state.word_count, "story_title": state.story_title})
-                    self.memory.close()
+                    
                     del system_prompt, human_prompt, scene_text
                     return result
 
@@ -174,7 +174,7 @@ class Ingestor:
         #chapter_content = self.memory.get_current_chapter()
         world_details = self.memory.get_long_term_worlds()
         char_details = self.memory.get_long_term_characters()
-        self.memory.close()
+        
         # self.memory.add_story_chapter(
         #     text=chapter_content,
         #     metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
@@ -221,7 +221,7 @@ class Ingestor:
                 state.current_chapter_id += 1
                 state.scene_id = 1
                 self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
-                self.memory.close()
+                
                 print("Chapter Complete!")
                 result.update({
                     "current_chapter_id": state.current_chapter_id,
@@ -249,7 +249,7 @@ class Ingestor:
                     state.current_chapter_id += 1
                     state.scene_id = 1
                     self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
-                    self.memory.close()
+                    
                     print("Chapter Complete!")
                     result.update({
                         "current_chapter_id": state.current_chapter_id,
@@ -287,9 +287,9 @@ class Ingestor:
 # Main director class
 # -----------------------------
 class DirectorGraph:
-    def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem):
+    def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem, sceneplanner: ScenePlannerGraph):
         self.llm = llm_client
-        
+        self.sceneplanner = sceneplanner
         self.memory = memory_system
     
         self.graph = StateGraph(StoryState)
@@ -319,9 +319,9 @@ class DirectorGraph:
     async def generate_and_ingest_node(self, state: StoryState):
         """Generates a new scene and ingests it, with streaming chunks."""
         print("Called Generate and Ingest Node!")
-        sceneplanner = ScenePlannerGraph(llm_client=self.llm)
-        scene_text, scene_cluster = await sceneplanner.run(state, self.scene_chunk_callback)
-        del sceneplanner
+        #sceneplanner = ScenePlannerGraph(llm_client=self.llm)
+        scene_text, scene_cluster = await self.sceneplanner.run(state, self.scene_chunk_callback)
+        #del sceneplanner
         #print("FINAL SCENE TEXT: ", scene_text)
 
         # create Ingestor only for this ingestion
@@ -338,7 +338,7 @@ class DirectorGraph:
                       "chapter_id": state.current_chapter_id,
                       "story_title": state.story_title},
         )
-        self.memory.close()
+        
         del scene_bundle, scene_cluster, scene_text
         gc.collect()
 
@@ -371,7 +371,7 @@ class DirectorGraph:
     # -----------------------------
     # Director node
     # -----------------------------
-    def director_node(self, state: StoryState) -> Dict:
+    async def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
         # story_dictionary = self.memory.get_story_progress()
         # if story_dictionary and "latest_chapter_id" in story_dictionary:
@@ -425,7 +425,7 @@ class DirectorGraph:
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
         )
-        self.memory.close()
+        
         print("CONTEXT TO DIRECTOR:", context)
         human_prompt = f"""
         {context}
@@ -436,7 +436,7 @@ class DirectorGraph:
         scenario, action = None, None
 
         for attempt in range(1, max_retries + 1):
-            resp = self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW DIRECTOR RESPONSE:", clean_resp)
@@ -504,7 +504,7 @@ class DirectorGraph:
         #self.memory.reset_current_chapter()
         self.scene_chunk_callback = scene_chunk_callback
         story_progress = self.memory.get_story_progress()
-        self.memory.close()
+
         if story_progress:
             # Use existing state from memory if available
             initialized_state = StoryState(
@@ -526,6 +526,8 @@ class DirectorGraph:
                 next_action=""
             )
         result = await self.compiled.ainvoke(initialized_state, {"recursion_limit": 50})
+        
+        
         #text = result["scene_memory"].get("scene_so_far", "")
         print("Director Node Finished: ", result)
         return result

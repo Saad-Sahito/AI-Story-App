@@ -9,7 +9,9 @@ from src.llm_client.llm_client import LLMClient
 from src.memory.memory_system import StoryMemorySystem
 from src.agents.story_author import StoryAuthor
 from src.agents.director_agent import DirectorGraph
+from src.agents.scene_creation_subgraph.scene_planner_agent import ScenePlannerGraph
 from src.memory.user_management import append_story
+from starlette.websockets import WebSocketState
 
 
 SESSIONS = {}
@@ -20,17 +22,20 @@ class APIBackend:
 
     # ---------------- Session Management ----------------
     def setup_user_SESSION(self, user_id: str, story_id: str, memory_system=None, story_author=None):
-        director = DirectorGraph(llm_client=self.llm_client, memory_system=memory_system)
-
+        sceneplanner = ScenePlannerGraph(llm_client=self.llm_client)
+        director = DirectorGraph(llm_client=self.llm_client, memory_system=memory_system, sceneplanner=sceneplanner)
+        
         if user_id not in SESSIONS:
             SESSIONS[user_id] = {"last_active": time.time()}
 
         SESSIONS[user_id][story_id] = {
             "memory_system": memory_system,
             "story_author": story_author,
+            "sceneplanner": sceneplanner,
             "director": director,
             "user_input_future": None,
         }
+        #del SESSIONS[user_id][story_id]["sceneplanner"]
         SESSIONS[user_id]["last_active"] = time.time()
 
 
@@ -42,7 +47,7 @@ class APIBackend:
         memory_system.qdrant_initialize()
 
         story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
-        append_story(user_id=user_id, story_title=story_title, story_id=story_id)
+        #append_story(user_id=user_id, story_title=story_title, story_id=story_id)
         self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
         return {"status": "success", "message": f"Story initialized for {user_id}", "story_id": story_id}
 
@@ -130,88 +135,102 @@ class APIBackend:
 
 
     async def handle_story_websocket(self, websocket: WebSocket):
-        """
-        Handles WebSocket story session:
-        - Sends scene chunks and decision points to client
-        - Receives user choices and feeds them back into sceneplanner
-        """
         await websocket.accept()
         try:
-            # Expect init {user_id, story_id}
+            # Receive init data
             init_data = await websocket.receive_json()
             user_id = init_data.get("user_id")
             story_id = init_data.get("story_id")
 
-            # Validate session and story
             user_data = SESSIONS.get(user_id)
             if not user_data:
                 await websocket.send_json({"error": "Invalid user ID"})
                 await websocket.close()
                 return
-
             story_data = user_data.get(story_id)
             if not story_data:
                 await websocket.send_json({"error": "Invalid story ID"})
                 await websocket.close()
                 return
 
-            queue = asyncio.Queue(maxsize=10)
+            queue = asyncio.Queue()
 
             def scene_chunk_callback(chunk: dict):
-                """Receive already-formatted dicts from scene writer/planner."""
+                """Receive dicts from sceneplanner"""
                 queue.put_nowait(chunk)
 
             async def send_loop():
-                """Send story chunks and decisions to client"""
-                while True:
-                    item = await queue.get()
-                    if item is None:
-                        break
-                    await websocket.send_json(item)   # <-- send as proper JSON
+                try:
+                    while True:
+                        item = await queue.get()
+                        if item is None:
+                            break
+                        await websocket.send_json(item)
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    print("❌ send_loop error:", e)
+
+            async def recv_loop():
+                try:
+                    while True:
+                        msg = await websocket.receive_json()
+                        if "choice" in msg:
+                            choice = msg["choice"].strip()
+                            if not choice:
+                                continue
+
+                            sceneplanner = story_data.get("sceneplanner")
+                            if sceneplanner and hasattr(sceneplanner, "user_input_queue"):
+                                # Add this check to make sure queue exists
+                                if sceneplanner.user_input_queue is not None:
+                                    sceneplanner.user_input_queue.put_nowait(choice)
+                                    print(f"✅ Received choice: {choice}")
+                                else:
+                                    print("⚠️ ScenePlanner user_input_queue is None!")
+                            else:
+                                print("⚠️ ScenePlanner has no user_input_queue!")
+
+                except WebSocketDisconnect:
+                    print("❌ Client disconnected")
+                except asyncio.CancelledError:
+                    return
+                except Exception as e:
+                    print("❌ recv_loop error:", e)
 
 
             async def run_director():
-                # Run the director, which will call our callback
                 await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
-                # After run ends, send chapter complete
                 await queue.put({"chapter_complete": True})
                 await queue.put(None)
 
-            # Launch director
+            # Start loops
             director_task = asyncio.create_task(run_director())
-            try:
-                await asyncio.gather(send_loop(), recv_loop())
-            finally:
-                director_task.cancel()
-                await websocket.close()
+            send_task = asyncio.create_task(send_loop())
+            recv_task = asyncio.create_task(recv_loop())
 
-            async def recv_loop():
-                """Listen for user choices from client"""
-                while True:
-                    try:
-                        msg = await websocket.receive_json()
-                    except WebSocketDisconnect:
-                        break
+            # Run concurrently and exit if one fails
+            # done, pending = await asyncio.wait(
+            #     [director_task, send_task, recv_task],
+            #     return_when=asyncio.FIRST_EXCEPTION
+            # )
+            # Run all tasks until they complete or are canceled naturally
+            await asyncio.gather(director_task, send_task, recv_task, return_exceptions=True)
 
-                    if "choice" in msg:
-                        choice = msg["choice"].strip()
-                        if not choice:
-                            continue
-                        # Fulfill the future in sceneplanner
-                        sceneplanner = story_data["sceneplanner"]
-                        future = getattr(sceneplanner, "_user_input_future", None)
-                        if future and not future.done():
-                            future.set_result(choice)
-                        print(f"✅ Received choice: {choice}")
+            # Cancel any still-running tasks
+            # for task in pending:
+            #     task.cancel()
+            # await asyncio.gather(*pending, return_exceptions=True)
 
-            # Run both loops concurrently
-            await asyncio.gather(send_loop(), recv_loop())
-
-        except WebSocketDisconnect:
-            print("❌ Client disconnected")
         except Exception as e:
             print("⚠️ Error in handle_story_websocket:", e)
-            await websocket.close()
+        finally:
+            try:
+                await websocket.close()
+            except RuntimeError:
+                # Already closed, ignore
+                pass
+
 
 
     def logout(user_id: str):

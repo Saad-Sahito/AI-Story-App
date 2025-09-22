@@ -14,7 +14,7 @@ class QdrantStore:
         self.collection = collection
         self.user_id = user_id
         self.story_id = story_id
-        self.namespace = namespace
+        self.namespace = namespace or "default"
 
         self.client = QdrantClient(
             url=os.getenv("QDRANT_URL"),
@@ -60,7 +60,7 @@ class QdrantStore:
                 # Skip if index already exists
                 if "already exists" not in str(e):
                     raise
-                
+
     @classmethod
     def clear_shared_models(cls):
         """Force clear all cached models to free memory."""
@@ -83,6 +83,8 @@ class QdrantStore:
     # ---------- Upserts ----------
     def put(self, text: str, metadata: Dict = None):
         vec = self._embed_text(text)
+        print(f"Embedding length: {len(vec)}")  # should match self.dim
+        print(f"Embedding dimension: {self.dim}")
         payload = metadata.copy() if metadata else {}
         payload.update({
             "text": text,

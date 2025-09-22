@@ -24,9 +24,9 @@ async def root():
 
 try:
     api_backend = APIBackend()
-    print(">>> MainTest initialized successfully")
+    print(">>> APIBackend initialized successfully")
 except Exception as e:
-    print(">>> ERROR during MainTest init:", e)
+    print(">>> ERROR during APIBackend init:", e)
     traceback.print_exc()
 
 

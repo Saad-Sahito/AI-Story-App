@@ -41,7 +41,31 @@ class LLMClient:
     #         if hasattr(chunk, "content") and chunk.content:
     #             yield chunk.content
 
-    def groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    async def groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+        """Blocking call to Groq LLM – returns the full response and token counts."""
+        # The .invoke() method returns an object that contains the response metadata
+        response = self.llm_groq.invoke([
+            SystemMessage(content=system_prompt),
+            HumanMessage(content=human_prompt)
+        ])
+        
+        # Access the token usage from the response's metadata
+        token_usage = response.response_metadata.get('token_usage', {})
+
+        # Extract the prompt and completion token counts
+        prompt_tokens = token_usage.get('prompt_tokens', 0)
+        completion_tokens = token_usage.get('completion_tokens', 0)
+        total_tokens = token_usage.get('total_tokens', 0)
+        
+        print("--- Token Usage ---")
+        print(f"Prompt Tokens (Input): {prompt_tokens}")
+        print(f"Completion Tokens (Output): {completion_tokens}")
+        print(f"Total Tokens: {total_tokens}")
+        print("-------------------")
+        time.sleep(4)  # delay to avoid rate limits
+        return response
+    
+    def no_sync_groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
         response = self.llm_groq.invoke([
