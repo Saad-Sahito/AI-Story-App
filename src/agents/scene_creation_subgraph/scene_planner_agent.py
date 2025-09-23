@@ -120,120 +120,36 @@ class ScenePlannerGraph:
     # -------------------------
     # Initializes Context
     # -------------------------
-    def initializer(self, state: dict) -> dict:  
+    def _initializer(self, state: dict) -> dict:
+        user_context_id = getattr(state, 'user_context_id', None)
+        print(f"🔍 DEBUG: Initializer called with user_context_id: {user_context_id}")
         director_instructions = ""
         for msg in reversed(state.messages):
             if isinstance(msg, AIMessage):
                 director_instructions = msg.content
                 break
-
-        # Initialize SceneMemory properly
+        
         state.scene_memory = SceneMemory(
             DirectorInstructions=director_instructions.strip(),
-            scene_so_far=""   # will accumulate later
+            scene_so_far="",
+            story_id=state.scene_memory.story_id if state.scene_memory else ""
         )
+        # Preserve user_context_id
+        if user_context_id:
+            state.user_context_id = user_context_id
         return state
 
 
     # ------------------------
     # Scene Planner
     # ------------------------
-    async def scene_planner_agent(self, state: dict) -> dict:
-        """
-        Determines if the SceneWriter has completed the scene based on Director's instructions.
-        """
+    async def _scene_writer_agent(self, state: dict) -> dict:
+        print("Running Scene Writer...")
         scene_memory: SceneMemory = state.scene_memory
-
-        system_prompt = "You are a scene context guard. See if the scene blueprint is completed, including the decision points. " \
-        "Output strictly according to schema."
-        human_prompt = f"""
-        Director Instructions:
-        {scene_memory.DirectorInstructions}
-
-        Scene So Far:
-        {scene_memory.scene_so_far_for_scene_planner}
-
-        {scene_planner_parser.get_format_instructions()}
-        """
-        print("SCENE PLANNER HUMAN PROMPT: ", human_prompt)
-        llm_response = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
-        del human_prompt
-        strip = StoryHelpers._strip_code_fences(llm_response.content)
-        del llm_response
-        match = re.search(r'(\{[\s\S]*?\})', strip)
-        del strip
-
-        if match:
-            try:
-                extracted_str = match.group(1)
-                del match
-                clean_resp_parsed = json.loads(extracted_str)
-                del extracted_str
-                next_node = "Complete" if clean_resp_parsed.get("action", "").lower() == "complete" else "Not Complete"
-                del clean_resp_parsed
-            except Exception as e:
-                print("ScenePlanner JSON parsing failed:", e)
-                # fallback: treat as incomplete
-                next_node = "Not Complete"
-        else:
-            print("ScenePlanner: No valid JSON found, retrying...")
-            # retry with stricter format instructions
-            retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
-            retry_resp = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
-            del system_prompt, retry_prompt
-            try:
-                retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
-                retry_json = json.loads(retry_clean)
-                next_node = "Complete" if retry_json.get("action", "").lower() == "complete" else "Not Complete"
-            except:
-                next_node = "Not Complete"
-
-
-        print("SCENE PLANNER RESPONSE: ", next_node)
-        #print("QUESTION: ", scene_memory.ai_question)
-        if next_node == "Not Complete":
-            if self.question_boolean:
-                text={
-                        "type": "decision",
-                        "question": scene_memory.ai_question.strip(),
-                        "options": scene_memory.number_of_options,
-                        "user_choice": ""  # to be filled after user input,
-                    }
-                
-                self.scene_chunk_callback(text)
-
-                user_choice = await self.wait_for_user_input()
-                scene_memory.scene_cluster.append(
-                    {
-                        "type": "decision",
-                        "question": scene_memory.ai_question.strip(),
-                        "options": scene_memory.number_of_options,
-                        "user_choice": user_choice.strip()
-                    }
-                    # metadata={
-                    #     "chapter_id": state.current_chapter_id,
-                    #     "story_title": state.story_title,
-                    #     "scene_id": state.scene_id,
-                    # }
-                )
-
-                print("USER CHOICE RECEIVED: ", user_choice)
-                scene_memory.UserInput = user_choice
-                state.scene_memory = scene_memory
-
-            else:
-                # No question to ask, just continue
-                scene_memory.UserInput = ""
-                state.scene_memory = scene_memory
-        gc.collect()
-        state.next_node = next_node
-        return state
-
-    # ------------------------
-    # Scene Writer
-    # ------------------------
-    async def scene_writer_agent(self, state: dict) -> dict:
-        scene_memory: SceneMemory = state.scene_memory
+        user_context_id = getattr(state, 'user_context_id', None)
+        print(f"🔍 DEBUG: SceneWriter user_context_id: {user_context_id}")
+        print(f"🔍 DEBUG: SceneWriter called for scene: {scene_memory.scene_so_far[:100]}...")
+        
         system_prompt = (
             "You are the Scene Writer Agent. Follow schema strictly. "
             "The Director's Instructions will include a recap of the story so far, "
@@ -244,8 +160,7 @@ class ScenePlannerGraph:
             "Do not produce more user decision points than what the Director includes. "
             "Do not make up any new characters or worlds that the Director has not mentioned. "
             "Do not repeat the entire scene so far, only continue it with one new paragraph. "
-            "If the scene is complete, just write the next paragraph of the scene."
-            "You may give upto two - four options for the user to choose from, include them in the question, mark each with letters."
+            "You may give up to two - four options for the user to choose from, include them in the question, mark each with letters. "
             "Include the number of options in the 'number_of_options' field."
         )
 
@@ -258,38 +173,45 @@ class ScenePlannerGraph:
         {f"Your Question: {scene_memory.ai_question}" if scene_memory.ai_question else ""}
         {f"(The user chose: {scene_memory.UserInput})" if scene_memory.UserInput else ""}
 
-        {scene_writer_parser.get_format_instructions()}
+        {self.scene_writer_parser.get_format_instructions()}
         """
-        print("SCENE WRITER HUMAN PROMPT: ", human_prompt)
 
-        llm_response = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        print(f"🔍 DEBUG: Calling llm.groq_client in SceneWriter")
+        try:
+            llm_response = await asyncio.wait_for(
+                self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                timeout=60.0
+            )
+        except asyncio.TimeoutError:
+            print(f"❌ TIMEOUT: LLM call in SceneWriter timed out after 60 seconds")
+            return state
+        print(f"🔍 DEBUG: SceneWriter got LLM response: {llm_response.content[:100]}...")
+        
         clean_resp = llm_response.content.strip()
         del llm_response, human_prompt
-        # Try parsing
+
         try:
-            parsed = scene_writer_parser.parse(clean_resp)
+            parsed = self.scene_writer_parser.parse(clean_resp)
             del clean_resp
             scene_text = parsed.scene
             question_text = parsed.question
             number_of_options = parsed.number_of_options
         except Exception as e:
             print("SceneWriter parsing failed:", e)
-
-            # Retry with stricter reminder
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
-            retry_resp = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt)
-            del system_prompt, retry_prompt
-            retry_clean = retry_resp.content.strip()
-            del retry_resp
             try:
-                parsed = scene_writer_parser.parse(retry_clean)
+                retry_resp = await asyncio.wait_for(
+                    self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
+                    timeout=60.0
+                )
+                retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
+                del retry_resp
+                parsed = self.scene_writer_parser.parse(retry_clean)
                 scene_text = parsed.scene
                 question_text = parsed.question
                 number_of_options = parsed.number_of_options
             except Exception as retry_e:
                 print("SceneWriter retry parsing failed:", retry_e)
-
-                # Try regex-based JSON recovery
                 match = re.search(r'(\{[\s\S]*\})', retry_clean)
                 if match:
                     try:
@@ -297,35 +219,28 @@ class ScenePlannerGraph:
                         del match
                         scene_text = recovered.get("scene", "")
                         question_text = recovered.get("question", "")
+                        number_of_options = recovered.get("number_of_options", 0)
                         del recovered
                     except Exception as inner_e:
                         print("SceneWriter JSON recovery failed:", inner_e)
                         scene_text = retry_clean
                         question_text = ""
+                        number_of_options = 0
                 else:
-                    # fallback: plain text
                     scene_text = retry_clean
-
                     question_text = ""
+                    number_of_options = 0
             del retry_clean
 
+        print(f"🔍 DEBUG: SceneWriter parsed - scene_text: {scene_text[:50]}..., question: {question_text}, options: {number_of_options}")
 
-        # --- update scene memory ---
         if scene_memory.UserInput:
             scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
 
-        scene_memory.scene_cluster.append(
-            {
-                    "type": "text",
-                    "scene_text": scene_text
-                }
-            # metadata={
-            #     "chapter_id": state.current_chapter_id, 
-            #     "story_title": state.story_title, 
-            #     "scene_id": state.scene_id,
-            #     # "word_count": state.word_count
-            # }
-        )
+        scene_memory.scene_cluster.append({
+            "type": "text",
+            "scene_text": scene_text
+        })
 
         scene_memory.scene_so_far += " " + scene_text + "\n\n"
         scene_memory.scene_so_far_for_scene_planner += scene_text + "\n"
@@ -333,21 +248,146 @@ class ScenePlannerGraph:
         if question_text.strip():
             scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
             scene_memory.ai_question = question_text.strip()
-            scene_memory.number_of_options = number_of_options if number_of_options>0 else 1
-            self.question_boolean = True
+            scene_memory.number_of_options = number_of_options if number_of_options > 0 else 1
         else:
             scene_memory.ai_question = ""
-            self.question_boolean = False
             scene_memory.number_of_options = 0
 
         state.scene_memory = scene_memory
 
-        # Stream the scene chunk back
-        #self.scene_chunk_callback(json.dumps({"scene_chunk": scene_text}) + "\n")
-        self.scene_chunk_callback({
-                    "type": "text",
-                    "scene_text": scene_text
-                })
+        # Stream the scene chunk back through user's callback
+        if user_context_id:
+            try:
+                from connection.api_backend import SESSIONS
+                user_data = SESSIONS.get(user_context_id, {})
+                story_data = user_data.get(scene_memory.story_id, {})
+                scene_chunk_callback = story_data.get("director", {}).scene_chunk_callback
+                if scene_chunk_callback:
+                    print(f"🔍 DEBUG: Sending scene text to frontend for {user_context_id}/{scene_memory.story_id}")
+                    scene_chunk_callback({
+                        "type": "text",
+                        "scene_text": scene_text
+                    })
+                else:
+                    print(f"❌ ERROR: No scene_chunk_callback found for {user_context_id}/{scene_memory.story_id}")
+            except Exception as e:
+                print(f"❌ ERROR: Failed to send scene text to frontend: {e}")
+                import traceback
+                traceback.print_exc()
+
+        gc.collect()
+        return state
+
+    async def _scene_planner_agent(self, state: dict) -> dict:
+        print("Running Scene Planner...")
+        scene_memory: SceneMemory = state.scene_memory
+        user_context_id = getattr(state, 'user_context_id', None)
+        print(f"🔍 DEBUG: ScenePlanner user_context_id: {user_context_id}")
+        print(f"🔍 DEBUG: Scene planner agent called for scene: {scene_memory.scene_so_far_for_scene_planner[:100]}...")
+
+        system_prompt = "You are a scene context guard. See if the scene blueprint is completed, including the decision points. Output strictly according to schema."
+        human_prompt = f"""
+        Director Instructions:
+        {scene_memory.DirectorInstructions}
+
+        Scene So Far:
+        {scene_memory.scene_so_far_for_scene_planner}
+
+        {self.scene_planner_parser.get_format_instructions()}
+        """
+        
+        print(f"🔍 DEBUG: Calling llm.groq_client in ScenePlanner")
+        try:
+            llm_response = await asyncio.wait_for(
+                self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                timeout=60.0
+            )
+        except asyncio.TimeoutError:
+            print(f"❌ TIMEOUT: LLM call in ScenePlanner timed out after 60 seconds")
+            state.next_node = "Complete"
+            return state
+        print(f"🔍 DEBUG: ScenePlanner got LLM response: {llm_response.content[:100]}...")
+        
+        strip = StoryHelpers._strip_code_fences(llm_response.content)
+        match = re.search(r'(\{[\s\S]*?\})', strip)
+
+        if match:
+            try:
+                extracted_str = match.group(1)
+                clean_resp_parsed = json.loads(extracted_str)
+                next_node = "Complete" if clean_resp_parsed.get("action", "").lower() == "complete" else "Not Complete"
+            except Exception as e:
+                print("ScenePlanner JSON parsing failed:", e)
+                next_node = "Not Complete"
+        else:
+            print("ScenePlanner: No valid JSON found, retrying...")
+            retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
+            try:
+                retry_resp = await asyncio.wait_for(
+                    self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
+                    timeout=60.0
+                )
+                retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
+                retry_json = json.loads(retry_clean)
+                next_node = "Complete" if retry_json.get("action", "").lower() == "complete" else "Not Complete"
+            except asyncio.TimeoutError:
+                print(f"❌ TIMEOUT: LLM retry call in ScenePlanner timed out after 60 seconds")
+                next_node = "Complete"
+            except Exception:
+                next_node = "Not Complete"
+
+        print(f"🔍 DEBUG: ScenePlanner determined next_node: {next_node}")
+        
+        if next_node == "Not Complete" and scene_memory.ai_question.strip():
+            print(f"🔍 DEBUG: Need user input for question: {scene_memory.ai_question}")
+            try:
+                from connection.api_backend import SESSIONS
+                text = {
+                    "type": "decision",
+                    "question": scene_memory.ai_question.strip(),
+                    "options": scene_memory.number_of_options,
+                    "user_choice": ""
+                }
+                if user_context_id:
+                    print(f"🔍 DEBUG: Sending question callback for user {user_context_id}")
+                    user_data = SESSIONS.get(user_context_id, {})
+                    story_data = user_data.get(scene_memory.story_id, {})
+                    scene_chunk_callback = story_data.get("director", {}).scene_chunk_callback
+                    if scene_chunk_callback:
+                        print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}")
+                        scene_chunk_callback(text)
+                    user_input_queue = story_data.get("user_input_queue")
+                    if user_input_queue:
+                        print(f"🔍 DEBUG: Waiting for user input from queue for {user_context_id}/{scene_memory.story_id}")
+                        try:
+                            user_choice = await asyncio.wait_for(user_input_queue.get(), timeout=30.0)
+                            print(f"✅ DEBUG: Received user choice: {user_choice}")
+                            scene_memory.scene_cluster.append({
+                                "type": "decision",
+                                "question": scene_memory.ai_question.strip(),
+                                "options": scene_memory.number_of_options,
+                                "user_choice": user_choice.strip()
+                            })
+                            scene_memory.UserInput = user_choice
+                        except asyncio.TimeoutError:
+                            print(f"❌ TIMEOUT: No user input received within 30 seconds for {user_context_id}/{scene_memory.story_id}")
+                            scene_memory.UserInput = ""
+                    else:
+                        print(f"❌ ERROR: No user input queue found for {user_context_id}/{scene_memory.story_id}")
+                        scene_memory.UserInput = ""
+                else:
+                    print("❌ ERROR: No user context ID available")
+                    scene_memory.UserInput = ""
+            except Exception as e:
+                print(f"❌ ERROR in user input handling: {e}")
+                import traceback
+                traceback.print_exc()
+                scene_memory.UserInput = ""
+        else:
+            scene_memory.UserInput = ""
+        
+        state.scene_memory = scene_memory
+        state.next_node = next_node
         gc.collect()
         return state
 
