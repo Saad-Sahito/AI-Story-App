@@ -3,47 +3,39 @@
 import asyncio
 import time
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
-from src.llm_client.llm_client import LLMClient
-from src.memory.memory_system import StoryMemorySystem
-from src.agents.story_author import StoryAuthor
-from src.agents.director_agent_modified import DirectorGraph
-from src.memory.user_management import append_story
-from starlette.websockets import WebSocketState
-
-# Import the shared scene planner service
-from src.agents.scene_creation_subgraph.shared_scene_planner import (
-    SharedScenePlannerService, 
-    UserSceneContext,
-    SHARED_SCENE_PLANNER_SERVICE  # This line is crucial
-)
-import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
-# Keep the other imports for classes: from src.agents.scene_creation_subgraph.shared_scene_planner import SharedScenePlannerService, UserSceneContext
+from dotenv import load_dotenv
+from memory_profiler import profile
 SESSIONS = {}
 
 # Global shared instances
 SHARED_LLM_CLIENT = None
-SHARED_SCENE_PLANNER = None
+#SHARED_SCENE_PLANNER = None
+
+from src.llm_client.llm_client import get_shared_client
+from src.memory.memory_system import StoryMemorySystem
+from src.agents.story_author import StoryAuthor
+from src.agents.director_agent_modified import DirectorGraph
+import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
+
+# Initialize global shared LLM client
+load_dotenv()
+
 
 class APIBackend:
     def __init__(self):
-        # Initialize shared instances once
-        global SHARED_LLM_CLIENT  # This can stay, since SHARED_LLM_CLIENT is defined in this module.
+        # Initialize the shared LLM client
+        self.llm_client = get_shared_client()
         
-        if SHARED_LLM_CLIENT is None:
-            SHARED_LLM_CLIENT = LLMClient()
-            print("Initialized shared LLM client")
-        
-        # No global needed for scene planner - assign to the module's var
+        # Initialize shared scene planner service
         if scene_planner_module.SHARED_SCENE_PLANNER_SERVICE is None:
-            scene_planner_module.SHARED_SCENE_PLANNER_SERVICE = SharedScenePlannerService(SHARED_LLM_CLIENT)
+            scene_planner_module.SHARED_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
             print("Initialized shared scene planner service")
-        
-        self.llm_client = SHARED_LLM_CLIENT
 
     # ---------------- Session Management ----------------
+    @profile
     def setup_user_SESSION(self, user_id: str, story_id: str, memory_system=None, story_author=None):
         # Create director that uses the shared scene planner service
-        director = DirectorGraph(llm_client=self.llm_client, memory_system=memory_system)
+        director = DirectorGraph(memory_system=memory_system)
         
         if user_id not in SESSIONS:
             SESSIONS[user_id] = {"last_active": time.time()}
@@ -60,17 +52,20 @@ class APIBackend:
         SESSIONS[user_id]["last_active"] = time.time()
 
     # ---------------- Story Flow ----------------
+    @profile
     def initialize_story(self, user_id: str, story_title: str = ""):
         story_title_normalized = story_title.lower().replace(" ", "_")
         story_id = story_title_normalized + "_" + user_id 
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
+        
         memory_system.qdrant_initialize()
 
         # Still need story_author for premise creation
-        story_author = StoryAuthor(llm_client=self.llm_client, memory_system=memory_system)
+        story_author = StoryAuthor(memory_system=memory_system)
         self.setup_user_SESSION(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
         return {"status": "success", "message": f"Story initialized for {user_id}", "story_id": story_id}
 
+    @profile
     def continue_story(self, user_id: str, story_id: str) -> dict:
         if not user_id:
             raise HTTPException(status_code=403, detail="Please enter a valid User ID.")
@@ -93,6 +88,7 @@ class APIBackend:
         )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
 
+    @profile
     async def create_premise(self, initial_story_data: dict):
         tone_dict = {
             0: "Light", 20: "Humorous", 40: "Epic", 
@@ -138,11 +134,11 @@ class APIBackend:
         form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
 
         # Use the story_author for premise creation
-        await asyncio.to_thread(
-            story_data["story_author"].set_story_premise,
+        await story_data["story_author"].set_story_premise(
             form_string,
             initial_story_data.get("Title", ""),
         )
+
 
         story_data["memory_system"].update_story_progress(
             metadata={
@@ -159,6 +155,7 @@ class APIBackend:
         
         return {"status": "success", "premise": "Premise set."}
 
+    @profile
     async def handle_story_websocket(self, websocket: WebSocket):
         await websocket.accept()
         try:
@@ -278,6 +275,7 @@ class APIBackend:
         for user_id in users_to_remove:
             print(f"Cleaning up inactive session for user: {user_id}")
             APIBackend.logout(user_id)
+            
         
         return len(users_to_remove)
 

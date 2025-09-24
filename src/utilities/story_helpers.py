@@ -2,8 +2,9 @@
 
 import re
 import json
-from typing import Any, Dict, List, Tuple, Optional
+from typing import Any, Dict, Tuple, Optional
 from langchain_core.messages import AIMessage
+from src.llm_client.llm_client import gemini_client  # Import the convenience function
 
 
 class StoryHelpers:
@@ -171,7 +172,7 @@ class StoryHelpers:
         return False, None, last_exc
 
     @staticmethod
-    def _json_fixer(text: str, llm) -> str:
+    def _json_fixer(text: str) -> str:
         """
         Uses the provided llm client to repair malformed JSON strings.
         The llm client must implement .gemini_client(system_prompt=..., human_prompt=...)
@@ -187,7 +188,7 @@ You are a JSON repair agent.
 """
 
         prompt = f"Fix the following json: {text}\nIf it is correct, then output as is, DO NOT add anything else, no leading or ending remarks."
-        resp = llm.gemini_client(system_prompt=system_prompt, human_prompt=prompt)
+        resp = gemini_client(system_prompt=system_prompt, human_prompt=prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         

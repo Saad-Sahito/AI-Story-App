@@ -9,20 +9,24 @@ from dotenv import load_dotenv
 from langchain_groq import ChatGroq
 from langchain_community.callbacks import get_openai_callback
 
+SHARED_LLM_CLIENT = None
+
 class LLMClient:
     def __init__(self):
         # Load environment variables from .env file
         load_dotenv()
-
-        # Get the Groq API key from the environment
-        groq_api_key = os.environ.get("GROQ_API_KEY")
-        openai_api_key = os.environ.get("OPENAI_API_KEY")
-        google_api_key = os.environ.get("GOOGLE_API_KEY")
-        #self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
-        self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
-        self.llm_groq = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.5, groq_api_key=groq_api_key)
-        self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.5, google_api_key=google_api_key)
-
+        try:
+            # Get the Groq API key from the environment
+            groq_api_key = os.environ.get("GROQ_API_KEY")
+            openai_api_key = os.environ.get("OPENAI_API_KEY")
+            google_api_key = os.environ.get("GOOGLE_API_KEY")
+            #self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
+            self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
+            self.llm_groq = ChatGroq(model="meta-llama/llama-4-scout-17b-16e-instruct", temperature=0.5, groq_api_key=groq_api_key)
+            self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.5, google_api_key=google_api_key)
+        except Exception as e:
+            print(f"Failed to initialize LLMClient: {e}")
+            raise
     # def llama3_1_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     #     """Blocking call — returns the full response."""
     #     return self.llm_ollama.invoke([
@@ -130,3 +134,35 @@ class LLMClient:
         # print("-------------------")
         time.sleep(3)  # delay to avoid rate limits
         return response
+
+
+
+# Convenience functions to access the shared instance
+def get_shared_client() -> LLMClient:
+    """Get the shared LLM client instance, creating it if necessary."""
+    global SHARED_LLM_CLIENT
+    if SHARED_LLM_CLIENT is None:
+        SHARED_LLM_CLIENT = LLMClient()
+        print("Initialized shared LLM client")
+    return SHARED_LLM_CLIENT
+
+# Convenience wrapper functions for easy access
+async def groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    """Convenience function to access groq_client through shared instance."""
+    client = get_shared_client()
+    return await client.groq_client(system_prompt, human_prompt)
+
+def no_sync_groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    """Convenience function to access no_sync_groq_client through shared instance."""
+    client = get_shared_client()
+    return client.no_sync_groq_client(system_prompt, human_prompt)
+
+def openai_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    """Convenience function to access openai_client through shared instance."""
+    client = get_shared_client()
+    return client.openai_client(system_prompt, human_prompt)
+
+def gemini_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    """Convenience function to access gemini_client through shared instance."""
+    client = get_shared_client()
+    return client.gemini_client(system_prompt, human_prompt)

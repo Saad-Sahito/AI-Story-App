@@ -1,32 +1,24 @@
 from typing import List, Dict
-from dotenv import load_dotenv
 from sentence_transformers import SentenceTransformer
-from qdrant_client import QdrantClient
 from qdrant_client.http import models
 import uuid
-import os
+from .shared_resources import SHARED_QDRANT  # Import the shared client
 
 
 class QdrantStore:
-    _shared_model = None   # global singleton
+    _shared_model = None  # Global singleton for SentenceTransformer
 
-    def __init__(self, collection: str = "episodic_story_memory", user_id: str = None, story_id: str = None, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", namespace: str = None):
+    def __init__(self, collection: str = "episodic_story_memory", user_id: str = None, story_id: str = None, model_name: str = "sentence-transformers/all-MiniLM-L6-v2", namespace: str = None, client=None):
         self.collection = collection
         self.user_id = user_id
         self.story_id = story_id
         self.namespace = namespace or "default"
-
-        self.client = QdrantClient(
-            url=os.getenv("QDRANT_URL"),
-            api_key=os.getenv("QDRANT_API_KEY"),
-        )
+        self.client = client or SHARED_QDRANT  # Use provided client or fall back to shared
 
         # Load model only once across all instances
         if QdrantStore._shared_model is None:
             QdrantStore._shared_model = SentenceTransformer(model_name)
-
         self.model_name = model_name
-
         self.model = QdrantStore._shared_model
         self.dim = self.model.get_sentence_embedding_dimension()
 
@@ -57,7 +49,6 @@ class QdrantStore:
                     field_schema=schema,
                 )
             except Exception as e:
-                # Skip if index already exists
                 if "already exists" not in str(e):
                     raise
 
@@ -78,7 +69,8 @@ class QdrantStore:
         )
 
     def _embed_text(self, text: str) -> List[float]:
-        return self.model.encode([text], convert_to_numpy=True)[0].tolist()
+        truncated = text[:512]  # Arbitrary limit; adjust based on profiling
+        return self.model.encode([truncated], convert_to_numpy=True)[0].tolist()
 
     # ---------- Upserts ----------
     def put(self, text: str, metadata: Dict = None):
@@ -234,8 +226,8 @@ class QdrantStore:
         return all_texts
     
     def close(self):
-        """Release Qdrant client. Model stays shared."""
-        if self.client:
+        """Release Qdrant client, but only if not shared."""
+        if self.client is not SHARED_QDRANT:  # Only close if it's a unique client
             try:
                 self.client.close()
             except Exception:

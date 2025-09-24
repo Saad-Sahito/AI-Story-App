@@ -7,10 +7,10 @@ import asyncio
 from typing import List, Optional
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
+from src.llm_client.llm_client import groq_client  # Import the convenience function
 
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, BaseMessage
-from src.llm_client.llm_client import LLMClient
 from src.utilities.story_helpers import StoryHelpers
 from langchain.output_parsers import PydanticOutputParser
 
@@ -78,8 +78,8 @@ class UserSceneContext:
         )
 
 class SharedScenePlannerService:
-    def __init__(self, llm_client: LLMClient):
-        self.llm = llm_client
+    def __init__(self):
+        #self.llm_client: LLMClient = SHARED_LLM_CLIENT
         self.scene_writer_parser = PydanticOutputParser(pydantic_object=SceneWriterOutput)
         self.scene_planner_parser = PydanticOutputParser(pydantic_object=ScenePlannerOutput)
         
@@ -105,27 +105,19 @@ class SharedScenePlannerService:
     
     async def run_scene(self, user_context: UserSceneContext) -> tuple[str, list]:
         """Process scene for a specific user using their context"""
-        print(f"🔍 DEBUG: Starting scene for user {user_context.user_id}/{user_context.story_id}")
-        print(f"🔍 DEBUG: Director instructions length: {len(user_context.director_instructions)}")
         from connection.api_backend import SESSIONS
-        print(f"🔍 DEBUG: SESSIONS content: {SESSIONS}")
-        
-        print(f"🔍 DEBUG: Scene state before assignment: {user_context.scene_state}")
         try:
             user_context.scene_state.user_context_id = user_context.user_id
-            print(f"🔍 DEBUG: Set user_context_id: {user_context.scene_state.user_context_id}")
+
         except Exception as e:
             print(f"❌ ERROR: Failed to set user_context_id: {e}")
             import traceback
             traceback.print_exc()
         
-        print(f"🔍 DEBUG: Scene state after assignment: {user_context.scene_state}")
-            
         try:
             print(f"🔍 DEBUG: Invoking graph for {user_context.user_id}/{user_context.story_id}")
             result = await self.compiled.ainvoke(user_context.scene_state, {"recursion_limit": 50})
-            print(f"🔍 DEBUG: Scene planner finished with result keys: {result.keys()}")
-            print(f"🔍 DEBUG: Final state after ainvoke: {result}")
+
             
             scene_memory: SceneMemory = result["scene_memory"]
             
@@ -166,8 +158,6 @@ class SharedScenePlannerService:
         print("Running Scene Planner...")
         scene_memory: SceneMemory = state.scene_memory
         user_context_id = state.user_context_id
-        print(f"🔍 DEBUG: ScenePlanner user_context_id: {user_context_id}")
-        print(f"🔍 DEBUG: Scene planner agent called for scene: {scene_memory.scene_so_far_for_scene_planner[:100]}...")
     
         system_prompt = "You are a scene context guard. See if the scene blueprint is completed, including the decision points. Output strictly according to schema."
         human_prompt = f"""
@@ -179,11 +169,10 @@ class SharedScenePlannerService:
 
         {self.scene_planner_parser.get_format_instructions()}
         """
-        
-        print(f"🔍 DEBUG: Calling llm.groq_client in ScenePlanner")
+
         try:
             llm_response = await asyncio.wait_for(
-                self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
                 timeout=60.0
             )
         except asyncio.TimeoutError:
@@ -208,7 +197,7 @@ class SharedScenePlannerService:
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
             try:
                 retry_resp = await asyncio.wait_for(
-                    self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
+                    groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
                     timeout=60.0
                 )
                 retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
@@ -281,8 +270,7 @@ class SharedScenePlannerService:
         print("Running Scene Writer...")
         scene_memory: SceneMemory = state.scene_memory
         user_context_id = state.user_context_id
-        print(f"🔍 DEBUG: SceneWriter user_context_id: {user_context_id}")
-        print(f"🔍 DEBUG: SceneWriter called for scene: {scene_memory.scene_so_far[:100]}...")
+
         
         system_prompt = (
             "You are the Scene Writer Agent. Follow schema strictly. "
@@ -313,16 +301,16 @@ class SharedScenePlannerService:
         {self.scene_writer_parser.get_format_instructions()}
         """
 
-        print(f"🔍 DEBUG: Calling llm.groq_client in SceneWriter")
+        
         try:
             llm_response = await asyncio.wait_for(
-                self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
                 timeout=60.0
             )
         except asyncio.TimeoutError:
             print(f"❌ TIMEOUT: LLM call in SceneWriter timed out after 60 seconds")
             return state
-        print(f"🔍 DEBUG: SceneWriter got LLM response: {llm_response.content[:100]}...")
+        
         
         clean_resp = llm_response.content.strip()
         del llm_response, human_prompt
@@ -338,7 +326,7 @@ class SharedScenePlannerService:
             retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
             try:
                 retry_resp = await asyncio.wait_for(
-                    self.llm.groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
+                    groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
                     timeout=60.0
                 )
                 retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)

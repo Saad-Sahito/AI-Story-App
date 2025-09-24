@@ -208,9 +208,8 @@ __marimo__/
 
 
 # Ignore specific app scripts
-connection/main_nicegui.py
-connection/main.py
+
 
 # Ignore specific app scripts
 main_nicegui.py
-connections/main_old.py
+data/story_memory.db

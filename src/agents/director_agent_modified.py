@@ -3,23 +3,23 @@
 import json
 import re
 import gc
-from typing import Any, Dict, Tuple, Optional, List, Literal
+from typing import Any, Dict, List, Literal
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import AIMessage, ToolMessage
+from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
 
 from src.memory.memory_system import StoryMemorySystem
-from src.llm_client.llm_client import LLMClient
+
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
 from src.utilities.story_helpers import StoryHelpers
 
 # Import the shared scene planner service and context
-from .scene_creation_subgraph.shared_scene_planner import (
-    SharedScenePlannerService, 
-    UserSceneContext,
+from .scene_creation_subgraph.shared_scene_planner import ( 
+    UserSceneContext
 )
 import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
+from src.llm_client.llm_client import groq_client, gemini_client  # Import the convenience function
 
 # Keep existing state and models unchanged
 @dataclass
@@ -69,8 +69,8 @@ director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
 
 # Keep Ingestor class unchanged (it's already fine)
 class Ingestor:
-    def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem):
-        self.llm = llm_client
+    def __init__(self, memory_system: StoryMemorySystem):
+        #self.llm_client: LLMClient = llm_client
         self.memory = memory_system
 
     # ---- Scene Ingestion (this is part of the Ingestor class, not DirectorGraph) ----
@@ -83,6 +83,8 @@ class Ingestor:
         "if not present then create new names as needed."
 
         human_prompt = f"""
+        Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
+
         Scene:
         {scene_text}
 
@@ -100,7 +102,7 @@ class Ingestor:
         print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
 
         for attempt in range(1, max_retries + 1):
-            resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -128,7 +130,7 @@ class Ingestor:
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
 
             try:
-                fixed_resp = StoryHelpers._json_fixer(clean_resp, self.llm)
+                fixed_resp = StoryHelpers._json_fixer(clean_resp)
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
                 del fixed_resp, clean_resp
                 gc.collect()
@@ -191,6 +193,7 @@ class Ingestor:
         )
 
         human_prompt = f"""
+        Current Chapter: {state.current_chapter_id}
         Chapter Text:
         {current_chap_summary}
 
@@ -205,7 +208,7 @@ class Ingestor:
         """
 
         for attempt in range(1, max_retries + 1):
-            resp = self.llm.gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW INGEST CHAPTER RESPONSE:", clean_resp)
@@ -237,7 +240,7 @@ class Ingestor:
 
             # 2) try json_fixer, then same validation sequence
             try:
-                fixed_resp = StoryHelpers._json_fixer(clean_resp, self.llm)
+                fixed_resp = StoryHelpers._json_fixer(clean_resp)
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
                 del clean_resp, fixed_resp
                 gc.collect()
@@ -287,8 +290,8 @@ class Ingestor:
 
 # Modified DirectorGraph to use shared scene planner
 class DirectorGraph:
-    def __init__(self, llm_client: LLMClient, memory_system: StoryMemorySystem):
-        self.llm = llm_client
+    def __init__(self, memory_system: StoryMemorySystem):
+        #self.llm_client: LLMClient = llm_client
         self.memory = memory_system
         
         # NO MORE sceneplanner instance per user!
@@ -338,14 +341,14 @@ class DirectorGraph:
         )
         
         
-        print(f"🔍 DEBUG: SHARED_SCENE_PLANNER_SERVICE is: {scene_planner_module.SHARED_SCENE_PLANNER_SERVICE}")
+
         
         if scene_planner_module.SHARED_SCENE_PLANNER_SERVICE is None:
             print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE is None!")
             raise
         
         director_instructions = self._get_latest_director_message(state)
-        print(f"🔍 DEBUG: Director instructions: {director_instructions[:100]}...")
+
         
         user_context = UserSceneContext.create_for_user(
             user_id=self.memory.user_id,
@@ -356,14 +359,13 @@ class DirectorGraph:
         
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
         scene_text, scene_cluster = await scene_planner_module.SHARED_SCENE_PLANNER_SERVICE.run_scene(user_context)
-        print(f"✅ DEBUG: Scene planner returned {len(scene_text)} chars and {len(scene_cluster)} cluster items")
     
         # Clean up user context (it's no longer needed)
         del user_context
         gc.collect()
 
         # Create Ingestor only for this ingestion
-        ingestor = Ingestor(self.llm, self.memory)
+        ingestor = Ingestor(self.memory)
         scene_bundle = ingestor.ingest_scene(state, scene_text)
         del ingestor
         gc.collect()
@@ -396,7 +398,7 @@ class DirectorGraph:
         }
 
     def ingest_chapter(self, state: StoryState):
-        ingestor = Ingestor(self.llm, self.memory)
+        ingestor = Ingestor(self.memory)
         result = ingestor.ingest_chapter(state, self.current_chap_summary)
         self.current_chap_summary = ""
         del ingestor
@@ -456,7 +458,7 @@ class DirectorGraph:
         scenario, action = None, None
 
         for attempt in range(1, max_retries + 1):
-            resp = await self.llm.groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -475,7 +477,7 @@ class DirectorGraph:
 
             # json_fixer attempt
             try:
-                fixed_resp = StoryHelpers._json_fixer(clean_resp, self.llm)
+                fixed_resp = StoryHelpers._json_fixer(clean_resp)
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
                 if isinstance(fixed_clean, dict):
                     fixed_clean = json.dumps(fixed_clean)
