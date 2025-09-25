@@ -4,7 +4,7 @@ import re
 import json
 from typing import Any, Dict, Tuple, Optional
 from langchain_core.messages import AIMessage
-from src.llm_client.llm_client import gemini_client  # Import the convenience function
+from src.llm_client.llm_client import gemini_client
 
 
 class StoryHelpers:

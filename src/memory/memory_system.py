@@ -2,7 +2,7 @@
 import time
 from typing import Dict, Any
 from .qdrant_store import QdrantStore
-from .sqlite_store import SQLiteStore
+#from .sqlite_store import SQLiteStore
 from .shared_resources import SHARED_QDRANT, get_sqlite_store
 
 
@@ -163,12 +163,12 @@ class StoryMemorySystem:
         self.long_term_docs.put_text({"content": text}, metadata=metadata)
 
     def get_long_term_document(self, name: str) -> str:
-        # Get by name from metadata or implement a name-based lookup
-        # This might need adjustment based on your usage pattern
-        docs = self.long_term_docs.get_text("")  # Get all docs for now
-        for doc in docs:
-            if isinstance(doc, dict) and doc.get("name") == name:
-                return doc.get("content", "")
+        docs = self.long_term_docs.get_text(name)  # Use name as chapter_id
+        if docs:
+            # Assuming it's stored as [{"content": "..."}], return the last one's content
+            last_doc = docs[-1] if isinstance(docs, list) else docs
+            if isinstance(last_doc, dict):
+                return last_doc.get("content", "")
         return ""
     
     # ----------- Story Progress (Long-Term) ----------

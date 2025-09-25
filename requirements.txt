@@ -23,3 +23,6 @@ websockets
 httpx
 python-dotenv
 langchain_community
+gunicorn
+memory-profiler
+redis

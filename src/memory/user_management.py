@@ -1,4 +1,4 @@
-from typing import List, Dict, Optional, Any
+from typing import List, Dict, Optional
 from .shared_resources import get_sqlite_store
 
 def add_user(nickname: str, user_tag: str, age: Optional[int], user_id: str, stories: List[Dict] = None):

@@ -1,7 +1,6 @@
 # src/agents/director_agent.py - MODIFIED VERSION
 
 import json
-import re
 import gc
 from typing import Any, Dict, List, Literal
 from langgraph.graph import StateGraph, END
@@ -19,7 +18,7 @@ from .scene_creation_subgraph.shared_scene_planner import (
     UserSceneContext
 )
 import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
-from src.llm_client.llm_client import groq_client, gemini_client  # Import the convenience function
+from src.llm_client.llm_client import groq_client, gemini_client
 
 # Keep existing state and models unchanged
 @dataclass
@@ -441,11 +440,13 @@ class DirectorGraph:
             k=5
         )
         context = (
-            f"Premise: {self.memory.get_long_term_document('story_premise')}\n"
-            f"Scene ID: {state.scene_id}\n"
-            f"Current Chapter So Far: {self.current_chap_summary}\n"
+            f"Story Premise: {self.memory.get_long_term_document('story_premise')}\n"
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
+            f"Scene Number: {state.scene_id}\n"
+            f"Current Chapter So Far Summary: {self.current_chap_summary}\n"
+            
+            
         )
         
         print("CONTEXT TO DIRECTOR:", context)

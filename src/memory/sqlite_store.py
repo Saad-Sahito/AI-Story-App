@@ -1,7 +1,6 @@
 # src/memory/sqlite_store.py
 import sqlite3
 import json
-import os
 from typing import Dict, Any, Optional, List
 from pathlib import Path
 
@@ -93,7 +92,7 @@ class SQLiteStore:
                     metadata TEXT, -- JSON serialized as text
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    PRIMARY KEY (user_id, story_id, chapter_id)
+                    UNIQUE (user_id, story_id, chapter_id)
                 )
             """)
             
@@ -204,7 +203,7 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
     def delete_story(self, user_id: str, story_title: str, story_id: str):
-        """Delete a story from the user's stories list."""
+        """Delete a story from the user's stories list AND all related tables."""
         try:
             with self._get_connection() as conn:
                 cursor = conn.execute(
@@ -216,16 +215,22 @@ class SQLiteStore:
                     return {"status": "error", "message": "❌ User not found"}
 
                 current_stories = json.loads(row['stories']) if row['stories'] else []
-                
+
                 # Check if story exists
-                story_exists = next((s for s in current_stories if s["title"] == story_title or s["story_id"] == story_id), None)
+                story_exists = next(
+                    (s for s in current_stories if s["title"] == story_title or s["story_id"] == story_id),
+                    None
+                )
                 if not story_exists:
                     return {"status": "info", "message": f"Story '{story_title}' does not exist"}
 
-                # Remove story
-                current_stories = [s for s in current_stories if s["title"] != story_title and s["story_id"] != story_id]
+                # Remove story from JSON list
+                current_stories = [
+                    s for s in current_stories
+                    if s["title"] != story_title and s["story_id"] != story_id
+                ]
 
-                # Update stories
+                # Update users.stories
                 conn.execute(
                     """
                     UPDATE users
@@ -234,10 +239,24 @@ class SQLiteStore:
                     """,
                     (json.dumps(current_stories), user_id)
                 )
+
+                # Delete related rows from all other tables
+                conn.execute("DELETE FROM story_texts WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                conn.execute("DELETE FROM characters WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                conn.execute("DELETE FROM world_elements WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                conn.execute("DELETE FROM director_notes WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                conn.execute("DELETE FROM story_progress WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+
                 conn.commit()
-                return {"status": "success", "message": f"Story '{story_title}' deleted", "stories": current_stories}
+
+                return {
+                    "status": "success",
+                    "message": f"Story '{story_title}' and all related data deleted",
+                    "stories": current_stories
+                }
         except sqlite3.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
 
     def get_user_profile_with_stories(self, user_id: str):
         """Fetch user profile and their stories with progress."""
@@ -350,11 +369,13 @@ class SQLiteStore:
         chapter_id = metadata.get("latest_chapter_id")
         scene_id = metadata.get("continue_scene_id")
         word_count = metadata.get("word_count", 0)
+        story_title = metadata.get("story_title", None)
         
         clean_meta = {
             "chapter_id": chapter_id,
             "scene_id": scene_id,
             "word_count": word_count,
+            "story_title": story_title
         }
         
         with self._get_connection() as conn:
