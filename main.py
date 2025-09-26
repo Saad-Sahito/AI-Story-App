@@ -129,7 +129,7 @@ def api_continue_story(user_id: str, story_id: str):
 
 # ---------------- User Session Management Routes ----------------
 # logout user from redis pool
-@app.delete("/users/{user_id}/session")
+@app.patch("/users/{user_id}/session")
 def api_logout(user_id: str):
     return api_backend.logout(user_id)
 
@@ -191,7 +191,7 @@ def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], use
 #     return append_story(user_id, story_title)
 
 # delete entire story data for user
-@app.delete("/users/{user_id}/stories/{story_title}")
+@app.patch("/users/{user_id}/stories/{story_title}")
 def api_delete_story(user_id: str, story_title: str):
     return delete_story(user_id, story_title)
 
@@ -206,7 +206,7 @@ def api_get_user_profile_data_and_stories(user_id: str):
 
 #-----------------------------------------------------------------
 # CAUTION: Deletes entire app storage (admin only)
-@app.delete("/storage")
+@app.patch("/storage")
 def api_del_storage():
     sql_path = "/home/saadn/whimsera_app/data/story_memory.db"
     #sql_path = r"C:\Users\saadn\Documents\AI_Story_Teller_App\interactive_story_app\ai-story-engine\data\story_memory.db"
