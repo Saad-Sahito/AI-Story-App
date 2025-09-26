@@ -333,14 +333,17 @@ class APIBackend:
         # Clean up story_author to save memory
         story_data["story_author"] = None
         self._set_session(user_id, story_id, story_data)
+        from src.memory.user_management import append_story
+        append_story(user_id, initial_story_data.get("Title", ""), story_id)
 
         return {"status": "success", "premise": "Premise set."}
 
     @profile
-    async def handle_story_websocket(self, websocket: WebSocket):
+    async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         """Handle WebSocket for story progression, using Redis sessions."""
         await websocket.accept()
         try:
+            print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
             init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
             user_id = init_data.get("user_id")
             story_id = init_data.get("story_id")

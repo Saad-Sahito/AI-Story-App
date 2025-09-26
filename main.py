@@ -114,9 +114,10 @@ async def root():
 async def api_create_premise(initial_story_data: dict):
     return await api_backend.create_premise(initial_story_data=initial_story_data)
 
-@app.websocket("/ws/next_chapter")
-async def websocket_next_chapter(websocket: WebSocket):
-    await api_backend.handle_story_websocket(websocket)
+@app.websocket("/ws/next_chapter/{user_id}/{story_id}")
+async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
+    await api_backend.handle_story_websocket(websocket, user_id, story_id)
+
 
 @app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):
@@ -185,9 +186,9 @@ def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], use
     return add_user(nickname=nickname, user_tag=user_tag, age=age, user_id=user_id, stories=stories)
 
 # Add User Story
-@app.put("/users/{user_id}/stories/{story_title}")
-def api_append_story(user_id: str, story_title: str):
-    return append_story(user_id, story_title)
+# @app.put("/users/{user_id}/stories/{story_title}")
+# def api_append_story(user_id: str, story_title: str):
+#     return append_story(user_id, story_title)
 
 # delete entire story data for user
 @app.delete("/users/{user_id}/stories/{story_title}")
@@ -207,6 +208,7 @@ def api_get_user_profile_data_and_stories(user_id: str):
 # CAUTION: Deletes entire app storage (admin only)
 @app.delete("/storage")
 def api_del_storage():
-    sql_path = r"C:\Users\saadn\Documents\AI_Story_Teller_App\interactive_story_app\ai-story-engine\data\story_memory.db"
+    sql_path = "/home/saadn/whimsera_app/data/story_memory.db"
+    #sql_path = r"C:\Users\saadn\Documents\AI_Story_Teller_App\interactive_story_app\ai-story-engine\data\story_memory.db"
     delete_sqlite_db(sql_path)
     delete_all_qdrant_collections()
