@@ -212,3 +212,4 @@ def api_del_storage():
     #sql_path = r"C:\Users\saadn\Documents\AI_Story_Teller_App\interactive_story_app\ai-story-engine\data\story_memory.db"
     delete_sqlite_db(sql_path)
     delete_all_qdrant_collections()
+    

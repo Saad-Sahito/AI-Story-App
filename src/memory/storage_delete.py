@@ -40,7 +40,9 @@ def delete_all_qdrant_collections() -> None:
         for coll in collections:
             SHARED_QDRANT.delete_collection(coll.name)
             print(f"🗑️ Deleted collection: {coll.name}")
-
         print("✅ All Qdrant collections deleted.")
+        return True
+        
     except Exception as e:
         print(f"❌ Error deleting Qdrant collections: {e}")
+        return False
