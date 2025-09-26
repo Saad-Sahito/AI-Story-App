@@ -210,6 +210,7 @@ def api_get_user_profile_data_and_stories(user_id: str):
 def api_del_storage():
     sql_path = "/home/saadn/whimsera_app/data/story_memory.db"
     #sql_path = r"C:\Users\saadn\Documents\AI_Story_Teller_App\interactive_story_app\ai-story-engine\data\story_memory.db"
-    delete_sqlite_db(sql_path)
-    delete_all_qdrant_collections()
+    val1 = delete_sqlite_db(sql_path)
+    val2 = delete_all_qdrant_collections()
+    return val1, val2
     
