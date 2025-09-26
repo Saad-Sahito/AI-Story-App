@@ -11,7 +11,7 @@ from memory_profiler import profile
 from src.llm_client.llm_client import get_shared_client
 from src.memory.memory_system import StoryMemorySystem
 from src.agents.story_author import StoryAuthor
-from agents.director_agent import DirectorGraph
+from src.agents.director_agent import DirectorGraph
 import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
 
 # Initialize Redis connection pool
@@ -29,7 +29,6 @@ SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 # Global shared instances
 SHARED_LLM_CLIENT = None
 
-# Initialize global shared LLM client
 load_dotenv()
 
 def get_redis_client():
@@ -366,7 +365,7 @@ class APIBackend:
                 await websocket.close()
                 return
 
-            # Ensure director and user_input_queue are initialized
+            # Ensure director is initialized
             if 'memory_system' not in story_data:
                 params = story_data.get('memory_system_params', {})
                 if not params:
@@ -381,10 +380,24 @@ class APIBackend:
                 story_data['memory_system'].qdrant_initialize()
             if 'director' not in story_data:
                 story_data['director'] = DirectorGraph(memory_system=story_data['memory_system'])
-            if 'user_input_queue' not in story_data:
-                story_data['user_input_queue'] = asyncio.Queue()
 
-            print(f"🔍 DEBUG: Story data initialized: {story_data}")
+            # Save the updated story_data to Redis (without non-serializable objects)
+            serializable_story_data = story_data.copy()
+            if 'director' in serializable_story_data:
+                del serializable_story_data['director']
+            if 'memory_system' in serializable_story_data:
+                serializable_story_data['memory_system_params'] = {
+                    'user_id': story_data['memory_system'].user_id,
+                    'story_id': story_data['memory_system'].story_id
+                }
+                del serializable_story_data['memory_system']
+            if 'story_author' in serializable_story_data:
+                serializable_story_data['story_author_needed'] = story_data['story_author'] is not None
+                del serializable_story_data['story_author']
+            self._set_session(user_id, story_id, serializable_story_data)
+            print(f"✅ DEBUG: Saved story session for {user_id}/{story_id}")
+
+            print(f"🔍 DEBUG: Story data initialized: {serializable_story_data}")
 
             queue = asyncio.Queue()
 
@@ -410,6 +423,7 @@ class APIBackend:
                     traceback.print_exc()
 
             async def recv_loop():
+                client = get_redis_client()
                 try:
                     while True:
                         msg = await websocket.receive_json()
@@ -417,13 +431,13 @@ class APIBackend:
                         if "choice" in msg:
                             choice = msg["choice"].strip()
                             if not choice:
+                                print(f"⚠️ WARNING: Empty choice received for {user_id}/{story_id}")
                                 continue
-                            user_input_queue = story_data.get("user_input_queue")
-                            if user_input_queue:
-                                await user_input_queue.put(choice)
-                                print(f"✅ Received choice for {user_id}: {choice}")
-                            else:
-                                print(f"⚠️ No user input queue for {user_id}")
+                            # Push choice to Redis List
+                            queue_key = f"input_queue:{user_id}:{story_id}"
+                            client.rpush(queue_key, choice)
+                            client.expire(queue_key, SESSION_TTL)
+                            print(f"✅ DEBUG: Pushed choice '{choice}' to Redis queue {queue_key}")
                 except WebSocketDisconnect:
                     print("❌ Client disconnected")
                 except asyncio.CancelledError:
@@ -476,6 +490,7 @@ class APIBackend:
                 gc.collect()
             except RuntimeError:
                 print("🔍 DEBUG: WebSocket already closed")
+
 
     @staticmethod
     @profile

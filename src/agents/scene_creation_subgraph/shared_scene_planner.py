@@ -171,7 +171,7 @@ class SharedScenePlannerService:
             clean_resp = StoryHelpers._strip_code_fences(raw_resp)
 
             # 🔎 Extract the first JSON object from the response
-            match = re.search(r"\{.*?\}", clean_resp, re.DOTALL)
+            match = re.search(r"\{[\s\S]*?\}", clean_resp)
             if match:
                 json_str = match.group(0)
             else:
@@ -181,6 +181,7 @@ class SharedScenePlannerService:
             parsed = self.scene_planner_parser.parse(json_str)
             print(f"🔍 DEBUG: ScenePlanner action: {parsed.action}")
 
+            # prevent infinite loops by counting iterations
             if parsed.action == "Not Complete":
                 state.iteration_count = getattr(state, 'iteration_count', 0) + 1
                 if state.iteration_count > 10:
@@ -189,17 +190,108 @@ class SharedScenePlannerService:
 
             state.next_node = parsed.action
 
+        except asyncio.TimeoutError:
+            print(f"❌ TIMEOUT: LLM call in ScenePlanner timed out after 30 seconds")
+            state.next_node = "Complete"
         except Exception as e:
             print(f"❌ ERROR in ScenePlanner: {e}")
             import traceback; traceback.print_exc()
             state.next_node = "Complete"  # fallback
-
         finally:
             gc.collect()
 
+        try:
+            # Only trigger decision flow if planner says Not Complete AND there's an ai_question awaiting answer
+            if state.next_node == "Not Complete" and scene_memory and scene_memory.ai_question and scene_memory.ai_question.strip():
+                print(f"🔍 DEBUG: Need user input for question: {scene_memory.ai_question}")
+                from connection.api_backend import get_redis_client
+                try:
+                    # Try to find the user/session-level structures
+                    user_context_id = state.user_context_id
+                    redis_client = get_redis_client()
+                    queue_key = f"input_queue:{user_context_id}:{scene_memory.story_id}"
+
+                    # Build callback payload
+                    decision_payload = {
+                        "type": "decision",
+                        "question": scene_memory.ai_question.strip(),
+                        "options": scene_memory.number_of_options,
+                        "user_choice": ""
+                    }
+
+                    # Prefer state.scene_chunk_callback if provided
+                    scene_chunk_cb = state.scene_chunk_callback if getattr(state, "scene_chunk_callback", None) else None
+
+                    if not scene_chunk_cb:
+                        # Fetch from Redis if not provided
+                        user_data_json = redis_client.get(f"session:{user_context_id}")
+                        user_data = json.loads(user_data_json) if user_data_json else {}
+                        story_data = user_data.get(scene_memory.story_id, {})
+                        if not story_data:
+                            story_data = redis_client.get(f"session:{user_context_id}:{scene_memory.story_id}")
+                            story_data = json.loads(story_data) if story_data else {}
+                        director_obj = story_data.get("director")
+                        if director_obj:
+                            scene_chunk_cb = getattr(director_obj, "scene_chunk_callback", None)
+
+                    # Send decision to frontend
+                    if scene_chunk_cb:
+                        try:
+                            print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
+                            scene_chunk_cb(decision_payload)
+                        except Exception as e:
+                            print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+                            import traceback; traceback.print_exc()
+                    else:
+                        print(f"❌ ERROR: No scene_chunk_callback found for {user_context_id}/{scene_memory.story_id}")
+
+                    # Wait for user input from Redis List
+                    try:
+                        print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+                        user_choice = None
+                        for _ in range(30):  # Poll for up to 30 seconds
+                            choice = redis_client.lpop(queue_key)
+                            if choice:
+                                user_choice = choice
+                                break
+                            await asyncio.sleep(1.0)
+                        if user_choice:
+                            print(f"✅ DEBUG: Received user choice: {user_choice} from Redis queue {queue_key}")
+                            # Append decision entry to scene_cluster and update memory
+                            scene_memory.scene_cluster.append({
+                                "type": "decision",
+                                "question": scene_memory.ai_question.strip(),
+                                "options": scene_memory.number_of_options,
+                                "user_choice": user_choice.strip() if isinstance(user_choice, str) else user_choice
+                            })
+                            scene_memory.UserInput = user_choice
+                            scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {user_choice})\n"
+                        else:
+                            print(f"❌ TIMEOUT: No user input received within 30 seconds for {user_context_id}/{scene_memory.story_id}")
+                            scene_memory.UserInput = ""
+                    except Exception as e:
+                        print(f"❌ ERROR in Redis queue handling: {e}")
+                        import traceback; traceback.print_exc()
+                        scene_memory.UserInput = ""
+                except Exception as e:
+                    print(f"❌ ERROR in user input handling: {e}")
+                    import traceback; traceback.print_exc()
+                    scene_memory.UserInput = ""
+            else:
+                # No decision outstanding
+                scene_memory.UserInput = ""
+        except Exception as e:
+            # Safety: ensure any unexpected exception in decision handling won't break planner
+            print(f"❌ ERROR after ScenePlanner LLM call while handling user input: {e}")
+            import traceback; traceback.print_exc()
+            scene_memory.UserInput = ""
+
+        # Persist updated scene memory back into state
+        state.scene_memory = scene_memory
+        gc.collect()
         return state
 
-    
+        
     async def _scene_writer_agent(self, state: SceneState) -> SceneState:
         print(f"🔍 DEBUG: SceneWriter node for user_context_id={state.user_context_id}")
         scene_memory: SceneMemory = state.scene_memory
