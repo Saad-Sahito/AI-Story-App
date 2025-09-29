@@ -33,12 +33,9 @@ SHARED_LLM_CLIENT = None
 load_dotenv()
 
 
-XANO_REALTIME_URL = "https://realtime.xano.io/api:pusher/send"
-
-
 def send_to_xano(channel: str, payload: dict):
     resp = requests.post(
-        XANO_REALTIME_URL,
+        os.environ.get("XANO_REALTIME_URL"),
         headers={"Authorization": f"Bearer {os.environ.get("XANO_API_KEY")}"},
         json={"channel": channel, "data": payload}
     )
