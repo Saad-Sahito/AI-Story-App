@@ -338,6 +338,18 @@ class APIBackend:
 
         return {"status": "success", "premise": "Premise set."}
 
+    def get_story_progress_for_user(self, user_id: str, story_id: str) -> dict:
+        """Continue an existing story, loading session from Redis."""
+        if not user_id:
+            raise HTTPException(status_code=403, detail="User ID logged out. Please Login again")
+
+        user_session = self._get_session(user_id)
+        if not user_session or story_id not in user_session:
+            # Fallback: Initialize new memory_system if session is missing
+            memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
+            memory_system.qdrant_initialize()
+            return memory_system.get_story_progress()
+
     @profile
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         """Handle WebSocket for story progression, using Redis sessions."""

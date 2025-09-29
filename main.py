@@ -118,8 +118,6 @@ async def api_create_premise(initial_story_data: dict):
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
     await api_backend.handle_story_websocket(websocket, user_id, story_id)
 
-
-
 @app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):
     return api_backend.initialize_story(user_id=user_id, story_title=story_title)
@@ -127,6 +125,10 @@ def api_initialize_story(user_id: str, story_title: str = ""):
 @app.put("/stories/{story_id}")
 def api_continue_story(user_id: str, story_id: str):
     return api_backend.continue_story(user_id=user_id, story_id=story_id)
+
+@app.get("/stories/{user_id}/{story_id}")
+async def api_get_story_progress(user_id: str, story_id: str):
+    return api_backend.get_story_progress_for_user(user_id=user_id, story_id=story_id)
 
 # ---------------- User Session Management Routes ----------------
 # logout user from redis pool
