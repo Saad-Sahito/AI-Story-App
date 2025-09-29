@@ -1,6 +1,6 @@
 # main.py - Initialize shared instances on startup with Redis support
 
-from fastapi import HTTPException
+from fastapi import HTTPException, Body
 import asyncio
 import gc
 import redis
@@ -114,9 +114,16 @@ async def root():
 async def api_create_premise(initial_story_data: dict):
     return await api_backend.create_premise(initial_story_data=initial_story_data)
 
-@app.websocket("/ws/next_chapter/{user_id}/{story_id}")
-async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
-    await api_backend.handle_story_websocket(websocket, user_id, story_id)
+# @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
+# async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
+#     await api_backend.handle_story_websocket(websocket, user_id, story_id)
+
+@app.post("/stories/submit_choice/{user_id}/{story_id}")
+async def submit_choice(user_id: str, story_id: str, choice: str):
+    #choice = body.get("choice")
+    if not choice:
+        return {"error": "Missing choice"}
+    return api_backend.handle_user_choice(user_id, story_id, choice)
 
 @app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):
