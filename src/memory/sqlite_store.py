@@ -33,7 +33,7 @@ class SQLiteStore:
                     age INTEGER,
                     stories TEXT DEFAULT '[]', -- JSON array stored as text
                     PRIMARY KEY (user_id),
-                    UNIQUE(user_tag)
+                    UNIQUE(user_id, user_tag)
                 )
             """)
             
@@ -258,8 +258,9 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
 
+
     def get_user_profile_with_stories(self, user_id: str):
-        """Fetch user profile and their stories with progress."""
+        """Fetch user profile and their stories with progress (hardened)."""
         try:
             with self._get_connection() as conn:
                 # Fetch user profile
@@ -282,13 +283,23 @@ class SQLiteStore:
                     "age": user_row["age"],
                 }
 
-                # Process stories
-                story_dicts = json.loads(user_row["stories"]) if user_row["stories"] else []
-                stories = []
+                # Parse stories JSON safely
+                try:
+                    story_dicts = json.loads(user_row["stories"] or "[]")
+                    if not isinstance(story_dicts, list):
+                        story_dicts = []
+                except (json.JSONDecodeError, TypeError):
+                    story_dicts = []
 
+                stories = []
                 for story in story_dicts:
-                    title = story.get("title")
+                    if not isinstance(story, dict):
+                        continue  # skip malformed entries
+
+                    title = story.get("title", "Untitled Story")
                     story_id = story.get("story_id")
+                    if not story_id:
+                        continue  # skip if story_id missing (invalid story record)
 
                     # Fetch progress for this story
                     cursor = conn.execute(
@@ -311,19 +322,23 @@ class SQLiteStore:
                     }
 
                     if progress_row:
-                        story_data["latest_chapter_id"] = progress_row["latest_chapter_id"] or 0
-                        story_data["continue_scene_id"] = progress_row["continue_scene_id"] or 0
-                        story_data["word_count"] = progress_row["word_count"] or 0
+                        story_data.update({
+                            "latest_chapter_id": progress_row["latest_chapter_id"] or 0,
+                            "continue_scene_id": progress_row["continue_scene_id"] or 0,
+                            "word_count": progress_row["word_count"] or 0,
+                        })
 
                     stories.append(story_data)
 
                 return {
                     "status": "success",
                     "profile": user_data,
-                    "stories": stories if stories else []
+                    "stories": stories
                 }
+
         except sqlite3.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
 
     # ---------- PUT methods ----------
     def put_text(self, entry: dict, metadata: Optional[Dict[str, Any]] = None):

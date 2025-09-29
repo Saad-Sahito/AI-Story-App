@@ -119,6 +119,7 @@ async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: s
     await api_backend.handle_story_websocket(websocket, user_id, story_id)
 
 
+
 @app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):
     return api_backend.initialize_story(user_id=user_id, story_title=story_title)
