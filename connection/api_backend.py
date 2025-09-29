@@ -353,15 +353,17 @@ class APIBackend:
 
     def get_story_progress_for_user(self, user_id: str, story_id: str) -> dict:
         """Continue an existing story, loading session from Redis."""
-        if not user_id:
-            raise HTTPException(status_code=403, detail="User ID logged out. Please Login again")
+        user_data = self._get_session(user_id)
+        if not user_data:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
 
-        user_session = self._get_session(user_id)
-        if not user_session or story_id not in user_session:
-            # Fallback: Initialize new memory_system if session is missing
-            memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
-            memory_system.qdrant_initialize()
-            return memory_system.get_story_progress()
+        story_data = user_data.get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=405, detail="Invalid story ID")
+        try:
+            return {"status":"success", "data":story_data['memory_system'].get_story_progress()}
+        except:
+            return {"status":"error"}
 
 
     def handle_user_choice(self, user_id: str, story_id: str, choice: str):
