@@ -376,152 +376,53 @@ class APIBackend:
         return {"status": "ok", "choice": choice}
 
 
-    async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
-        """Handle WebSocket for story progression, using Redis sessions."""
-        await websocket.accept()
+    async def run_story(self, user_id: str, story_id: str):
+        """Run the story and push updates to Xano Realtime channel."""
         try:
-            print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
-            init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
-            user_id = init_data.get("user_id")
-            story_id = init_data.get("story_id")
-            print(f"🔍 DEBUG: Received init_data: user_id={user_id}, story_id={story_id}")
-
-            if not user_id or not story_id:
-                print(f"❌ Invalid init_data: user_id={user_id}, story_id={story_id}")
-                await websocket.send_json({"error": "Missing user_id or story_id"})
-                await websocket.close()
-                return
-
             user_data = self._get_session(user_id)
             if not user_data:
-                print(f"❌ No user session for user_id={user_id}")
-                await websocket.send_json({"error": "Invalid user ID"})
-                await websocket.close()
+                send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": "Invalid user ID"})
                 return
+
             story_data = user_data.get(story_id)
             if not story_data:
-                print(f"❌ No story session for story_id={story_id}")
-                await websocket.send_json({"error": "Invalid story ID"})
-                await websocket.close()
+                send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": "Invalid story ID"})
                 return
 
-            # Ensure director is initialized
-            if 'memory_system' not in story_data:
-                params = story_data.get('memory_system_params', {})
+            # Ensure director and memory_system are ready
+            if "memory_system" not in story_data:
+                params = story_data.get("memory_system_params", {})
                 if not params:
-                    print(f"❌ Invalid session data: missing memory_system_params for {user_id}:{story_id}")
-                    await websocket.send_json({"error": "Invalid session data: missing memory_system_params"})
-                    await websocket.close()
+                    send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": "Missing memory_system_params"})
                     return
-                story_data['memory_system'] = StoryMemorySystem(
-                    user_id=params['user_id'], 
-                    story_id=params['story_id']
+                story_data["memory_system"] = StoryMemorySystem(
+                    user_id=params["user_id"],
+                    story_id=params["story_id"]
                 )
-                story_data['memory_system'].qdrant_initialize()
-            if 'director' not in story_data:
-                story_data['director'] = DirectorGraph(memory_system=story_data['memory_system'])
+                story_data["memory_system"].qdrant_initialize()
 
-            # Save the updated story_data to Redis (without non-serializable objects)
-            serializable_story_data = story_data.copy()
-            if 'director' in serializable_story_data:
-                del serializable_story_data['director']
-            if 'memory_system' in serializable_story_data:
-                serializable_story_data['memory_system_params'] = {
-                    'user_id': story_data['memory_system'].user_id,
-                    'story_id': story_data['memory_system'].story_id
-                }
-                del serializable_story_data['memory_system']
-            if 'story_author' in serializable_story_data:
-                serializable_story_data['story_author_needed'] = story_data['story_author'] is not None
-                del serializable_story_data['story_author']
-            self._set_session(user_id, story_id, serializable_story_data)
-            print(f"✅ DEBUG: Saved story session for {user_id}/{story_id}")
+            if "director" not in story_data:
+                story_data["director"] = DirectorGraph(memory_system=story_data["memory_system"])
 
-            print(f"🔍 DEBUG: Story data initialized: {serializable_story_data}")
+            # Save the updated story_data as-is
+            self._set_session(user_id, story_id, story_data)
 
-            queue = asyncio.Queue()
-
+            # Callback → push chunks to Xano
             def scene_chunk_callback(chunk: dict):
-                print(f"🔍 DEBUG: scene_chunk_callback: {chunk}")
                 send_to_xano(f"story_channel/{user_id}/{story_id}", chunk)
 
-            async def send_loop():
-                try:
-                    while True:
-                        item = await queue.get()
-                        if item is None:
-                            print("🔍 DEBUG: send_loop received None, exiting")
-                            break
-                        print(f"🔍 DEBUG: Sending to WebSocket: {item}")
-                        await websocket.send_json(item)
-                except asyncio.CancelledError:
-                    print("🔍 DEBUG: send_loop cancelled")
-                    return
-                except Exception as e:
-                    print(f"❌ send_loop error: {e}")
-                    import traceback
-                    traceback.print_exc()
+            # Run the story generator
+            await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
 
-            async def recv_loop():
-                try:
-                    while True:
-                        msg = await websocket.receive_json()
-                        print(f"🔍 DEBUG: Received WebSocket message: {msg}")
-                        if "choice" in msg:
-                            self.handle_user_choice(user_id=user_id, story_id=story_id, choice=msg['choice'])
-                            
-                except WebSocketDisconnect:
-                    print("❌ Client disconnected")
-                except asyncio.CancelledError:
-                    print("🔍 DEBUG: recv_loop cancelled")
-                    return
-                except Exception as e:
-                    print(f"❌ recv_loop error: {e}")
-                    import traceback
-                    traceback.print_exc()
+            # When finished
+            send_to_xano(f"story_channel/{user_id}/{story_id}", {"chapter_complete": True})
 
-            async def run_director():
-                try:
-                    print(f"🔍 DEBUG: Starting director.run for {user_id}/{story_id}")
-                    await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
-                    print("✅ Director run completed")
-                    send_to_xano(f"story_channel/{user_id}/{story_id}", {"chapter_complete": True})
-                    #await queue.put(None)
-                except Exception as e:
-                    print(f"❌ ERROR in run_director: {e}")
-                    import traceback
-                    traceback.print_exc()
-                    await queue.put({"error": f"Director failed: {str(e)}"})
-                    await queue.put(None)
-
-            director_task = asyncio.create_task(run_director())
-            send_task = asyncio.create_task(send_loop())
-            recv_task = asyncio.create_task(recv_loop())
-
-            try:
-                await asyncio.gather(director_task, send_task, recv_task, return_exceptions=False)
-            except Exception as e:
-                print(f"❌ ERROR in asyncio.gather: {e}")
-                import traceback
-                traceback.print_exc()
-                await websocket.send_json({"error": f"WebSocket task failed: {str(e)}"})
-
-        except asyncio.TimeoutError:
-            print("❌ Timeout waiting for init_data")
-            await websocket.send_json({"error": "Timeout waiting for initial data"})
         except Exception as e:
-            print(f"❌ Error in handle_story_websocket: {e}")
             import traceback
             traceback.print_exc()
-            await websocket.send_json({"error": str(e)})
-        finally:
-            try:
-                await websocket.close()
-                print("🔍 DEBUG: WebSocket closed")
-                import gc
-                gc.collect()
-            except RuntimeError:
-                print("🔍 DEBUG: WebSocket already closed")
+            send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": str(e)})
+
+
 
 
     # @profile

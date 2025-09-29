@@ -118,6 +118,19 @@ async def api_create_premise(initial_story_data: dict):
 # async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
 #     await api_backend.handle_story_websocket(websocket, user_id, story_id)
 
+@app.post("/stories/generate_chapter/{user_id}/{story_id}")
+async def start_chapter(user_id: str, story_id: str):
+    """
+    REST endpoint to start a story run.
+    Instead of using WebSocket, this pushes chunks into a Xano Realtime channel.
+    """
+    try:
+        # Kick off the async task so API responds immediately
+        asyncio.create_task(api_backend.run_story(user_id, story_id))
+        return {"status": "started", "user_id": user_id, "story_id": story_id}
+    except:
+        return {"status": "error"}
+
 @app.post("/stories/submit_choice/{user_id}/{story_id}")
 async def submit_choice(user_id: str, story_id: str, choice: str):
     #choice = body.get("choice")
@@ -133,7 +146,7 @@ def api_initialize_story(user_id: str, story_title: str = ""):
 def api_continue_story(user_id: str, story_id: str):
     return api_backend.continue_story(user_id=user_id, story_id=story_id)
 
-@app.get("/stories/{user_id}/{story_id}")
+@app.get("/stories/progress/{user_id}/{story_id}")
 async def api_get_story_progress(user_id: str, story_id: str):
     return api_backend.get_story_progress_for_user(user_id=user_id, story_id=story_id)
 
