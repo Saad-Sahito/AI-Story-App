@@ -1,6 +1,6 @@
 # main.py - Initialize shared instances on startup with Redis support
 
-from fastapi import HTTPException, Body
+from fastapi import HTTPException, BackgroundTasks
 import asyncio
 import gc
 import redis
@@ -118,25 +118,20 @@ async def api_create_premise(initial_story_data: dict):
 # async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
 #     await api_backend.handle_story_websocket(websocket, user_id, story_id)
 
-@app.post("/stories/generate_chapter/{user_id}/{story_id}")
-async def start_chapter(user_id: str, story_id: str):
-    """
-    REST endpoint to start a story run.
-    Instead of using WebSocket, this pushes chunks into a Xano Realtime channel.
-    """
-    try:
-        # Kick off the async task so API responds immediately
-        asyncio.create_task(api_backend.run_story(user_id, story_id))
-        return {"status": "started", "user_id": user_id, "story_id": story_id}
-    except:
-        return {"status": "error"}
+@app.post("/stories/next_chapter/{user_id}/{story_id}")
+async def start_next_chapter(user_id: str, story_id: str, background_tasks: BackgroundTasks):
+    background_tasks.add_task(api_backend.handle_story, user_id, story_id)
+    return {"status": "started"}
 
-@app.post("/stories/submit_choice/{user_id}/{story_id}")
-async def submit_choice(user_id: str, story_id: str, choice: str):
-    #choice = body.get("choice")
-    if not choice:
-        return {"error": "Missing choice"}
-    return api_backend.handle_user_choice(user_id, story_id, choice)
+@app.post("/stories/send_choice/{user_id}/{story_id}")
+async def send_choice(user_id: str, story_id: str, choice: str):
+    client = get_redis_client()
+    queue_key = f"input_queue:{user_id}:{story_id}"
+    client.rpush(queue_key, choice.strip())
+    SESSION_TTL=3600
+    client.expire(queue_key, SESSION_TTL)
+    print(f"✅ DEBUG: Pushed choice '{choice}' to Redis queue {queue_key}")
+    return {"status": "ok"}
 
 @app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):

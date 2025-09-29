@@ -1,6 +1,7 @@
 
 # src/api_backend.py - UPDATED FOR FULL REDIS COMPATIBILITY AND DIRECTOR DEBUGGING
-import requests
+
+import websockets
 import json
 import asyncio
 import os
@@ -33,13 +34,6 @@ SHARED_LLM_CLIENT = None
 load_dotenv()
 
 
-def send_to_xano(channel: str, payload: dict):
-    resp = requests.post(
-        os.environ.get("XANO_REALTIME_URL"),
-        headers={"Authorization": f"Bearer {os.environ.get("XANO_API_KEY")}"},
-        json={"channel": channel, "data": payload}
-    )
-    resp.raise_for_status()
 
 def get_redis_client():
     """Get a Redis client, reconnecting if necessary."""
@@ -363,63 +357,135 @@ class APIBackend:
             return {"status":"error"}
 
 
-    def handle_user_choice(self, user_id: str, story_id: str, choice: str):
-        """Pushes a user choice into Redis for story progression."""
-        if not choice.strip():
-            return {"error": "Empty choice"}
-        client = get_redis_client()
-        queue_key = f"input_queue:{user_id}:{story_id}"
-        client.rpush(queue_key, choice.strip())
-        client.expire(queue_key, SESSION_TTL)
-        print(f"✅ DEBUG: Pushed choice '{choice}' to Redis queue {queue_key}")
-        return {"status": "ok", "choice": choice}
 
 
-    async def run_story(self, user_id: str, story_id: str):
-        """Run the story and push updates to Xano Realtime channel."""
+
+    async def handle_story(self, user_id: str, story_id: str):
+        """Handle story progression using Redis sessions and Xano Realtime WebSocket."""
         try:
+            print(f"🔍 DEBUG: Starting story for user_id={user_id}, story_id={story_id}")
+
+            if not user_id or not story_id:
+                print(f"❌ Invalid data: user_id={user_id}, story_id={story_id}")
+                return
+
             user_data = self._get_session(user_id)
             if not user_data:
-                send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": "Invalid user ID"})
+                print(f"❌ No user session for user_id={user_id}")
                 return
-
             story_data = user_data.get(story_id)
             if not story_data:
-                send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": "Invalid story ID"})
+                print(f"❌ No story session for story_id={story_id}")
                 return
 
-            # Ensure director and memory_system are ready
-            if "memory_system" not in story_data:
-                params = story_data.get("memory_system_params", {})
+            # Ensure director is initialized
+            if 'memory_system' not in story_data:
+                params = story_data.get('memory_system_params', {})
                 if not params:
-                    send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": "Missing memory_system_params"})
+                    print(f"❌ Invalid session data: missing memory_system_params for {user_id}:{story_id}")
                     return
-                story_data["memory_system"] = StoryMemorySystem(
-                    user_id=params["user_id"],
-                    story_id=params["story_id"]
+                story_data['memory_system'] = StoryMemorySystem(
+                    user_id=params['user_id'], 
+                    story_id=params['story_id']
                 )
-                story_data["memory_system"].qdrant_initialize()
+                story_data['memory_system'].qdrant_initialize()
+            if 'director' not in story_data:
+                story_data['director'] = DirectorGraph(memory_system=story_data['memory_system'])
 
-            if "director" not in story_data:
-                story_data["director"] = DirectorGraph(memory_system=story_data["memory_system"])
+            # Save the updated story_data to Redis (without non-serializable objects)
+            serializable_story_data = story_data.copy()
+            if 'director' in serializable_story_data:
+                del serializable_story_data['director']
+            if 'memory_system' in serializable_story_data:
+                serializable_story_data['memory_system_params'] = {
+                    'user_id': story_data['memory_system'].user_id,
+                    'story_id': story_data['memory_system'].story_id
+                }
+                del serializable_story_data['memory_system']
+            if 'story_author' in serializable_story_data:
+                serializable_story_data['story_author_needed'] = story_data['story_author'] is not None
+                del serializable_story_data['story_author']
+            self._set_session(user_id, story_id, serializable_story_data)
+            print(f"✅ DEBUG: Saved story session for {user_id}/{story_id}")
 
-            # Save the updated story_data as-is
-            self._set_session(user_id, story_id, story_data)
+            print(f"🔍 DEBUG: Story data initialized: {serializable_story_data}")
 
-            # Callback → push chunks to Xano
-            def scene_chunk_callback(chunk: dict):
-                send_to_xano(f"story_channel/{user_id}/{story_id}", chunk)
+            uri = f"wss://{os.environ.get('XANO_INSTANCE')}.xano.io/rt/{os.environ.get('XANO_RT_HASH')}"
+            if os.environ.get('XANO_ACCESS_TOKEN'):
+                uri += f"?auth={os.environ.get('XANO_ACCESS_TOKEN')}"
 
-            # Run the story generator
-            await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
+            channel = f"{os.environ.get('XANO_CHANNEL_BASE')}/{user_id}/{story_id}"
 
-            # When finished
-            send_to_xano(f"story_channel/{user_id}/{story_id}", {"chapter_complete": True})
+            async with websockets.connect(uri) as ws:
+                # Auth if not via query (alternative, uncomment if needed)
+                # if XANO_AUTH_TOKEN:
+                #     await ws.send(json.dumps({"action": "auth", "token": XANO_AUTH_TOKEN}))
+
+                # Join channel
+                await ws.send(json.dumps({"action": "join", "channel": channel}))
+                print(f"✅ Joined Xano channel: {channel}")
+
+                queue = asyncio.Queue()
+
+                def scene_chunk_callback(chunk: dict):
+                    print(f"🔍 DEBUG: scene_chunk_callback: {chunk}")
+                    queue.put_nowait(chunk)
+
+                async def send_loop():
+                    try:
+                        while True:
+                            item = await queue.get()
+                            if item is None:
+                                print("🔍 DEBUG: send_loop received None, exiting")
+                                break
+                            print(f"🔍 DEBUG: Sending to Xano WebSocket: {item}")
+                            await ws.send(json.dumps({
+                                "action": "message",
+                                "channel": channel,
+                                "payload": item  # Send the dict directly, or json.dumps if needed
+                            }))
+                    except asyncio.CancelledError:
+                        print("🔍 DEBUG: send_loop cancelled")
+                        return
+                    except Exception as e:
+                        print(f"❌ send_loop error: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                # No recv_loop since choices come via API
+
+                async def run_director():
+                    try:
+                        print(f"🔍 DEBUG: Starting director.run for {user_id}/{story_id}")
+                        await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
+                        print("✅ Director run completed")
+                        await queue.put({"chapter_complete": True})
+                        await queue.put(None)
+                    except Exception as e:
+                        print(f"❌ ERROR in run_director: {e}")
+                        import traceback
+                        traceback.print_exc()
+                        await queue.put({"error": f"Director failed: {str(e)}"})
+                        await queue.put(None)
+
+                director_task = asyncio.create_task(run_director())
+                send_task = asyncio.create_task(send_loop())
+
+                try:
+                    await asyncio.gather(director_task, send_task, return_exceptions=False)
+                except Exception as e:
+                    print(f"❌ ERROR in asyncio.gather: {e}")
+                    import traceback
+                    traceback.print_exc()
 
         except Exception as e:
+            print(f"❌ Error in handle_story: {e}")
             import traceback
             traceback.print_exc()
-            send_to_xano(f"story_channel/{user_id}/{story_id}", {"error": str(e)})
+        finally:
+            print("🔍 DEBUG: Story handling completed")
+            import gc
+            gc.collect()
 
 
 
