@@ -139,6 +139,10 @@ def api_continue_story(user_id: str, story_id: str):
 async def api_get_story_progress(user_id: str, story_id: str):
     return api_backend.get_story_progress_for_user(user_id=user_id, story_id=story_id)
 
+@app.patch("/stories/logout/{user_id}/{story_id}")
+async def api_delete_story_data(user_id: str, story_id: str):
+    return api_backend.logout_story(user_id=user_id, story_id=story_id)
+
 # ---------------- User Session Management Routes ----------------
 # logout user from redis pool
 @app.patch("/users/{user_id}/session")
