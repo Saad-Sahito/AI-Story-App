@@ -1,11 +1,8 @@
-
 # src/api_backend.py - UPDATED FOR FULL REDIS COMPATIBILITY AND DIRECTOR DEBUGGING
-from typing import Optional
 import json
 import asyncio
 import time
 import redis
-from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
 from memory_profiler import profile
@@ -24,14 +21,11 @@ REDIS_POOL = redis.ConnectionPool(
     max_connections=10,
     retry_on_timeout=True
 )
-
 SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 
 # Global shared instances
 SHARED_LLM_CLIENT = None
-
 load_dotenv()
-
 
 def get_redis_client():
     """Get a Redis client, reconnecting if necessary."""
@@ -55,263 +49,130 @@ class APIBackend:
             scene_planner_module.SHARED_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
             print("Initialized shared scene planner service")
 
-    def _get_session(self, user_id: str, story_id: Optional[str] = None) -> Optional[dict]:
-        """
-        Fetch session data from Redis.
-        - If story_id is provided: loads from story-specific key.
-        - Otherwise: loads user-level session.
-        """
+    def _get_session(self, user_id: str, story_id: str = None):
+        """Retrieve session data from Redis, reinitializing non-serializable objects."""
         client = get_redis_client()
         try:
             if story_id:
-                story_key = f"session:{user_id}:{story_id}"
-                data = client.get(story_key)
+                # Fetch story-specific session
+                key = f"session:{user_id}:{story_id}"
+                data = client.get(key)
+                if not data:
+                    print(f"❌ No session found for {key}")
+                    return None
+                session_data = json.loads(data)
+                # Reinitialize non-serializable objects
+                if 'memory_system_params' in session_data:
+                    params = session_data['memory_system_params']
+                    if not all(k in params for k in ['user_id', 'story_id']):
+                        print(f"❌ Invalid memory_system_params: {params}")
+                        return None
+                    session_data['memory_system'] = StoryMemorySystem(
+                        user_id=params['user_id'],
+                        story_id=params['story_id']
+                    )
+                    session_data['memory_system'].qdrant_initialize()
+                    session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
+                    session_data['user_input_queue'] = asyncio.Queue()
+                    session_data['story_author'] = (
+                        StoryAuthor(memory_system=session_data['memory_system'])
+                        if session_data.get('story_author_needed', False)
+                        else None
+                    )
+                client.expire(key, SESSION_TTL)
+                print(f"🔍 Retrieved story_session for {key}: {session_data}")
+                return session_data
             else:
-                user_key = f"session:{user_id}"
-                data = client.get(user_key)
-
-            return json.loads(data) if data else None
+                # Fetch user-level session
+                key = f"session:{user_id}"
+                data = client.get(key)
+                if not data:
+                    print(f"❌ No user session found for {key}")
+                    return {"last_active": time.time(), "stories": {}}
+                user_session = json.loads(data)
+                # Fetch all story-specific sessions for this user
+                story_keys = client.keys(f"session:{user_id}:*")
+                user_session["stories"] = user_session.get("stories", {})
+                for story_key in story_keys:
+                    story_id = story_key.split(":")[2]
+                    story_data = client.get(story_key)
+                    if story_data:
+                        story_session = json.loads(story_data)
+                        if 'memory_system_params' in story_session:
+                            params = story_session['memory_system_params']
+                            if not all(k in params for k in ['user_id', 'story_id']):
+                                print(f"❌ Invalid memory_system_params for {story_key}: {params}")
+                                continue
+                            story_session['memory_system'] = StoryMemorySystem(
+                                user_id=params['user_id'],
+                                story_id=params['story_id']
+                            )
+                            story_session['memory_system'].qdrant_initialize()
+                            story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
+                            story_session['user_input_queue'] = asyncio.Queue()
+                            story_session['story_author'] = (
+                                StoryAuthor(memory_system=story_session['memory_system'])
+                                if story_session.get('story_author_needed', False)
+                                else None
+                            )
+                        user_session["stories"][story_id] = story_session
+                        client.expire(story_key, SESSION_TTL)
+                client.expire(key, SESSION_TTL)
+                print(f"🔍 Retrieved user_session for {user_id}: {user_session}")
+                return user_session
         except redis.RedisError as e:
-            print(f"❌ Redis error in _get_session for user={user_id}, story={story_id}: {e}")
-            return None
-        except json.JSONDecodeError:
-            print(f"❌ Corrupted session JSON for user={user_id}, story={story_id}")
-            return None
-
-    def _set_session(self, user_id: str, data: dict, story_id: Optional[str] = None):
-        """
-        Save a session into Redis.
-        - If story_id is provided: writes to story-specific key *and* updates user-level session["stories"][story_id].
-        - If story_id is None: writes to the user-level session only.
-        """
-        client = get_redis_client()
-        user_key = f"session:{user_id}"
-        ttl = SESSION_TTL
-
-        try:
-            if story_id:
-                # 1. Save story-specific key
-                story_key = f"{user_key}:{story_id}"
-                client.set(story_key, json.dumps(data), ex=ttl)
-
-                # 2. Update user-level session's stories dict
-                raw_user = client.get(user_key)
-                if raw_user:
-                    try:
-                        user_data = json.loads(raw_user)
-                    except json.JSONDecodeError:
-                        user_data = {}
-                else:
-                    user_data = {}
-
-                if "stories" not in user_data or not isinstance(user_data["stories"], dict):
-                    user_data["stories"] = {}
-
-                user_data["stories"][story_id] = {"last_updated": datetime.utcnow().isoformat()}
-                client.set(user_key, json.dumps(user_data), ex=ttl)
-
-            else:
-                # User-level session (profile etc.)
-                client.set(user_key, json.dumps(data), ex=ttl)
-
-        except redis.RedisError as e:
-            print(f"❌ Redis error in _set_session for user={user_id}, story={story_id}: {e}")
-            raise
-
-
-    def logout_story(self, user_id: str, story_id: str):
-        """
-        Remove one story session for a user.
-        - Rehydrates the story session (so memory_system can be cleaned up).
-        - Deletes the story-specific Redis key (session:{user_id}:{story_id}).
-        - Also removes the story entry from the user-level session payload if present
-        (handles both current and some legacy shapes).
-        """
-        client = get_redis_client()
-        story_key = f"session:{user_id}:{story_id}"
-        user_key = f"session:{user_id}"
-
-        try:
-            # Try to rehydrate story session so we can call cleanup on memory_system (if present)
-            story_session = self._get_session(user_id=user_id, story_id=story_id)
-            if story_session and isinstance(story_session, dict):
-                try:
-                    # If _get_session returned a rehydrated object with memory_system, clean it up
-                    if story_session.get("memory_system"):
-                        try:
-                            story_session["memory_system"].cleanup()
-                        except Exception as e:
-                            print(f"❌ Error during memory_system.cleanup for {story_key}: {e}")
-                except Exception as e:
-                    print(f"❌ Unexpected error when cleaning memory_system for {story_key}: {e}")
-
-            # Delete the story-specific Redis key
-            deleted = client.delete(story_key)  # returns number of keys removed (0 or 1)
-
-            # Also remove the story from the user-level session payload if it exists there
-            user_data_raw = client.get(user_key)
-            if user_data_raw:
-                try:
-                    user_data = json.loads(user_data_raw)
-                    changed = False
-
-                    # Preferred structure: user_data.get("stories", {}) contains stories
-                    if isinstance(user_data.get("stories"), dict) and story_id in user_data["stories"]:
-                        del user_data["stories"][story_id]
-                        changed = True
-
-                    # Legacy shape: story stored under "user_session" dict
-                    if not changed and isinstance(user_data.get("user_session"), dict) and story_id in user_data["user_session"]:
-                        del user_data["user_session"][story_id]
-                        changed = True
-
-                    # Another legacy possibility: top-level story_id key
-                    if not changed and story_id in user_data:
-                        del user_data[story_id]
-                        changed = True
-
-                    if changed:
-                        client.set(user_key, json.dumps(user_data), ex=SESSION_TTL)
-                except Exception as e:
-                    print(f"❌ Failed to parse/update user-level session for {user_key}: {e}")
-
-            print(f"✅ logout_story: deleted={bool(deleted)} for {story_key}")
-            return {"status": "success", "deleted": bool(deleted)}
-        except redis.RedisError as e:
-            print(f"❌ Redis error in logout_story: {e}")
-            raise HTTPException(status_code=500, detail="Failed to clear story session")
+            print(f"❌ Redis error in _get_session: {e}")
+            raise HTTPException(status_code=500, detail="Failed to access session storage")
         except Exception as e:
-            print(f"❌ Error in logout_story: {e}")
+            print(f"❌ Unexpected error in _get_session: {e}")
             import traceback
             traceback.print_exc()
-            return {"status": "error", "message": str(e)}
+            return None
 
-
-    # def _get_session(self, user_id: str, story_id: str = None):
-    #     """Retrieve session data from Redis, reinitializing non-serializable objects."""
-    #     client = get_redis_client()
-    #     try:
-    #         if story_id:
-    #             # Fetch story-specific session
-    #             key = f"session:{user_id}:{story_id}"
-    #             data = client.get(key)
-    #             if not data:
-    #                 print(f"❌ No session found for {key}")
-    #                 return None
-    #             session_data = json.loads(data)
-    #             # Reinitialize non-serializable objects
-    #             if 'memory_system_params' in session_data:
-    #                 params = session_data['memory_system_params']
-    #                 if not all(k in params for k in ['user_id', 'story_id']):
-    #                     print(f"❌ Invalid memory_system_params: {params}")
-    #                     return None
-    #                 session_data['memory_system'] = StoryMemorySystem(
-    #                     user_id=params['user_id'], 
-    #                     story_id=params['story_id']
-    #                 )
-    #                 session_data['memory_system'].qdrant_initialize()
-    #                 session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
-    #                 session_data['user_input_queue'] = asyncio.Queue()
-    #                 session_data['story_author'] = (
-    #                     StoryAuthor(memory_system=session_data['memory_system'])
-    #                     if session_data.get('story_author_needed', False)
-    #                     else None
-    #                 )
-    #             client.expire(key, SESSION_TTL)
-    #             print(f"🔍 Retrieved story_session for {key}: {session_data}")
-    #             return session_data
-    #         else:
-    #             # Fetch user-level session and merge story-specific data
-    #             key = f"session:{user_id}"
-    #             data = client.get(key)
-    #             if not data:
-    #                 print(f"❌ No user session found for {key}")
-    #                 return None
-    #             user_session = json.loads(data)
-    #             # Fetch all story-specific sessions for this user
-    #             story_keys = client.keys(f"session:{user_id}:*")
-    #             for story_key in story_keys:
-    #                 story_id = story_key.split(":")[2]
-    #                 story_data = client.get(story_key)
-    #                 if story_data:
-    #                     story_session = json.loads(story_data)
-    #                     if 'memory_system_params' in story_session:
-    #                         params = story_session['memory_system_params']
-    #                         if not all(k in params for k in ['user_id', 'story_id']):
-    #                             print(f"❌ Invalid memory_system_params for {story_key}: {params}")
-    #                             continue
-    #                         story_session['memory_system'] = StoryMemorySystem(
-    #                             user_id=params['user_id'], 
-    #                             story_id=params['story_id']
-    #                         )
-    #                         story_session['memory_system'].qdrant_initialize()
-    #                         story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
-    #                         story_session['user_input_queue'] = asyncio.Queue()
-    #                         story_session['story_author'] = (
-    #                             StoryAuthor(memory_system=story_session['memory_system'])
-    #                             if story_session.get('story_author_needed', False)
-    #                             else None
-    #                         )
-    #                     user_session[story_id] = story_session
-    #                     client.expire(story_key, SESSION_TTL)
-    #             client.expire(key, SESSION_TTL)
-    #             print(f"🔍 Retrieved user_session for {user_id}: {user_session}")
-    #             return user_session
-    #     except redis.RedisError as e:
-    #         print(f"❌ Redis error in _get_session: {e}")
-    #         raise HTTPException(status_code=500, detail="Failed to access session storage")
-    #     except Exception as e:
-    #         print(f"❌ Unexpected error in _get_session: {e}")
-    #         import traceback
-    #         traceback.print_exc()
-    #         return None
-
-    # def _set_session(self, user_id: str, story_id: str = None, data: dict = None):
-    #     """Store session data in Redis, ensuring all objects are serializable."""
-    #     client = get_redis_client()
-    #     try:
-    #         key = f"session:{user_id}:{story_id}" if story_id else f"session:{user_id}"
-    #         serializable_data = data.copy() if data else {}
-
-    #         # Remove non-serializable objects and store parameters
-    #         if 'memory_system' in serializable_data:
-    #             memory_system = serializable_data['memory_system']
-    #             if memory_system is not None:
-    #                 try:
-    #                     serializable_data['memory_system_params'] = {
-    #                         'user_id': memory_system.user_id,
-    #                         'story_id': memory_system.story_id
-    #                     }
-    #                 except AttributeError as e:
-    #                     print(f"❌ AttributeError in _set_session for memory_system: {e}")
-    #                     serializable_data['memory_system_params'] = {}
-    #             del serializable_data['memory_system']
+    def _set_session(self, user_id: str, story_id: str = None, data: dict = None):
+        """Store session data in Redis, ensuring all objects are serializable."""
+        client = get_redis_client()
+        try:
+            key = f"session:{user_id}:{story_id}" if story_id else f"session:{user_id}"
+            serializable_data = data.copy() if data else {}
+            # Remove non-serializable objects and store parameters
+            if 'memory_system' in serializable_data:
+                memory_system = serializable_data['memory_system']
+                if memory_system is not None:
+                    try:
+                        serializable_data['memory_system_params'] = {
+                            'user_id': memory_system.user_id,
+                            'story_id': memory_system.story_id
+                        }
+                    except AttributeError as e:
+                        print(f"❌ AttributeError in _set_session for memory_system: {e}")
+                        serializable_data['memory_system_params'] = {}
+                del serializable_data['memory_system']
             
-    #         if 'director' in serializable_data:
-    #             del serializable_data['director']
+            if 'director' in serializable_data:
+                del serializable_data['director']
             
-    #         if 'user_input_queue' in serializable_data:
-    #             del serializable_data['user_input_queue']
+            if 'user_input_queue' in serializable_data:
+                del serializable_data['user_input_queue']
             
-    #         if 'story_author' in serializable_data:
-    #             serializable_data['story_author_needed'] = serializable_data['story_author'] is not None
-    #             del serializable_data['story_author']
-
-    #         print(f"🔍 Serializing data for key {key}: {serializable_data}")
-
-    #         client.set(key, json.dumps(serializable_data), ex=SESSION_TTL)
-    #     except redis.RedisError as e:
-    #         print(f"❌ Redis error in _set_session: {e}")
-    #         raise HTTPException(status_code=500, detail="Failed to store session data")
-    #     except TypeError as e:
-    #         print(f"❌ Serialization error in _set_session: {e}")
-    #         print(f"🔍 Problematic data: {serializable_data}")
-    #         raise HTTPException(status_code=500, detail=f"Invalid session data format: {str(e)}")
+            if 'story_author' in serializable_data:
+                serializable_data['story_author_needed'] = serializable_data['story_author'] is not None
+                del serializable_data['story_author']
+            
+            print(f"🔍 Serializing data for key {key}: {serializable_data}")
+            client.set(key, json.dumps(serializable_data), ex=SESSION_TTL)
+        except redis.RedisError as e:
+            print(f"❌ Redis error in _set_session: {e}")
+            raise HTTPException(status_code=500, detail="Failed to store session data")
+        except TypeError as e:
+            print(f"❌ Serialization error in _set_session: {e}")
+            print(f"🔍 Problematic data: {serializable_data}")
+            raise HTTPException(status_code=500, detail=f"Invalid session data format: {str(e)}")
 
     @profile
     def setup_user_session(self, user_id: str, story_id: str, memory_system=None, story_author=None):
         """Set up a user session with Redis."""
-        user_session = self._get_session(user_id=user_id) or {"last_active": time.time()}
+        user_session = self._get_session(user_id) or {"last_active": time.time(), "stories": {}}
         story_session = {
             "memory_system_params": {
                 "user_id": user_id,
@@ -320,9 +181,9 @@ class APIBackend:
             "story_author_needed": story_author is not None,
             "last_active": time.time(),
         }
-        user_session[story_id] = story_session
-        self._set_session(user_id=user_id, data=user_session)
-        self._set_session(user_id=user_id, story_id=story_id, data=story_session)
+        user_session["stories"][story_id] = story_session
+        self._set_session(user_id, data=user_session)
+        self._set_session(user_id, story_id, data=story_session)
 
     @profile
     def initialize_story(self, user_id: str, story_title: str = ""):
@@ -331,7 +192,6 @@ class APIBackend:
         story_id = f"{story_title_normalized}_{user_id}"
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
         memory_system.qdrant_initialize()
-
         story_author = StoryAuthor(memory_system=memory_system)
         self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system, story_author=story_author)
         return {"status": "success", "message": f"Story initialized for {user_id}", "story_id": story_id}
@@ -341,9 +201,8 @@ class APIBackend:
         """Continue an existing story, loading session from Redis."""
         if not user_id:
             raise HTTPException(status_code=403, detail="Please enter a valid User ID.")
-
-        user_session = self._get_session(user_id=user_id)
-        if not user_session or story_id not in user_session:
+        user_session = self._get_session(user_id)
+        if not user_session or story_id not in user_session["stories"]:
             # Fallback: Initialize new memory_system if session is missing
             memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
             memory_system.qdrant_initialize()
@@ -351,30 +210,30 @@ class APIBackend:
             if not story_progress_data:
                 raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
             self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
-            user_session = self._get_session(user_id=user_id)  # Reload session
+            user_session = self._get_session(user_id)  # Reload session
         else:
             # Ensure story_session has memory_system
-            if 'memory_system' not in user_session[story_id]:
-                params = user_session[story_id].get('memory_system_params', {})
+            story_data = user_session["stories"][story_id]
+            if 'memory_system' not in story_data:
+                params = story_data.get('memory_system_params', {})
                 if not params:
                     raise HTTPException(status_code=500, detail="Invalid session data: missing memory_system_params")
-                user_session[story_id]['memory_system'] = StoryMemorySystem(
-                    user_id=params['user_id'], 
+                story_data['memory_system'] = StoryMemorySystem(
+                    user_id=params['user_id'],
                     story_id=params['story_id']
                 )
-                user_session[story_id]['memory_system'].qdrant_initialize()
-                user_session[story_id]['director'] = DirectorGraph(memory_system=user_session[story_id]['memory_system'])
-                user_session[story_id]['user_input_queue'] = asyncio.Queue()
-                user_session[story_id]['story_author'] = (
-                    StoryAuthor(memory_system=user_session[story_id]['memory_system'])
-                    if user_session[story_id].get('story_author_needed', False)
+                story_data['memory_system'].qdrant_initialize()
+                story_data['director'] = DirectorGraph(memory_system=story_data['memory_system'])
+                story_data['user_input_queue'] = asyncio.Queue()
+                story_data['story_author'] = (
+                    StoryAuthor(memory_system=story_data['memory_system'])
+                    if story_data.get('story_author_needed', False)
                     else None
                 )
-            story_progress_data = user_session[story_id]['memory_system'].get_story_progress()
-
-        print(f"🔍 continue_story user_session[{story_id}]: {user_session[story_id]}")
+            story_progress_data = story_data['memory_system'].get_story_progress()
+        print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
         story_text = (
-            user_session[story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
+            user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
         )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
@@ -394,18 +253,14 @@ class APIBackend:
             80: "Novel Chapter (40,000 - 70,000 words)",
             100: "Epic / Series (70,000 - 100,000+ words)"
         }
-
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
-
-        user_data = self._get_session(user_id=user_id)
+        user_data = self._get_session(user_id)
         if not user_data:
             raise HTTPException(status_code=403, detail="Invalid user ID")
-
-        story_data = user_data.get(story_id)
+        story_data = user_data["stories"].get(story_id)
         if not story_data:
             raise HTTPException(status_code=405, detail="Invalid story ID")
-
         # Ensure story_author is initialized if needed
         if story_data.get('story_author') is None and story_data.get('story_author_needed', False):
             if 'memory_system' not in story_data:
@@ -413,14 +268,12 @@ class APIBackend:
                 if not params:
                     raise HTTPException(status_code=500, detail="Invalid session data: missing memory_system_params")
                 story_data['memory_system'] = StoryMemorySystem(
-                    user_id=params['user_id'], 
+                    user_id=params['user_id'],
                     story_id=params['story_id']
                 )
                 story_data['memory_system'].qdrant_initialize()
             story_data['story_author'] = StoryAuthor(memory_system=story_data['memory_system'])
-
         print(f"🔍 create_premise story_data: {story_data}")
-
         # Map numeric values to strings
         if "Tone" in initial_story_data:
             tone_value = initial_story_data["Tone"]
@@ -428,33 +281,28 @@ class APIBackend:
             if mapped_tone is None:
                 mapped_tone = tone_dict[min(tone_dict.keys(), key=lambda k: abs(k - tone_value))]
             initial_story_data["Tone"] = mapped_tone
-
         if "Length" in initial_story_data:
             length_value = initial_story_data["Length"]
             mapped_length = length_dict.get(length_value)
             if mapped_length is None:
                 mapped_length = length_dict[min(length_dict.keys(), key=lambda k: abs(k - length_value))]
             initial_story_data["Length"] = mapped_length
-
         filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id"]}
         form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
-
         await story_data["story_author"].set_story_premise(
             form_string,
             initial_story_data.get("Title", ""),
         )
-
         # Ensure memory_system is initialized
         if 'memory_system' not in story_data:
             params = story_data.get('memory_system_params', {})
             if not params:
                 raise HTTPException(status_code=500, detail="Invalid session data: missing memory_system_params")
             story_data['memory_system'] = StoryMemorySystem(
-                user_id=params['user_id'], 
+                user_id=params['user_id'],
                 story_id=params['story_id']
             )
             story_data['memory_system'].qdrant_initialize()
-
         story_data["memory_system"].update_story_progress(
             metadata={
                 "latest_chapter_id": 1,
@@ -463,29 +311,27 @@ class APIBackend:
                 "word_count": 0,
             }
         )
-
         # Clean up story_author to save memory
         story_data["story_author"] = None
+        user_data["stories"][story_id] = story_data
         self._set_session(user_id, story_id, story_data)
+        self._set_session(user_id, data=user_data)
         from src.memory.user_management import append_story
         append_story(user_id, initial_story_data.get("Title", ""), story_id)
-
         return {"status": "success", "premise": "Premise set."}
 
     def get_story_progress_for_user(self, user_id: str, story_id: str) -> dict:
         """Continue an existing story, loading session from Redis."""
-        user_data = self._get_session(user_id=user_id)
+        user_data = self._get_session(user_id)
         if not user_data:
             raise HTTPException(status_code=403, detail="Invalid user ID")
-
-        story_data = user_data.get(story_id)
+        story_data = user_data["stories"].get(story_id)
         if not story_data:
             raise HTTPException(status_code=405, detail="Invalid story ID")
         try:
-            return {"status":"success", "data":story_data['memory_system'].get_story_progress()}
+            return {"status": "success", "data": story_data['memory_system'].get_story_progress()}
         except:
-            return {"status":"error"}
-
+            return {"status": "error"}
 
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         """Handle WebSocket for story progression, using Redis sessions."""
@@ -496,26 +342,23 @@ class APIBackend:
             user_id = init_data.get("user_id")
             story_id = init_data.get("story_id")
             print(f"🔍 DEBUG: Received init_data: user_id={user_id}, story_id={story_id}")
-
             if not user_id or not story_id:
                 print(f"❌ Invalid init_data: user_id={user_id}, story_id={story_id}")
                 await websocket.send_json({"error": "Missing user_id or story_id"})
                 await websocket.close()
                 return
-
-            user_data = self._get_session(user_id=user_id)
+            user_data = self._get_session(user_id)
             if not user_data:
                 print(f"❌ No user session for user_id={user_id}")
                 await websocket.send_json({"error": "Invalid user ID"})
                 await websocket.close()
                 return
-            story_data = user_data.get(story_id)
+            story_data = user_data["stories"].get(story_id)
             if not story_data:
                 print(f"❌ No story session for story_id={story_id}")
                 await websocket.send_json({"error": "Invalid story ID"})
                 await websocket.close()
                 return
-
             # Ensure director is initialized
             if 'memory_system' not in story_data:
                 params = story_data.get('memory_system_params', {})
@@ -525,14 +368,14 @@ class APIBackend:
                     await websocket.close()
                     return
                 story_data['memory_system'] = StoryMemorySystem(
-                    user_id=params['user_id'], 
+                    user_id=params['user_id'],
                     story_id=params['story_id']
                 )
                 story_data['memory_system'].qdrant_initialize()
             if 'director' not in story_data:
                 story_data['director'] = DirectorGraph(memory_system=story_data['memory_system'])
-
-            # Save the updated story_data to Redis (without non-serializable objects)
+            # Save the updated story_data to Redis
+            user_data["stories"][story_id] = story_data
             serializable_story_data = story_data.copy()
             if 'director' in serializable_story_data:
                 del serializable_story_data['director']
@@ -546,16 +389,13 @@ class APIBackend:
                 serializable_story_data['story_author_needed'] = story_data['story_author'] is not None
                 del serializable_story_data['story_author']
             self._set_session(user_id, story_id, serializable_story_data)
+            self._set_session(user_id, data=user_data)
             print(f"✅ DEBUG: Saved story session for {user_id}/{story_id}")
-
             print(f"🔍 DEBUG: Story data initialized: {serializable_story_data}")
-
             queue = asyncio.Queue()
-
             def scene_chunk_callback(chunk: dict):
                 print(f"🔍 DEBUG: scene_chunk_callback: {chunk}")
                 queue.put_nowait(chunk)
-
             async def send_loop():
                 try:
                     while True:
@@ -572,7 +412,6 @@ class APIBackend:
                     print(f"❌ send_loop error: {e}")
                     import traceback
                     traceback.print_exc()
-
             async def recv_loop():
                 client = get_redis_client()
                 try:
@@ -598,7 +437,6 @@ class APIBackend:
                     print(f"❌ recv_loop error: {e}")
                     import traceback
                     traceback.print_exc()
-
             async def run_director():
                 try:
                     print(f"🔍 DEBUG: Starting director.run for {user_id}/{story_id}")
@@ -612,11 +450,9 @@ class APIBackend:
                     traceback.print_exc()
                     await queue.put({"error": f"Director failed: {str(e)}"})
                     await queue.put(None)
-
             director_task = asyncio.create_task(run_director())
             send_task = asyncio.create_task(send_loop())
             recv_task = asyncio.create_task(recv_loop())
-
             try:
                 await asyncio.gather(director_task, send_task, recv_task, return_exceptions=False)
             except Exception as e:
@@ -624,7 +460,6 @@ class APIBackend:
                 import traceback
                 traceback.print_exc()
                 await websocket.send_json({"error": f"WebSocket task failed: {str(e)}"})
-
         except asyncio.TimeoutError:
             print("❌ Timeout waiting for init_data")
             await websocket.send_json({"error": "Timeout waiting for initial data"})
@@ -642,7 +477,6 @@ class APIBackend:
             except RuntimeError:
                 print("🔍 DEBUG: WebSocket already closed")
 
-
     @staticmethod
     @profile
     def logout(user_id: str):
@@ -658,7 +492,7 @@ class APIBackend:
                     parts = key.split(":", 2)
                     if len(parts) == 3:  # Story-specific key: session:user_id:story_id
                         _, user_id, story_id = parts
-                        story_data = APIBackend()._get_session(user_id=user_id, story_id=story_id)
+                        story_data = APIBackend()._get_session(user_id, story_id)
                         if story_data and story_data.get("memory_system"):
                             story_data["memory_system"].cleanup()
                     keys_to_delete.append(key)
@@ -678,6 +512,41 @@ class APIBackend:
 
     @staticmethod
     @profile
+    def logout_story(user_id: str, story_id: str):
+        """Clear a specific story session for a user from Redis."""
+        client = get_redis_client()
+        try:
+            key = f"session:{user_id}:{story_id}"
+            user_session_key = f"session:{user_id}"
+            story_data = APIBackend()._get_session(user_id, story_id)
+            if story_data and story_data.get("memory_system"):
+                story_data["memory_system"].cleanup()
+            # Delete story-specific key
+            if client.exists(key):
+                client.delete(key)
+                print(f"✅ Deleted story session for {key}")
+            else:
+                print(f"🔍 No story session found for {key}")
+            # Update user session to remove story reference
+            user_session = APIBackend()._get_session(user_id)
+            if user_session and story_id in user_session.get("stories", {}):
+                del user_session["stories"][story_id]
+                APIBackend()._set_session(user_id, data=user_session)
+                print(f"✅ Removed story {story_id} from user session {user_id}")
+            import gc
+            gc.collect()
+            return {"status": "success", "message": f"Story {story_id} session cleared for user {user_id}."}
+        except redis.RedisError as e:
+            print(f"❌ Redis error in logout_story: {e}")
+            raise HTTPException(status_code=500, detail=f"Failed to clear story session for {story_id}")
+        except Exception as e:
+            print(f"❌ Unexpected error in logout_story: {e}")
+            import traceback
+            traceback.print_exc()
+            raise HTTPException(status_code=500, detail=f"Failed to clear story session: {str(e)}")
+
+    @staticmethod
+    @profile
     def cleanup_inactive_sessions(max_age_seconds: int = 3600):
         """Clean up inactive sessions from Redis using SCAN."""
         client = get_redis_client()
@@ -693,9 +562,15 @@ class APIBackend:
                         continue
                     session_data = json.loads(data)
                     if current_time - session_data.get("last_active", 0) > max_age_seconds:
-                        user_id = key.split(":")[1]
-                        APIBackend.logout(user_id)
-                        removed += 1
+                        parts = key.split(":", 2)
+                        user_id = parts[1]
+                        if len(parts) == 3:  # Story-specific session
+                            story_id = parts[2]
+                            APIBackend.logout_story(user_id, story_id)
+                            removed += 1
+                        elif len(parts) == 2:  # User session
+                            APIBackend.logout(user_id)
+                            removed += 1
                 if cursor == 0:
                     break
             return removed
