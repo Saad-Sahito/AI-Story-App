@@ -77,7 +77,7 @@ class APIBackend:
             print(f"❌ Corrupted session JSON for user={user_id}, story={story_id}")
             return None
 
-    def _set_session(self, user_id: str, story_id: Optional[str], data: dict):
+    def _set_session(self, user_id: str, data: dict, story_id: Optional[str] = None):
         """
         Save a session into Redis.
         - If story_id is provided: writes to story-specific key *and* updates user-level session["stories"][story_id].
