@@ -1,6 +1,6 @@
 
 # src/api_backend.py - UPDATED FOR FULL REDIS COMPATIBILITY AND DIRECTOR DEBUGGING
-
+from typing import Optional
 import json
 import asyncio
 import time
@@ -54,64 +54,68 @@ class APIBackend:
             scene_planner_module.SHARED_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
             print("Initialized shared scene planner service")
 
-    def _get_session(self, user_id: str):
-        """Retrieve the whole user session (user_session + stories)."""
+    def _get_session(self, user_id: str, story_id: Optional[str] = None) -> Optional[dict]:
+        """
+        Fetch session data from Redis.
+        - If story_id is provided: loads from story-specific key.
+        - Otherwise: loads user-level session.
+        """
         client = get_redis_client()
         try:
-            key = f"session:{user_id}"
-            data = client.get(key)
-            if not data:
-                return None
-            user_data = json.loads(data)
+            if story_id:
+                story_key = f"session:{user_id}:{story_id}"
+                data = client.get(story_key)
+            else:
+                user_key = f"session:{user_id}"
+                data = client.get(user_key)
 
-            # Rehydrate each story
-            for story_id, story_session in user_data.get("stories", {}).items():
-                params = story_session.get("memory_system_params", {})
-                if params:
-                    story_session['memory_system'] = StoryMemorySystem(
-                        user_id=params['user_id'],
-                        story_id=params['story_id']
-                    )
-                    story_session['memory_system'].qdrant_initialize()
-                    story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
-                    story_session['user_input_queue'] = asyncio.Queue()
-                    story_session['story_author'] = (
-                        StoryAuthor(memory_system=story_session['memory_system'])
-                        if story_session.get('story_author_needed', False)
-                        else None
-                    )
-            client.expire(key, SESSION_TTL)
-            return user_data
-        except Exception as e:
-            print(f"❌ Error in _get_session: {e}")
+            return json.loads(data) if data else None
+        except redis.RedisError as e:
+            print(f"❌ Redis error in _get_session for user={user_id}, story={story_id}: {e}")
+            return None
+        except json.JSONDecodeError:
+            print(f"❌ Corrupted session JSON for user={user_id}, story={story_id}")
             return None
 
-
-    def _set_session(self, user_id: str, user_data: dict):
-        """Store whole user session in Redis."""
+    def _set_session(self, user_id: str, story_id: Optional[str], data: dict):
+        """
+        Save a session into Redis.
+        - If story_id is provided: writes to story-specific key *and* updates user-level session["stories"][story_id].
+        - If story_id is None: writes to the user-level session only.
+        """
         client = get_redis_client()
+        user_key = f"session:{user_id}"
+        ttl = SESSION_TTL
+
         try:
-            serializable = {"user_session": user_data.get("user_session", {}),
-                            "stories": {}}
+            if story_id:
+                # 1. Save story-specific key
+                story_key = f"{user_key}:{story_id}"
+                client.set(story_key, json.dumps(data), ex=ttl)
 
-            for story_id, story_session in user_data.get("stories", {}).items():
-                s = story_session.copy()
-                if 'memory_system' in s:
-                    s['memory_system_params'] = {
-                        "user_id": s['memory_system'].user_id,
-                        "story_id": s['memory_system'].story_id,
-                    }
-                    del s['memory_system']
-                s.pop("director", None)
-                s.pop("user_input_queue", None)
-                if "story_author" in s:
-                    s['story_author_needed'] = s['story_author'] is not None
-                    s.pop("story_author", None)
-                serializable["stories"][story_id] = s
+                # 2. Update user-level session's stories dict
+                raw_user = client.get(user_key)
+                if raw_user:
+                    try:
+                        user_data = json.loads(raw_user)
+                    except json.JSONDecodeError:
+                        user_data = {}
+                else:
+                    user_data = {}
 
-            client.set(f"session:{user_id}", json.dumps(serializable), ex=SESSION_TTL)
-        except Exception as e:
-            print(f"❌ Error in _set_session: {e}")
+                if "stories" not in user_data or not isinstance(user_data["stories"], dict):
+                    user_data["stories"] = {}
+
+                user_data["stories"][story_id] = {"last_updated": datetime.utcnow().isoformat()}
+                client.set(user_key, json.dumps(user_data), ex=ttl)
+
+            else:
+                # User-level session (profile etc.)
+                client.set(user_key, json.dumps(data), ex=ttl)
+
+        except redis.RedisError as e:
+            print(f"❌ Redis error in _set_session for user={user_id}, story={story_id}: {e}")
+            raise
 
 
     def logout_story(self, user_id: str, story_id: str):
