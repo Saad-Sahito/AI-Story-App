@@ -26,4 +26,4 @@ langchain_community
 gunicorn
 memory-profiler
 redis
-websockets
+#websockets
