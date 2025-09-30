@@ -1,5 +1,4 @@
 # main.py - Initialize shared instances on startup with Redis support
-
 from fastapi import HTTPException
 import asyncio
 import gc
@@ -12,6 +11,11 @@ from src.memory.user_management import add_user, delete_story, get_user_profile_
 import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
 from src.memory.shared_resources import SHARED_QDRANT
 from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
+
+# Initialize api_backend BEFORE lifespan
+print("🟡 Initializing APIBackend...")
+api_backend = APIBackend()
+print("✅ APIBackend initialized")
 
 # Background cleanup task
 cleanup_task = None
@@ -31,9 +35,8 @@ async def cleanup_sessions_periodically():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global api_backend
+    # api_backend is already initialized above
     print("🚀 Starting up AI Story App...")
-    api_backend = APIBackend()
     print("✅ Shared instances initialized")
     
     # Verify shared clients
@@ -52,8 +55,9 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown
+    # Shutdown (rest stays the same)
     print("🛑 Shutting down AI Story App...")
+    # ... rest of your shutdown code
     if cleanup_task:
         cleanup_task.cancel()
         try:
@@ -117,7 +121,7 @@ async def api_create_premise(initial_story_data: dict):
 # @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 # async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
 #     await api_backend.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
-
+print("🟡 About to define WebSocket route...")
 
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
