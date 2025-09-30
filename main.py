@@ -14,8 +14,11 @@ from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqli
 
 # Initialize api_backend BEFORE lifespan
 print("🟡 Initializing APIBackend...")
-api_backend = APIBackend()
-print("✅ APIBackend initialized")
+try:
+    api_backend = APIBackend()
+    print("✅ APIBackend initialized")
+except Exception as e:
+    print("❌ APIBackend initialization error: ", e)
 
 # Background cleanup task
 cleanup_task = None
@@ -101,13 +104,6 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# try:
-#     api_backend = APIBackend()
-#     print(">>> APIBackend initialized successfully")
-# except Exception as e:
-#     print(">>> ERROR during APIBackend init:", e)
-#     traceback.print_exc()
-
 # ---------------- Health Check ----------------
 @app.get("/")
 async def root():
@@ -118,21 +114,9 @@ async def root():
 async def api_create_premise(initial_story_data: dict):
     return await api_backend.create_premise(initial_story_data=initial_story_data)
 
-# @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
-# async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
-#     await api_backend.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
-print("🟡 About to define WebSocket route...")
-
-
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
     print(f"🔵 ENTERED HANDLER! user: {user_id}, story: {story_id}")
-    print(f"🔵 api_backend is: {api_backend}")
-    print(f"🔵 api_backend type: {type(api_backend)}")
-    
-    # Accept the connection first
-    await websocket.accept()
-    print(f"🔵 WebSocket accepted!")
     
     try:
         print(f"🔵 Calling api_backend.handle_story_websocket...")
@@ -142,25 +126,6 @@ async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: s
         print(f"🔴 Error in websocket_next_chapter: {e}")
         import traceback
         traceback.print_exc()
-    finally:
-        print(f"🔵 Closing WebSocket connection")
-
-print("🟡 WebSocket route defined!")
-
-# @app.post("/stories/next_chapter/{user_id}/{story_id}")
-# async def start_next_chapter(user_id: str, story_id: str, background_tasks: BackgroundTasks):
-#     background_tasks.add_task(api_backend.handle_story, user_id, story_id)
-#     return {"status": "started"}
-
-# @app.post("/stories/send_choice/{user_id}/{story_id}")
-# async def send_choice(user_id: str, story_id: str, choice: str):
-#     client = get_redis_client()
-#     queue_key = f"input_queue:{user_id}:{story_id}"
-#     client.rpush(queue_key, choice.strip())
-#     SESSION_TTL=3600
-#     client.expire(queue_key, SESSION_TTL)
-#     print(f"✅ DEBUG: Pushed choice '{choice}' to Redis queue {queue_key}")
-#     return {"status": "ok"}
 
 @app.post("/stories/initialize_story")
 def api_initialize_story(user_id: str, story_title: str = ""):
