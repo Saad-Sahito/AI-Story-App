@@ -426,6 +426,31 @@ class APIBackend:
                 print(f"✅ Joined Xano channel: {channel}")
 
                 queue = asyncio.Queue()
+                async def ping_loop():
+                    try:
+                        while True:
+                            await asyncio.sleep(30)  # Send ping every 30 seconds
+                            await ws.ping()
+                            print("🔍 DEBUG: Sent ping to Xano WebSocket")
+                    except websockets.exceptions.ConnectionClosed:
+                        print("🔍 DEBUG: WebSocket closed during ping")
+                    except Exception as e:
+                        print(f"❌ ping_loop error: {e}")
+                        import traceback
+                        traceback.print_exc()
+
+                async def recv_loop():
+                    try:
+                        while True:
+                            message = await ws.recv()
+                            print(f"🔍 DEBUG: Received from Xano WebSocket: {message}")
+                            # Handle incoming messages if needed (e.g., parse JSON, respond to pings)
+                    except websockets.exceptions.ConnectionClosed:
+                        print("🔍 DEBUG: WebSocket connection closed")
+                    except Exception as e:
+                        print(f"❌ recv_loop error: {e}")
+                        import traceback
+                        traceback.print_exc()
 
                 def scene_chunk_callback(chunk: dict):
                     print(f"🔍 DEBUG: scene_chunk_callback: {chunk}")
@@ -439,21 +464,24 @@ class APIBackend:
                                 print("🔍 DEBUG: send_loop received None, exiting")
                                 break
                             print(f"🔍 DEBUG: Sending to Xano WebSocket: {item}")
-                            await ws.send(json.dumps({
-                                "action": "message",
-                                "channel": channel,
-                                "payload": item  # Send the dict directly, or json.dumps if needed
-                            }))
+                            try:
+                                await ws.send(json.dumps({
+                                    "action": "message",
+                                    "channel": channel,
+                                    "payload": item
+                                }))
+                            except websockets.exceptions.ConnectionClosedError as e:
+                                print(f"🔍 DEBUG: WebSocket closed during send: {e}")
+                                break
                     except asyncio.CancelledError:
                         print("🔍 DEBUG: send_loop cancelled")
-                        return
                     except Exception as e:
                         print(f"❌ send_loop error: {e}")
                         import traceback
                         traceback.print_exc()
 
                 # No recv_loop since choices come via API
-
+                
                 async def run_director():
                     try:
                         print(f"🔍 DEBUG: Starting director.run for {user_id}/{story_id}")
@@ -470,9 +498,11 @@ class APIBackend:
 
                 director_task = asyncio.create_task(run_director())
                 send_task = asyncio.create_task(send_loop())
+                recv_task = asyncio.create_task(recv_loop())
+                ping_task = asyncio.create_task(ping_loop())
 
                 try:
-                    await asyncio.gather(director_task, send_task, return_exceptions=False)
+                    await asyncio.gather(director_task, send_task, recv_task, ping_task, return_exceptions=False)
                 except Exception as e:
                     print(f"❌ ERROR in asyncio.gather: {e}")
                     import traceback
