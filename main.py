@@ -127,8 +127,12 @@ print("🟡 About to define WebSocket route...")
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
     print(f"🔵 ENTERED HANDLER! user: {user_id}, story: {story_id}")
+    print(f"🔵 api_backend is: {api_backend}")
+    print(f"🔵 api_backend type: {type(api_backend)}")
     
-    # DON'T accept here - let handle_story_websocket do it
+    # Accept the connection first
+    await websocket.accept()
+    print(f"🔵 WebSocket accepted!")
     
     try:
         print(f"🔵 Calling api_backend.handle_story_websocket...")
@@ -138,6 +142,8 @@ async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: s
         print(f"🔴 Error in websocket_next_chapter: {e}")
         import traceback
         traceback.print_exc()
+    finally:
+        print(f"🔵 Closing WebSocket connection")
 
 print("🟡 WebSocket route defined!")
 

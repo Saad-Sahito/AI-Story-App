@@ -523,7 +523,7 @@ class APIBackend:
     #@profile
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         """Handle WebSocket for story progression, using Redis sessions."""
-        await websocket.accept()
+        #await websocket.accept()
         try:
             print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
             init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
