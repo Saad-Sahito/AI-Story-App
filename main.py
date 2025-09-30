@@ -1,4 +1,3 @@
-# main.py - Initialize shared instances on startup with Redis support
 from fastapi import HTTPException
 import asyncio
 import gc
@@ -58,9 +57,8 @@ async def lifespan(app: FastAPI):
     
     yield
     
-    # Shutdown (rest stays the same)
+    # Shutdown
     print("🛑 Shutting down AI Story App...")
-    # ... rest of your shutdown code
     if cleanup_task:
         cleanup_task.cancel()
         try:
@@ -140,11 +138,10 @@ async def api_get_story_progress(user_id: str, story_id: str):
     return api_backend.get_story_progress_for_user(user_id=user_id, story_id=story_id)
 
 @app.patch("/stories/logout/{user_id}/{story_id}")
-async def api_delete_story_data(user_id: str, story_id: str):
+async def api_logout_story(user_id: str, story_id: str):
     return api_backend.logout_story(user_id=user_id, story_id=story_id)
 
 # ---------------- User Session Management Routes ----------------
-# logout user from redis pool
 @app.patch("/users/{user_id}/session")
 def api_logout(user_id: str):
     return api_backend.logout(user_id)
@@ -164,14 +161,15 @@ async def api_get_active_users():
                     parts = key.split(":", 2)
                     user_id = parts[1]
                     if user_id not in users:
-                        users[user_id] = {"user_session": None, "stories": {}}
+                        users[user_id] = {"last_active": None, "stories": {}}
                     data = client.get(key)
                     if not data:
                         print(f"🔍 No data for key {key}")
                         continue
                     session_data = json.loads(data)
                     if len(parts) == 2:  # User-level key: session:user_id
-                        users[user_id]["user_session"] = session_data
+                        users[user_id]["last_active"] = session_data.get("last_active")
+                        users[user_id]["stories"] = session_data.get("stories", {})
                     elif len(parts) == 3:  # Story-specific key: session:user_id:story_id
                         story_id = parts[2]
                         users[user_id]["stories"][story_id] = session_data
@@ -196,37 +194,26 @@ async def api_get_active_users():
         gc.collect()
 
 # ---------------- User Data Management Routes ----------------
-# Add User
 @app.post("/users")
 def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], user_id: str = None):
     return add_user(nickname=nickname, user_tag=user_tag, age=age, user_id=user_id, stories=stories)
 
-# Add User Story
-# @app.put("/users/{user_id}/stories/{story_title}")
-# def api_append_story(user_id: str, story_title: str):
-#     return append_story(user_id, story_title)
-
-# delete entire story data for user
 @app.patch("/users/{user_id}/stories/{story_title}")
 def api_delete_story(user_id: str, story_title: str):
+    story_title_normalized = story_title.lower().replace(" ", "_")
+    story_id = f"{story_title_normalized}_{user_id}"
+    api_backend.logout_story(user_id, story_id)
     return delete_story(user_id, story_title)
 
-# return all user data with stories and data
 @app.get("/users/{user_id}/profile")
 def api_get_user_profile_data_and_stories(user_id: str):
     return get_user_profile_with_stories(user_id=user_id)
-
-
-
-
 
 #-----------------------------------------------------------------
 # CAUTION: Deletes entire app storage (admin only)
 @app.patch("/storage")
 def api_del_storage():
     sql_path = "/home/saadn/whimsera_app/data/story_memory.db"
-    #sql_path = r"C:\Users\saadn\Documents\AI_Story_Teller_App\interactive_story_app\ai-story-engine\data\story_memory.db"
     val1 = delete_sqlite_db(sql_path)
     val2 = delete_all_qdrant_collections()
     return val1, val2
-    

@@ -1,4 +1,3 @@
-# src/api_backend.py - UPDATED FOR FULL REDIS COMPATIBILITY AND DIRECTOR DEBUGGING
 import json
 import asyncio
 import time
@@ -90,9 +89,10 @@ class APIBackend:
                     print(f"❌ No user session found for {key}")
                     return {"last_active": time.time(), "stories": {}}
                 user_session = json.loads(data)
+                # Ensure stories is initialized
+                user_session["stories"] = user_session.get("stories", {})
                 # Fetch all story-specific sessions for this user
                 story_keys = client.keys(f"session:{user_id}:*")
-                user_session["stories"] = user_session.get("stories", {})
                 for story_key in story_keys:
                     story_id = story_key.split(":")[2]
                     story_data = client.get(story_key)
@@ -311,10 +311,16 @@ class APIBackend:
                 "word_count": 0,
             }
         )
-        # Clean up story_author to save memory
-        story_data["story_author"] = None
-        user_data["stories"][story_id] = story_data
-        self._set_session(user_id, story_id, story_data)
+        # Create a serializable copy of story_data
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params", {}),
+            "story_author_needed": False,  # Set to False as story_author is cleared
+            "last_active": time.time(),
+        }
+        # Update user_data stories
+        user_data["stories"][story_id] = serializable_story_data
+        # Save sessions
+        self._set_session(user_id, story_id, serializable_story_data)
         self._set_session(user_id, data=user_data)
         from src.memory.user_management import append_story
         append_story(user_id, initial_story_data.get("Title", ""), story_id)
@@ -375,19 +381,12 @@ class APIBackend:
             if 'director' not in story_data:
                 story_data['director'] = DirectorGraph(memory_system=story_data['memory_system'])
             # Save the updated story_data to Redis
-            user_data["stories"][story_id] = story_data
-            serializable_story_data = story_data.copy()
-            if 'director' in serializable_story_data:
-                del serializable_story_data['director']
-            if 'memory_system' in serializable_story_data:
-                serializable_story_data['memory_system_params'] = {
-                    'user_id': story_data['memory_system'].user_id,
-                    'story_id': story_data['memory_system'].story_id
-                }
-                del serializable_story_data['memory_system']
-            if 'story_author' in serializable_story_data:
-                serializable_story_data['story_author_needed'] = story_data['story_author'] is not None
-                del serializable_story_data['story_author']
+            serializable_story_data = {
+                "memory_system_params": story_data.get("memory_system_params", {}),
+                "story_author_needed": story_data.get("story_author_needed", False),
+                "last_active": time.time(),
+            }
+            user_data["stories"][story_id] = serializable_story_data
             self._set_session(user_id, story_id, serializable_story_data)
             self._set_session(user_id, data=user_data)
             print(f"✅ DEBUG: Saved story session for {user_id}/{story_id}")
