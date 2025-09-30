@@ -32,6 +32,7 @@ async def cleanup_sessions_periodically():
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global api_backend
     print("🚀 Starting up AI Story App...")
     api_backend = APIBackend()
     print("✅ Shared instances initialized")
@@ -97,12 +98,12 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-try:
-    api_backend = APIBackend()
-    print(">>> APIBackend initialized successfully")
-except Exception as e:
-    print(">>> ERROR during APIBackend init:", e)
-    traceback.print_exc()
+# try:
+#     api_backend = APIBackend()
+#     print(">>> APIBackend initialized successfully")
+# except Exception as e:
+#     print(">>> ERROR during APIBackend init:", e)
+#     traceback.print_exc()
 
 # ---------------- Health Check ----------------
 @app.get("/")
