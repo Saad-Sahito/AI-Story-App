@@ -527,8 +527,8 @@ class APIBackend:
         try:
             print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
             init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
-            # user_id = init_data.get("user_id")
-            # story_id = init_data.get("story_id")
+            user_id = init_data.get("user_id")
+            story_id = init_data.get("story_id")
             print(f"🔍 DEBUG: Received init_data: user_id={user_id}, story_id={story_id}")
 
             if not user_id or not story_id:

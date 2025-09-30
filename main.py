@@ -114,9 +114,23 @@ async def root():
 async def api_create_premise(initial_story_data: dict):
     return await api_backend.create_premise(initial_story_data=initial_story_data)
 
+# @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
+# async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
+#     await api_backend.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
+
+
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
-    await api_backend.handle_story_websocket(websocket, user_id, story_id)
+    print(f"🔵 WebSocket connection received for user: {user_id}, story: {story_id}")
+    
+    try:
+        print(f"🔵 Calling api_backend.handle_story_websocket...")
+        await api_backend.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
+        print(f"🟢 api_backend.handle_story_websocket completed successfully")
+    except Exception as e:
+        print(f"🔴 Error in websocket_next_chapter: {e}")
+        import traceback
+        traceback.print_exc()
 
 # @app.post("/stories/next_chapter/{user_id}/{story_id}")
 # async def start_next_chapter(user_id: str, story_id: str, background_tasks: BackgroundTasks):
