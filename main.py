@@ -1,15 +1,14 @@
 # main.py - Initialize shared instances on startup with Redis support
 
-from fastapi import HTTPException, BackgroundTasks
+from fastapi import HTTPException
 import asyncio
 import gc
 import redis
 from fastapi import FastAPI, WebSocket
-import traceback
 import json
 from contextlib import asynccontextmanager
 from connection.api_backend import APIBackend, REDIS_POOL, get_redis_client
-from src.memory.user_management import add_user, append_story, delete_story, get_user_profile_with_stories
+from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories
 import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
 from src.memory.shared_resources import SHARED_QDRANT
 from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
@@ -97,12 +96,6 @@ app = FastAPI(
     description="Optimized for memory efficiency with shared instances and Redis",
     lifespan=lifespan
 )
-# After all your route definitions
-print("=" * 50)
-print("Registered routes:")
-for route in app.routes:
-    print(f"  {route.path} - {route.methods if hasattr(route, 'methods') else 'WebSocket'}")
-print("=" * 50)
 
 # try:
 #     api_backend = APIBackend()
