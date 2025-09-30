@@ -97,6 +97,12 @@ app = FastAPI(
     description="Optimized for memory efficiency with shared instances and Redis",
     lifespan=lifespan
 )
+# After all your route definitions
+print("=" * 50)
+print("Registered routes:")
+for route in app.routes:
+    print(f"  {route.path} - {route.methods if hasattr(route, 'methods') else 'WebSocket'}")
+print("=" * 50)
 
 # try:
 #     api_backend = APIBackend()
