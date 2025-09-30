@@ -5,6 +5,7 @@ import json
 import asyncio
 import time
 import redis
+from datetime import datetime
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
 from memory_profiler import profile
@@ -132,7 +133,7 @@ class APIBackend:
 
         try:
             # Try to rehydrate story session so we can call cleanup on memory_system (if present)
-            story_session = self._get_session(user_id, story_id)
+            story_session = self._get_session(user_id=user_id, story_id=story_id)
             if story_session and isinstance(story_session, dict):
                 try:
                     # If _get_session returned a rehydrated object with memory_system, clean it up
@@ -310,7 +311,7 @@ class APIBackend:
     @profile
     def setup_user_session(self, user_id: str, story_id: str, memory_system=None, story_author=None):
         """Set up a user session with Redis."""
-        user_session = self._get_session(user_id) or {"last_active": time.time()}
+        user_session = self._get_session(user_id=user_id) or {"last_active": time.time()}
         story_session = {
             "memory_system_params": {
                 "user_id": user_id,
@@ -320,8 +321,8 @@ class APIBackend:
             "last_active": time.time(),
         }
         user_session[story_id] = story_session
-        self._set_session(user_id, data=user_session)
-        self._set_session(user_id, story_id, data=story_session)
+        self._set_session(user_id=user_id, data=user_session)
+        self._set_session(user_id=user_id, story_id=story_id, data=story_session)
 
     @profile
     def initialize_story(self, user_id: str, story_title: str = ""):
@@ -341,7 +342,7 @@ class APIBackend:
         if not user_id:
             raise HTTPException(status_code=403, detail="Please enter a valid User ID.")
 
-        user_session = self._get_session(user_id)
+        user_session = self._get_session(user_id=user_id)
         if not user_session or story_id not in user_session:
             # Fallback: Initialize new memory_system if session is missing
             memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
@@ -350,7 +351,7 @@ class APIBackend:
             if not story_progress_data:
                 raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
             self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
-            user_session = self._get_session(user_id)  # Reload session
+            user_session = self._get_session(user_id=user_id)  # Reload session
         else:
             # Ensure story_session has memory_system
             if 'memory_system' not in user_session[story_id]:
@@ -397,7 +398,7 @@ class APIBackend:
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
 
-        user_data = self._get_session(user_id)
+        user_data = self._get_session(user_id=user_id)
         if not user_data:
             raise HTTPException(status_code=403, detail="Invalid user ID")
 
@@ -473,7 +474,7 @@ class APIBackend:
 
     def get_story_progress_for_user(self, user_id: str, story_id: str) -> dict:
         """Continue an existing story, loading session from Redis."""
-        user_data = self._get_session(user_id)
+        user_data = self._get_session(user_id=user_id)
         if not user_data:
             raise HTTPException(status_code=403, detail="Invalid user ID")
 
@@ -502,7 +503,7 @@ class APIBackend:
                 await websocket.close()
                 return
 
-            user_data = self._get_session(user_id)
+            user_data = self._get_session(user_id=user_id)
             if not user_data:
                 print(f"❌ No user session for user_id={user_id}")
                 await websocket.send_json({"error": "Invalid user ID"})
@@ -657,7 +658,7 @@ class APIBackend:
                     parts = key.split(":", 2)
                     if len(parts) == 3:  # Story-specific key: session:user_id:story_id
                         _, user_id, story_id = parts
-                        story_data = APIBackend()._get_session(user_id, story_id)
+                        story_data = APIBackend()._get_session(user_id=user_id, story_id=story_id)
                         if story_data and story_data.get("memory_system"):
                             story_data["memory_system"].cleanup()
                     keys_to_delete.append(key)
