@@ -5,8 +5,8 @@ import redis
 from fastapi import FastAPI, WebSocket
 import json
 from contextlib import asynccontextmanager
-from connection.shared_redis_pool import REDIS_POOL, get_redis_client
-from connection.main_setup import MainSetup
+from setup.shared_redis_pool import REDIS_POOL, get_redis_client
+from setup.main_setup import MainSetup
 from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories
 from src.memory.shared_resources import SHARED_QDRANT
 from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
@@ -113,12 +113,11 @@ async def api_create_premise(initial_story_data: dict):
     return await mainsetup.create_premise(initial_story_data=initial_story_data)
 
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
-async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str):
-    print(f"🔵 ENTERED HANDLER! user: {user_id}, story: {story_id}")
+async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str, story_type: str):
     
     try:
         print(f"🔵 Calling api_backend.handle_story_websocket...")
-        await mainsetup.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
+        await mainsetup.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id, story_type=story_type)
         print(f"🟢 api_backend.handle_story_websocket completed successfully")
     except Exception as e:
         print(f"🔴 Error in websocket_next_chapter: {e}")
@@ -126,16 +125,16 @@ async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: s
         traceback.print_exc()
 
 @app.post("/stories/initialize_story")
-async def api_initialize_story(user_id: str, story_title: str = ""):
-    return await mainsetup.initialize_story(user_id=user_id, story_title=story_title)
+async def api_initialize_story(user_id: str, story_type: str, story_title: str = "" ):
+    return await mainsetup.initialize_story(user_id=user_id, story_title=story_title, story_type=story_type)
 
 @app.put("/stories/{story_id}")
-async def api_continue_story(user_id: str, story_id: str):
-    return await mainsetup.continue_story(user_id=user_id, story_id=story_id)
+async def api_continue_story(user_id: str, story_id: str, story_type: str):
+    return await mainsetup.continue_story(user_id=user_id, story_id=story_id, story_type=story_type)
 
 @app.get("/stories/progress/{user_id}/{story_id}")
-async def api_get_story_progress(user_id: str, story_id: str):
-    return mainsetup.get_story_progress_for_user(user_id=user_id, story_id=story_id)
+async def api_get_story_progress(user_id: str, story_id: str, story_type: str):
+    return await mainsetup.get_story_progress_for_user(user_id=user_id, story_id=story_id, story_type=story_type)
 
 @app.patch("/stories/logout/{user_id}/{story_id}")
 async def api_logout_story(user_id: str, story_id: str):

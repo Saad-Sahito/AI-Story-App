@@ -14,15 +14,15 @@ from src.utilities.story_helpers import StoryHelpers
 from langchain.output_parsers import PydanticOutputParser
 
 # Global shared instance
-SHARED_SCENE_PLANNER_SERVICE = None
+CLASSIC_SCENE_PLANNER_SERVICE = None
 
 class SceneMemory(BaseModel):
     DirectorInstructions: str = Field(description="The director's detailed instructions for this scene.")
     scene_so_far: str = Field(default="", description="Accumulated text of the scene written so far.")
-    ai_question: Optional[str] = Field(default="", description="Most recent decision point question, if any.")
-    UserInput: Optional[str] = Field(default="", description="The latest user input choice, if any.")
-    scene_so_far_for_scene_planner: Optional[str] = Field(default="", description="Accumulated text of the scene, ai questions and user responses for the scene planner.")
-    number_of_options: Optional[int] = Field(default=0, description="Number of options available at the decision point.")
+    #ai_question: Optional[str] = Field(default="", description="Most recent decision point question, if any.")
+    #UserInput: Optional[str] = Field(default="", description="The latest user input choice, if any.")
+    #scene_so_far_for_scene_planner: Optional[str] = Field(default="", description="Accumulated text of the scene, ai questions and user responses for the scene planner.")
+    #number_of_options: Optional[int] = Field(default=0, description="Number of options available at the decision point.")
     scene_cluster: List = Field(default=[], description="Combination of scene text, questions and user choices stored as dicts inside the list.")
     story_id: Optional[str] = Field(default="", description="The story ID associated with this scene.")
 
@@ -39,8 +39,8 @@ class SceneState(BaseModel):
 
 class SceneWriterOutput(BaseModel):
     scene: str = Field(description="One paragraph of continuing narrative text. Do Not write the question here, only in the 'question' field.")
-    question: str = Field(description="Decision prompt for the user if this is the marked decision point, otherwise empty string.")
-    number_of_options: Optional[int] = Field(description="If there is a question, how many options are provided (0 if no question).")
+    #question: str = Field(description="Decision prompt for the user if this is the marked decision point, otherwise empty string.")
+    #number_of_options: Optional[int] = Field(description="If there is a question, how many options are provided (0 if no question).")
 
 class ScenePlannerOutput(BaseModel):
     action: str = Field(description="Either 'Complete' if the scene has all scene blueprint events, or 'Not Complete' otherwise.")
@@ -120,17 +120,17 @@ class SharedScenePlannerService:
             print(f"🔍 DEBUG: Invoking graph for {user_context.user_id}/{user_context.story_id}")
             result = await self.compiled.ainvoke(
                 user_context.scene_state,
-                {"recursion_limit": 100}
+                {"recursion_limit": 25}
             )
 
-            print(f"🔍 DEBUG: Graph result: {result}")
+            #print(f"🔍 DEBUG: Graph result: {result}")
             
             scene_memory: SceneMemory = result["scene_memory"]
-            print(f"🔍 DEBUG: Scene memory: so_far={scene_memory.scene_so_far[:50]}..., cluster_len={len(scene_memory.scene_cluster)}")
+            #print(f"🔍 DEBUG: Scene memory: so_far={scene_memory.scene_so_far[:50]}..., cluster_len={len(scene_memory.scene_cluster)}")
             
-            if result.get("next_node") == "END":
-                print("✅ Scene reached END normally")
-                return scene_memory.scene_so_far, scene_memory.scene_cluster
+            # if result.get("next_node") == "END":
+            #     print("✅ Scene reached END normally")
+            #     return scene_memory.scene_so_far, scene_memory.scene_cluster
             
             print("✅ Scene completed normally")
             return scene_memory.scene_so_far, scene_memory.scene_cluster
@@ -158,7 +158,7 @@ class SharedScenePlannerService:
 
         human_prompt = (
             f"Director's Instructions: {scene_memory.DirectorInstructions}\n"
-            f"Scene so far: {scene_memory.scene_so_far_for_scene_planner}\n"
+            f"Scene so far: {scene_memory.scene_so_far}\n"
             f"{self.scene_planner_parser.get_format_instructions()}"
         )
 
@@ -200,91 +200,90 @@ class SharedScenePlannerService:
         finally:
             gc.collect()
 
-        try:
-            # Only trigger decision flow if planner says Not Complete AND there's an ai_question awaiting answer
-            if state.next_node == "Not Complete" and scene_memory and scene_memory.ai_question and scene_memory.ai_question.strip():
-                print(f"🔍 DEBUG: Need user input for question: {scene_memory.ai_question}")
-                from connection.main_setup import get_redis_client
-                try:
-                    # Try to find the user/session-level structures
-                    user_context_id = state.user_context_id
-                    redis_client = get_redis_client()
-                    queue_key = f"input_queue:{user_context_id}:{scene_memory.story_id}"
+        # try:
+        #     # Only trigger decision flow if planner says Not Complete AND there's an ai_question awaiting answer
+        #     if state.next_node == "Not Complete" and scene_memory:
+        #         from setup.main_setup import get_redis_client
+        #         try:
+        #             # Try to find the user/session-level structures
+        #             user_context_id = state.user_context_id
+        #             redis_client = get_redis_client()
+        #             queue_key = f"input_queue:{user_context_id}:{scene_memory.story_id}"
 
-                    # Build callback payload
-                    decision_payload = {
-                        "type": "decision",
-                        "question": scene_memory.ai_question.strip(),
-                        "options": scene_memory.number_of_options,
-                        "user_choice": ""
-                    }
+        #             # Build callback payload
+        #             decision_payload = {
+        #                 "type": "decision",
+        #                 "question": scene_memory.ai_question.strip(),
+        #                 "options": scene_memory.number_of_options,
+        #                 "user_choice": ""
+        #             }
 
-                    # Prefer state.scene_chunk_callback if provided
-                    scene_chunk_cb = state.scene_chunk_callback if getattr(state, "scene_chunk_callback", None) else None
+        #             # Prefer state.scene_chunk_callback if provided
+        #             scene_chunk_cb = state.scene_chunk_callback if getattr(state, "scene_chunk_callback", None) else None
 
-                    if not scene_chunk_cb:
-                        # Fetch from Redis if not provided
-                        user_data_json = redis_client.get(f"session:{user_context_id}")
-                        user_data = json.loads(user_data_json) if user_data_json else {}
-                        story_data = user_data.get(scene_memory.story_id, {})
-                        if not story_data:
-                            story_data = redis_client.get(f"session:{user_context_id}:{scene_memory.story_id}")
-                            story_data = json.loads(story_data) if story_data else {}
-                        director_obj = story_data.get("director")
-                        if director_obj:
-                            scene_chunk_cb = getattr(director_obj, "scene_chunk_callback", None)
+        #             if not scene_chunk_cb:
+        #                 # Fetch from Redis if not provided
+        #                 user_data_json = redis_client.get(f"session:{user_context_id}")
+        #                 user_data = json.loads(user_data_json) if user_data_json else {}
+        #                 story_data = user_data.get(scene_memory.story_id, {})
+        #                 if not story_data:
+        #                     story_data = redis_client.get(f"session:{user_context_id}:{scene_memory.story_id}")
+        #                     story_data = json.loads(story_data) if story_data else {}
+        #                 director_obj = story_data.get("director")
+        #                 if director_obj:
+        #                     scene_chunk_cb = getattr(director_obj, "scene_chunk_callback", None)
 
-                    # Send decision to frontend
-                    if scene_chunk_cb:
-                        try:
-                            print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
-                            scene_chunk_cb(decision_payload)
-                        except Exception as e:
-                            print(f"❌ ERROR: scene_chunk_callback raised: {e}")
-                            import traceback; traceback.print_exc()
-                    else:
-                        print(f"❌ ERROR: No scene_chunk_callback found for {user_context_id}/{scene_memory.story_id}")
+        #             # Send decision to frontend
+        #             if scene_chunk_cb:
+        #                 try:
+        #                     print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
+        #                     scene_chunk_cb(decision_payload)
+        #                 except Exception as e:
+        #                     print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+        #                     import traceback; traceback.print_exc()
+        #             else:
+        #                 print(f"❌ ERROR: No scene_chunk_callback found for {user_context_id}/{scene_memory.story_id}")
 
-                    # Wait for user input from Redis List
-                    try:
-                        print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
-                        user_choice = None
-                        for _ in range(30):  # Poll for up to 30 seconds
-                            choice = redis_client.lpop(queue_key)
-                            if choice:
-                                user_choice = choice
-                                break
-                            await asyncio.sleep(1.0)
-                        if user_choice:
-                            print(f"✅ DEBUG: Received user choice: {user_choice} from Redis queue {queue_key}")
-                            # Append decision entry to scene_cluster and update memory
-                            scene_memory.scene_cluster.append({
-                                "type": "decision",
-                                "question": scene_memory.ai_question.strip(),
-                                "options": scene_memory.number_of_options,
-                                "user_choice": user_choice.strip() if isinstance(user_choice, str) else user_choice
-                            })
-                            scene_memory.UserInput = user_choice
-                            scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {user_choice})\n"
-                        else:
-                            print(f"❌ TIMEOUT: No user input received within 30 seconds for {user_context_id}/{scene_memory.story_id}")
-                            scene_memory.UserInput = ""
-                    except Exception as e:
-                        print(f"❌ ERROR in Redis queue handling: {e}")
-                        import traceback; traceback.print_exc()
-                        scene_memory.UserInput = ""
-                except Exception as e:
-                    print(f"❌ ERROR in user input handling: {e}")
-                    import traceback; traceback.print_exc()
-                    scene_memory.UserInput = ""
-            else:
-                # No decision outstanding
-                scene_memory.UserInput = ""
-        except Exception as e:
-            # Safety: ensure any unexpected exception in decision handling won't break planner
-            print(f"❌ ERROR after ScenePlanner LLM call while handling user input: {e}")
-            import traceback; traceback.print_exc()
-            scene_memory.UserInput = ""
+        #             # Wait for user input from Redis List
+        #             try:
+        #                 print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+        #                 user_choice = None
+        #                 for _ in range(30):  # Poll for up to 30 seconds
+        #                     choice = redis_client.lpop(queue_key)
+        #                     if choice:
+        #                         user_choice = choice
+        #                         break
+        #                     await asyncio.sleep(1.0)
+        #                 if user_choice:
+        #                     print(f"✅ DEBUG: Received user choice: {user_choice} from Redis queue {queue_key}")
+        #                     # Append decision entry to scene_cluster and update memory
+        #                     scene_memory.scene_cluster.append({
+        #                         "type": "decision",
+        #                         "question": scene_memory.ai_question.strip(),
+        #                         "options": scene_memory.number_of_options,
+        #                         "user_choice": user_choice.strip() if isinstance(user_choice, str) else user_choice
+        #                     })
+        #                     scene_memory.UserInput = user_choice
+        #                     scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {user_choice})\n"
+        #                 else:
+        #                     print(f"❌ TIMEOUT: No user input received within 30 seconds for {user_context_id}/{scene_memory.story_id}")
+        #                     scene_memory.UserInput = ""
+        #             except Exception as e:
+        #                 print(f"❌ ERROR in Redis queue handling: {e}")
+        #                 import traceback; traceback.print_exc()
+        #                 scene_memory.UserInput = ""
+        #         except Exception as e:
+        #             print(f"❌ ERROR in user input handling: {e}")
+        #             import traceback; traceback.print_exc()
+        #             scene_memory.UserInput = ""
+        #     else:
+        #         # No decision outstanding
+        #         scene_memory.UserInput = ""
+        # except Exception as e:
+        #     # Safety: ensure any unexpected exception in decision handling won't break planner
+        #     print(f"❌ ERROR after ScenePlanner LLM call while handling user input: {e}")
+        #     import traceback; traceback.print_exc()
+        #     scene_memory.UserInput = ""
 
         # Persist updated scene memory back into state
         state.scene_memory = scene_memory
@@ -302,12 +301,8 @@ class SharedScenePlannerService:
             "The scene blueprint that you need to follow strictly for this scene. "
             "You do not know anything beyond what the Director tells you, so be sure to include all relevant context in your writing. "
             "Write in a vivid, engaging style, with rich descriptions and immersive details. "
-            "If the Director's Instructions include a decision point question for the user, end your paragraph output with that question. "
-            "Do not produce more user decision points than what the Director includes. "
             "Do not make up any new characters or worlds that the Director has not mentioned. "
             "Do not repeat the entire scene so far, only continue it with one new paragraph. "
-            "You may give up to two - four options for the user to choose from, include them in the question, mark each with letters. "
-            "Include the number of options in the 'number_of_options' field."
         )
 
         max_scene_length = 500  # Reduced for memory efficiency
@@ -317,9 +312,6 @@ class SharedScenePlannerService:
         {scene_memory.DirectorInstructions}
 
         {f"Scene so far (DO NOT rewrite this, only output text that continues from here): {truncated_scene}" if truncated_scene else ""}
-
-        {f"Your Question: {scene_memory.ai_question}" if scene_memory.ai_question else ""}
-        {f"(The user chose: {scene_memory.UserInput})" if scene_memory.UserInput else ""}
 
         {self.scene_writer_parser.get_format_instructions()}
         """
@@ -336,8 +328,8 @@ class SharedScenePlannerService:
                 parsed = self.scene_writer_parser.parse(clean_resp)
                 del clean_resp
                 scene_text = parsed.scene
-                question_text = parsed.question
-                number_of_options = parsed.number_of_options
+                # question_text = parsed.question
+                # number_of_options = parsed.number_of_options
             except Exception as e:
                 print(f"❌ SceneWriter parsing failed: {e}")
                 retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
@@ -350,8 +342,8 @@ class SharedScenePlannerService:
                     del retry_resp
                     parsed = self.scene_writer_parser.parse(retry_clean)
                     scene_text = parsed.scene
-                    question_text = parsed.question
-                    number_of_options = parsed.number_of_options
+                    # question_text = parsed.question
+                    # number_of_options = parsed.number_of_options
                 except Exception as retry_e:
                     print(f"❌ SceneWriter retry parsing failed: {retry_e}")
                     match = re.search(r'(\{[\s\S]*\})', retry_clean)
@@ -360,24 +352,24 @@ class SharedScenePlannerService:
                             recovered = json.loads(match.group(1))
                             del match
                             scene_text = recovered.get("scene", "")
-                            question_text = recovered.get("question", "")
-                            number_of_options = recovered.get("number_of_options", 0)
+                            # question_text = recovered.get("question", "")
+                            # number_of_options = recovered.get("number_of_options", 0)
                             del recovered
                         except Exception as inner_e:
                             print(f"❌ SceneWriter JSON recovery failed: {inner_e}")
                             scene_text = retry_clean
-                            question_text = ""
-                            number_of_options = 0
+                            # question_text = ""
+                            # number_of_options = 0
                     else:
                         scene_text = retry_clean
-                        question_text = ""
-                        number_of_options = 0
+                        # question_text = ""
+                        # number_of_options = 0
                 del retry_clean
 
-            print(f"🔍 DEBUG: SceneWriter parsed - scene_text: {scene_text[:50]}..., question: {question_text}, options: {number_of_options}")
+            #print(f"🔍 DEBUG: SceneWriter parsed - scene_text: {scene_text[:50]}..., question: {question_text}, options: {number_of_options}")
 
-            if scene_memory.UserInput:
-                scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
+            # if scene_memory.UserInput:
+            #     scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
 
             scene_memory.scene_cluster.append({
                 "type": "text",
@@ -385,15 +377,15 @@ class SharedScenePlannerService:
             })
 
             scene_memory.scene_so_far += " " + scene_text + "\n\n"
-            scene_memory.scene_so_far_for_scene_planner += scene_text + "\n"
+            #scene_memory.scene_so_far_for_scene_planner += scene_text + "\n"
 
-            if question_text.strip():
-                scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
-                scene_memory.ai_question = question_text.strip()
-                scene_memory.number_of_options = number_of_options if number_of_options > 0 else 1
-            else:
-                scene_memory.ai_question = ""
-                scene_memory.number_of_options = 0
+            # if question_text.strip():
+            #     scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
+            #     scene_memory.ai_question = question_text.strip()
+            #     scene_memory.number_of_options = number_of_options if number_of_options > 0 else 1
+            # else:
+            #     scene_memory.ai_question = ""
+            #     scene_memory.number_of_options = 0
 
             state.scene_memory = scene_memory
 

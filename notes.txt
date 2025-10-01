@@ -6,6 +6,15 @@ uvicorn main:app --reload
 
 python -m main_nicegui.py
 
+for main
 git add .
 git commit -m "some text"
 git push origin main
+
+
+for branches
+git checkout -b story-sessions-fix   # created the branch
+# make changes
+git add .
+git commit -m "Fix session bug"
+git push -u origin story-sessions-fix

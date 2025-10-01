@@ -5,14 +5,14 @@ import redis
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
 from memory_profiler import profile
-from shared_redis_pool import get_redis_client
+from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from src.story_engines.interactive_adventure.agents.story_author import StoryAuthor
 from src.story_engines.interactive_adventure.agents.director_agent import DirectorGraph
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
 from contextlib import contextmanager
 
-SHARED_INTERACTIVE_SETUP = None
+SHARED_INTERACTIVE_STORY_SETUP = None
 SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 
 load_dotenv()
@@ -29,12 +29,12 @@ def redis_lock(client, lock_key, timeout=10):
     else:
         raise HTTPException(status_code=503, detail="Could not acquire lock, please try again")
 
-class InteractiveSetup:
+class InteractiveStorySetup:
     def __init__(self):
         #self.llm_client = get_shared_client()
         if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
             scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
-            print("Initialized shared scene planner service")
+            print("Initialized interactive shared scene planner service")
 
     def _get_session(self, user_id: str, story_id: str = None):
         """Retrieve session data from Redis, reinitializing non-serializable objects."""
@@ -180,7 +180,7 @@ class InteractiveSetup:
         self._set_session(user_id, story_id, data=story_session)
 
     @profile
-    def initialize_story(self, user_id: str, story_title: str = ""):
+    async def initialize_story(self, user_id: str, story_title: str = ""):
         """Initialize a new story and store session in Redis."""
         story_title_normalized = story_title.lower().replace(" ", "_")
         story_id = f"{story_title_normalized}_{user_id}"
@@ -190,7 +190,7 @@ class InteractiveSetup:
         return {"status": "success", "message": f"Story initialized for {user_id}", "story_id": story_id}
 
     @profile
-    def continue_story(self, user_id: str, story_id: str) -> dict:
+    async def continue_story(self, user_id: str, story_id: str) -> dict:
         """Continue an existing story, loading session from Redis."""
         client = get_redis_client()
         user_key = f"session:{user_id}"
@@ -297,7 +297,7 @@ class InteractiveSetup:
                 await websocket.send_json({"error": "Missing user_id or story_id"})
                 await websocket.close()
                 return
-            user_key = f"session:{user_id}"
+            user_key = f"interactive_session:{user_id}"
             user_lock_key = f"lock:{user_key}"
             with redis_lock(client, user_lock_key):
                 user_data = self._get_session(user_id)
@@ -317,7 +317,7 @@ class InteractiveSetup:
                     "last_active": time.time(),
                 }
                 user_data["stories"][story_id] = serializable_story_data
-                story_key = f"session:{user_id}:{story_id}"
+                story_key = f"interactive_session:{user_id}:{story_id}"
                 with client.pipeline() as pipe:
                     pipe.set(user_key, json.dumps(user_data))
                     pipe.expire(user_key, SESSION_TTL)
@@ -438,7 +438,7 @@ class InteractiveSetup:
             except RuntimeError:
                 print("🔍 DEBUG: WebSocket already closed")
     
-    def get_story_progress_for_user(self, user_id: str, story_id: str) -> dict:
+    async def get_story_progress_for_user(self, user_id: str, story_id: str) -> dict:
         """Continue an existing story, loading session from Redis."""
         user_data = self._get_session(user_id)
         if not user_data:

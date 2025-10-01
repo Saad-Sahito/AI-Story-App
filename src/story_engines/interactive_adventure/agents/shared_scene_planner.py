@@ -120,7 +120,7 @@ class SharedScenePlannerService:
             print(f"🔍 DEBUG: Invoking graph for {user_context.user_id}/{user_context.story_id}")
             result = await self.compiled.ainvoke(
                 user_context.scene_state,
-                {"recursion_limit": 100}
+                {"recursion_limit": 25}
             )
 
             print(f"🔍 DEBUG: Graph result: {result}")
@@ -202,9 +202,9 @@ class SharedScenePlannerService:
 
         try:
             # Only trigger decision flow if planner says Not Complete AND there's an ai_question awaiting answer
-            if state.next_node == "Not Complete" and scene_memory and scene_memory.ai_question and scene_memory.ai_question.strip():
+            if state.next_node == "Not Complete" and scene_memory and scene_memory.ai_question.strip():
                 print(f"🔍 DEBUG: Need user input for question: {scene_memory.ai_question}")
-                from connection.shared_redis_pool import get_redis_client
+                from setup.shared_redis_pool import get_redis_client
                 try:
                     # Try to find the user/session-level structures
                     user_context_id = state.user_context_id

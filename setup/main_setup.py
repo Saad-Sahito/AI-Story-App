@@ -3,11 +3,12 @@ import time
 import redis
 from fastapi import HTTPException
 from dotenv import load_dotenv
-from shared_redis_pool import get_redis_client
+from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from contextlib import contextmanager
 from fastapi import WebSocket
-import interactive_setup as interactive_setup_module
+import setup.interactive_setup as interactive_story_setup_module
+import setup.classis_setup as classic_setup_story_module
 
 SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 
@@ -30,32 +31,64 @@ def redis_lock(client, lock_key, timeout=10):
 class MainSetup:
     async def initialize_story(self, user_id: str, story_type: str, story_title: str = ""):
         if story_type == 'interactive':
-            if interactive_setup_module.SHARED_INTERACTIVE_SETUP is None:
-                interactive_setup_module.SHARED_INTERACTIVE_SETUP = interactive_setup_module.InteractiveSetup()
-                print("Initialized shared InteractiveSetup")
-            interactive_setup_module.SHARED_INTERACTIVE_SETUP.initialize_story(user_id=user_id, story_title=story_title)
+            if interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP is None:
+                interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP = interactive_story_setup_module.InteractiveStorySetup()
+                print("Initialized shared InteractiveStorySetup")
+            interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP.initialize_story(user_id=user_id, story_title=story_title)
+        elif story_type == 'classic':
+            if classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP is None:
+                classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP = classic_setup_story_module.ClassicStorySetup()
+                print("Initialized shared ClassicStorySetup")
+            classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP.initialize_story(user_id=user_id, story_title=story_title)
 
     async def continue_story(self, user_id: str, story_id: str, story_type: str) -> dict:
         if story_type == 'interactive':
-            if interactive_setup_module.SHARED_INTERACTIVE_SETUP is None:
-                interactive_setup_module.SHARED_INTERACTIVE_SETUP = interactive_setup_module.InteractiveSetup()
-                print("Initialized shared InteractiveSetup")
-            interactive_setup_module.SHARED_INTERACTIVE_SETUP.continue_story(user_id=user_id, story_id=story_id)
+            if interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP is None:
+                interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP = interactive_story_setup_module.InteractiveStorySetup()
+                print("Initialized shared InteractiveStorySetup")
+            return await interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP.continue_story(user_id=user_id, story_id=story_id)
+        elif story_type == 'classic':
+            if classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP is None:
+                classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP = classic_setup_story_module.ClassicStorySetup()
+                print("Initialized shared ClassicStorySetup")
+            return await classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP.continue_story(user_id=user_id, story_id=story_id)
 
     async def create_premise(self, initial_story_data: dict):
         story_type = initial_story_data['story_type']
         if story_type == 'interactive':
-            if interactive_setup_module.SHARED_INTERACTIVE_SETUP is None:
-                interactive_setup_module.SHARED_INTERACTIVE_SETUP = interactive_setup_module.InteractiveSetup()
-                print("Initialized shared InteractiveSetup")
-            interactive_setup_module.SHARED_INTERACTIVE_SETUP.create_premise(initial_story_data=initial_story_data)
+            if interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP is None:
+                interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP = interactive_story_setup_module.InteractiveStorySetup()
+                print("Initialized shared InteractiveStorySetup")
+            return await interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP.create_premise(initial_story_data=initial_story_data)
+        elif story_type == 'classic':
+            if classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP is None:
+                classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP = classic_setup_story_module.ClassicStorySetup()
+                print("Initialized shared ClassicStorySetup")
+            return await classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP.create_premise(initial_story_data=initial_story_data)
 
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str, story_type: str):
         if story_type == 'interactive':
-            if interactive_setup_module.SHARED_INTERACTIVE_SETUP is None:
-                interactive_setup_module.SHARED_INTERACTIVE_SETUP = interactive_setup_module.InteractiveSetup()
-                print("Initialized shared InteractiveSetup")
-            interactive_setup_module.SHARED_INTERACTIVE_SETUP.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
+            if interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP is None:
+                interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP = interactive_story_setup_module.InteractiveStorySetup()
+                print("Initialized shared InteractiveStorySetup")
+            await interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
+        elif story_type == 'classic':
+            if classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP is None:
+                classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP = classic_setup_story_module.ClassicStorySetup()
+                print("Initialized shared ClassicStorySetup")
+            await classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id)
+    
+    async def get_story_progress_for_user(self, user_id: str, story_id: str, story_type: str) -> dict:
+        if story_type == 'interactive':
+            if interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP is None:
+                interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP = interactive_story_setup_module.InteractiveStorySetup()
+                print("Initialized shared InteractiveStorySetup")
+            return await interactive_story_setup_module.SHARED_INTERACTIVE_STORY_SETUP.get_story_progress_for_user(user_id=user_id, story_id=story_id)
+        elif story_type == 'classic':
+            if classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP is None:
+                classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP = classic_setup_story_module.ClassicStorySetup()
+                print("Initialized shared ClassicStorySetup")
+            return await classic_setup_story_module.SHARED_CLASSIC_STORY_SETUP.get_story_progress_for_user(user_id=user_id, story_id=story_id)
 
     @staticmethod
     def logout(user_id: str):
