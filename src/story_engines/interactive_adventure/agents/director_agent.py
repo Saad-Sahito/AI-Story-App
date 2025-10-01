@@ -1,4 +1,4 @@
-# src/agents/director_agent.py - MODIFIED VERSION
+# src/agents/director_agent.py
 
 import json
 import gc
@@ -6,18 +6,15 @@ from typing import Any, Dict, List, Literal
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
-
-from src.memory.memory_system import StoryMemorySystem
-
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
-from src.utilities.story_helpers import StoryHelpers
 
-# Import the shared scene planner service and context
+from src.utilities.story_helpers import StoryHelpers
+from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import ( 
     UserSceneContext
 )
-import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
+import shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
 INTERACTIVE_DIRECTOR_AGENT = None
@@ -100,7 +97,7 @@ class Ingestor:
         {scene_parser.get_format_instructions()}
         """
         
-        print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
+        #print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
 
         for attempt in range(1, max_retries + 1):
             resp = gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
@@ -108,11 +105,11 @@ class Ingestor:
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
             gc.collect()
-            print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
+            #print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
 
             if isinstance(clean_resp, dict):
                 clean_resp = json.dumps(clean_resp)
-            print("TYPE OF CLEAN_RESP:", type(clean_resp))
+            #print("TYPE OF CLEAN_RESP:", type(clean_resp))
 
             success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, SceneBundle, scene_parser)
             
@@ -288,7 +285,6 @@ class Ingestor:
 
     
 
-
 class DirectorGraph:
     def __init__(self, memory_system: StoryMemorySystem):
         self.memory = memory_system
@@ -336,16 +332,12 @@ class DirectorGraph:
             scene_chunk_callback=self.scene_chunk_callback
         )
         
-        
-
-        
         if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
-            print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE is None!")
+            print("❌ ERROR: INTERACTIVE_SCENE_PLANNER_SERVICE is None!")
             raise
         
         director_instructions = self._get_latest_director_message(state)
 
-        
         user_context = UserSceneContext.create_for_user(
             user_id=self.memory.user_id,
             story_id=self.memory.story_id,
@@ -356,7 +348,6 @@ class DirectorGraph:
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
         scene_text, scene_cluster = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(user_context)
     
-        # Clean up user context (it's no longer needed)
         del user_context
         gc.collect()
 
@@ -404,7 +395,7 @@ class DirectorGraph:
     async def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
         system_prompt = (
-            "You are the Director Agent for an interactive text-based novel. "
+            "You are the Director Agent for an interactive text-based story. "
             "You must create exhaustive, prescriptive instructions for the Scene Writer agent. "
             "The Scene Writer will write ONLY what you specify — it has no memory of past scenes and no freedom to improvise. "
             "Therefore, you must make EVERY creative decision. "
@@ -441,12 +432,10 @@ class DirectorGraph:
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
             f"Scene Number: {state.scene_id}\n"
-            f"Current Chapter So Far Summary: {self.current_chap_summary}\n"
-            
-            
+            f"Current Chapter So Far Summary: {self.current_chap_summary}\n"   
         )
         
-        print("CONTEXT TO DIRECTOR:", context)
+        #print("CONTEXT TO DIRECTOR:", context)
         human_prompt = f"""
         {context}
 

@@ -1,4 +1,4 @@
-# src/agents/director_agent.py - MODIFIED VERSION
+# src/agents/director_agent.py
 
 import json
 import gc
@@ -7,17 +7,15 @@ from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
 
-from src.memory.memory_system import StoryMemorySystem
-
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
-from src.utilities.story_helpers import StoryHelpers
 
-# Import the shared scene planner service and context
+from src.utilities.story_helpers import StoryHelpers
+from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import ( 
     UserSceneContext
 )
-import agents.shared_scene_planner as scene_planner_module
+import shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
 # Keep existing state and models unchanged
@@ -98,7 +96,7 @@ class Ingestor:
         {scene_parser.get_format_instructions()}
         """
         
-        print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
+        #print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
 
         for attempt in range(1, max_retries + 1):
             resp = gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
@@ -106,11 +104,11 @@ class Ingestor:
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
             gc.collect()
-            print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
+            #print(f"[Attempt {attempt}] RAW INGEST SCENE RESPONSE:", clean_resp)
 
             if isinstance(clean_resp, dict):
                 clean_resp = json.dumps(clean_resp)
-            print("TYPE OF CLEAN_RESP:", type(clean_resp))
+            #print("TYPE OF CLEAN_RESP:", type(clean_resp))
 
             success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, SceneBundle, scene_parser)
             
@@ -290,11 +288,7 @@ class Ingestor:
 # Modified DirectorGraph to use shared scene planner
 class DirectorGraph:
     def __init__(self, memory_system: StoryMemorySystem):
-        #self.llm_client: LLMClient = llm_client
         self.memory = memory_system
-        
-        # NO MORE sceneplanner instance per user!
-        # We'll use the global shared instance
         
         self.graph = StateGraph(StoryState)
         self.graph.set_entry_point("director_node")
@@ -339,16 +333,12 @@ class DirectorGraph:
             scene_chunk_callback=self.scene_chunk_callback
         )
         
-        
-
-        
-        if scene_planner_module.SHARED_SCENE_PLANNER_SERVICE is None:
-            print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE is None!")
+        if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
+            print("❌ ERROR: CLASSIC_SCENE_PLANNER_SERVICE is None!")
             raise
         
         director_instructions = self._get_latest_director_message(state)
 
-        
         user_context = UserSceneContext.create_for_user(
             user_id=self.memory.user_id,
             story_id=self.memory.story_id,
@@ -357,9 +347,8 @@ class DirectorGraph:
         )
         
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster = await scene_planner_module.SHARED_SCENE_PLANNER_SERVICE.run_scene(user_context)
+        scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(user_context)
     
-        # Clean up user context (it's no longer needed)
         del user_context
         gc.collect()
 
@@ -407,14 +396,14 @@ class DirectorGraph:
     async def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
         system_prompt = (
-            "You are the Director Agent for an interactive text-based novel. "
+            "You are the Director Agent for a text-based story. "
             "You must create exhaustive, prescriptive instructions for the Scene Writer agent. "
             "The Scene Writer will write ONLY what you specify — it has no memory of past scenes and no freedom to improvise. "
             "Therefore, you must make EVERY creative decision. "
             "Do not use vague descriptions, do not leave placeholders, and do not rely on the Scene Writer to 'fill in the gaps.' "
             "All beats, dialogue, character reactions, and world details must be fully defined by you. "
             "If something is unclear, you must decide it yourself. "
-            "The Scene Writer should NEVER invent characters, settings, dialogue, decision points, or events. "
+            "The Scene Writer should NEVER invent characters, settings, dialogue, or events. "
             "Prohibit generic phrasing such as 'mundane small talk,' 'subtle hints,' or 'something happens.' Always give exact lines or examples. "
             "Your output must be in the given JSON format. "
             "The 'instructions' value must be 200-500 words string, not a dictionary and contain the following sections:\n\n"
@@ -422,10 +411,9 @@ class DirectorGraph:
             "2. **Characters** - List all relevant characters with names, ages, traits, and current state of mind. If a side character appears, provide their exact role and tone. \n"
             "3. **Detailed Scene Blueprint** - A numbered, step-by-step breakdown of the scene's beats in strict order. Each beat must describe: location, action, at least one visual detail, at least one sound detail, suggest general dialogue idea. "
             "Do not allow ambiguity. Do not say 'the writer should show this.' You must say 'this happens, in this way.' \n"
-            "4. **Main Character's (User) Decision Points** - Describe 1-2 explicit points in the scene where the scene writer prompts the user to make a choice, either dialogue or action.\n"
-            "5. **Screenplay Notes** - A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass,' 'Include two internal monologue lines showing anxiety'). "
+            "4. **Screenplay Notes** - A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass,' 'Include two internal monologue lines showing anxiety'). "
             "These are mandatory, not suggestions. \n"
-            "6. **Chapter/Scene ID** - Exact chapter and scene number. \n\n"
+            "5. **Chapter/Scene ID** - Exact chapter and scene number. \n\n"
             "Always be concrete, exhaustive, and prescriptive. "
             "Never leave the Scene Writer to guess or invent. "
             "Call END if you think the chapter should end now. "
@@ -444,12 +432,12 @@ class DirectorGraph:
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
             f"Scene Number: {state.scene_id}\n"
-            f"Current Chapter So Far Summary: {self.current_chap_summary}\n"
+            f"Summary of Current Chapter So Far: {self.current_chap_summary}\n"
             
             
         )
         
-        print("CONTEXT TO DIRECTOR:", context)
+        #print("CONTEXT TO DIRECTOR:", context)
         human_prompt = f"""
         {context}
 
