@@ -15,7 +15,7 @@ from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import ( 
     UserSceneContext
 )
-import shared_scene_planner as scene_planner_module
+import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
 # Keep existing state and models unchanged

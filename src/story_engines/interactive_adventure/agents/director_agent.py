@@ -14,7 +14,7 @@ from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import ( 
     UserSceneContext
 )
-import shared_scene_planner as scene_planner_module
+import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
 INTERACTIVE_DIRECTOR_AGENT = None

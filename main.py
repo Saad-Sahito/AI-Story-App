@@ -97,8 +97,8 @@ async def lifespan(app: FastAPI):
     print("✅ Shutdown complete")
 
 app = FastAPI(
-    title="AI Interactive Story App",
-    description="Optimized for memory efficiency with shared instances and Redis",
+    title="Whimsera App",
+    description="AI Story Generation App",
     lifespan=lifespan
 )
 
@@ -114,7 +114,6 @@ async def api_create_premise(initial_story_data: dict):
 
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str, story_type: str):
-    
     try:
         print(f"🔵 Calling api_backend.handle_story_websocket...")
         await mainsetup.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id, story_type=story_type)

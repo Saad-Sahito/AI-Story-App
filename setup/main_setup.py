@@ -7,13 +7,11 @@ from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from contextlib import contextmanager
 from fastapi import WebSocket
-import setup.interactive_setup as interactive_story_setup_module
-import setup.classis_setup as classic_setup_story_module
+import setup.story_types.interactive_setup as interactive_story_setup_module
+import setup.story_types.classis_setup as classic_setup_story_module
 
 SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 
-# Global shared instances
-#SHARED_LLM_CLIENT = None
 load_dotenv()
 
 @contextmanager
