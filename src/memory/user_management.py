@@ -10,12 +10,12 @@ def add_user(nickname: str, user_tag: str, age: Optional[int], user_id: str, sto
     store.close()
     return result
 
-def append_story(user_id: str, story_title: str, story_id: str):
+def append_story(user_id: str, story_title: str, story_id: str, story_type: str):
     """
     Append a story to the user's stories list.
     """
     store = get_sqlite_store(table="users", user_id=user_id, story_id=None)
-    result = store.append_story(user_id, story_title, story_id)
+    result = store.append_story(user_id=user_id, story_title=story_title, story_id=story_id, story_type=story_type)
     store.close()
     return result
 

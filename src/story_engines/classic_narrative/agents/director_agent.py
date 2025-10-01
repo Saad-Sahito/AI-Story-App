@@ -14,10 +14,10 @@ from langchain.output_parsers import PydanticOutputParser
 from src.utilities.story_helpers import StoryHelpers
 
 # Import the shared scene planner service and context
-from .scene_creation_subgraph.shared_scene_planner import ( 
+from .shared_scene_planner import ( 
     UserSceneContext
 )
-import src.agents.scene_creation_subgraph.shared_scene_planner as scene_planner_module
+import agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
 # Keep existing state and models unchanged

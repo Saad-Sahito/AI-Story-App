@@ -167,7 +167,7 @@ class SQLiteStore:
         except sqlite3.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    def append_story(self, user_id: str, story_title: str, story_id: str):
+    def append_story(self, user_id: str, story_title: str, story_id: str, story_type: str):
         """Append a story to the user's stories list."""
         try:
             with self._get_connection() as conn:
@@ -186,7 +186,7 @@ class SQLiteStore:
                     return {"status": "info", "message": f"Story '{story_title}' already exists"}
 
                 # Append new story
-                current_stories.append({"title": story_title, "story_id": story_id})
+                current_stories.append({"title": story_title, "story_id": story_id, "story_type": story_type})
 
                 # Update stories
                 conn.execute(
@@ -298,6 +298,7 @@ class SQLiteStore:
 
                     title = story.get("title", "Untitled Story")
                     story_id = story.get("story_id")
+                    story_type = story.get("story_type")
                     if not story_id:
                         continue  # skip if story_id missing (invalid story record)
 
@@ -316,6 +317,7 @@ class SQLiteStore:
                     story_data = {
                         "title": title,
                         "story_id": story_id,
+                        "story_type": story_type,
                         "latest_chapter_id": 0,
                         "continue_scene_id": 0,
                         "word_count": 0,

@@ -204,7 +204,7 @@ class SharedScenePlannerService:
             # Only trigger decision flow if planner says Not Complete AND there's an ai_question awaiting answer
             if state.next_node == "Not Complete" and scene_memory and scene_memory.ai_question and scene_memory.ai_question.strip():
                 print(f"🔍 DEBUG: Need user input for question: {scene_memory.ai_question}")
-                from connection.api_backend import get_redis_client
+                from connection.main_setup import get_redis_client
                 try:
                     # Try to find the user/session-level structures
                     user_context_id = state.user_context_id
