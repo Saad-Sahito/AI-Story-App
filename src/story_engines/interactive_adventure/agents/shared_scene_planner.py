@@ -222,22 +222,10 @@ class SharedScenePlannerService:
                     # Prefer state.scene_chunk_callback if provided
                     scene_chunk_cb = state.scene_chunk_callback if getattr(state, "scene_chunk_callback", None) else None
 
-                    if not scene_chunk_cb:
-                        # Fetch from Redis if not provided
-                        user_data_json = redis_client.get(f"session:{user_context_id}")
-                        user_data = json.loads(user_data_json) if user_data_json else {}
-                        story_data = user_data.get(scene_memory.story_id, {})
-                        if not story_data:
-                            story_data = redis_client.get(f"session:{user_context_id}:{scene_memory.story_id}")
-                            story_data = json.loads(story_data) if story_data else {}
-                        director_obj = story_data.get("director")
-                        if director_obj:
-                            scene_chunk_cb = getattr(director_obj, "scene_chunk_callback", None)
-
                     # Send decision to frontend
                     if scene_chunk_cb:
                         try:
-                            print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
+                            #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
                             scene_chunk_cb(decision_payload)
                         except Exception as e:
                             print(f"❌ ERROR: scene_chunk_callback raised: {e}")
@@ -247,9 +235,9 @@ class SharedScenePlannerService:
 
                     # Wait for user input from Redis List
                     try:
-                        print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+                        #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
                         user_choice = None
-                        for _ in range(5000):  # Poll for up to 30 seconds
+                        for _ in range(5000):
                             choice = redis_client.lpop(queue_key)
                             if choice:
                                 user_choice = choice

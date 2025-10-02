@@ -1,8 +1,8 @@
 import os
 from pathlib import Path
-from qdrant_client import QdrantClient
 from dotenv import load_dotenv
 from .sqlite_store import SQLiteStore
+from qdrant_client.async_qdrant_client import AsyncQdrantClient
 
 # Load environment variables
 load_dotenv()
@@ -13,7 +13,7 @@ DEFAULT_DB_PATH = os.path.join(os.getcwd(), "data", "story_memory.db")
 # Ensure data directory exists
 Path(DEFAULT_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
 
-def get_sqlite_store(table: str, user_id: str, story_id: str, db_path: str = None) -> SQLiteStore:
+async def get_sqlite_store(table: str, user_id: str, story_id: str, db_path: str = None) -> SQLiteStore:
     """Factory function to create SQLite store instances."""
     return SQLiteStore(
         db_path=db_path or DEFAULT_DB_PATH,
@@ -22,7 +22,7 @@ def get_sqlite_store(table: str, user_id: str, story_id: str, db_path: str = Non
         story_id=story_id
     )
 
-SHARED_QDRANT = QdrantClient(
+SHARED_QDRANT = AsyncQdrantClient(
     url="http://localhost:6333"
 )
 

@@ -1,6 +1,7 @@
 # src/agents/director_agent.py
 
 import json
+import asyncio
 import gc
 from typing import Any, Dict, List, Literal
 from langgraph.graph import StateGraph, END
@@ -12,9 +13,7 @@ from langchain.output_parsers import PydanticOutputParser
 
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
-from .shared_scene_planner import ( 
-    UserSceneContext
-)
+from .shared_scene_planner import UserSceneContext
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
@@ -71,7 +70,7 @@ class Ingestor:
         self.memory = memory_system
 
     # ---- Scene Ingestion (this is part of the Ingestor class, not DirectorGraph) ----
-    def ingest_scene(self, state: StoryState, scene_text: str, max_retries: int = 3) -> Dict[str, str]:
+    async def ingest_scene(self, state: StoryState, scene_text: str, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON using schema + parser."""
         system_prompt = "You are the Scene Breakdown Agent. Extract structured info from the scene. " \
         "Always include chapter and scene id in character and world details, in order to keep track later. " \
@@ -99,7 +98,7 @@ class Ingestor:
         #print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
 
         for attempt in range(1, max_retries + 1):
-            resp = gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -166,7 +165,7 @@ class Ingestor:
         
         del system_prompt, human_prompt
 
-    def ingest_chapter(self, state: StoryState, current_chap_summary, max_retries: int = 3) -> Dict[str, Any]:
+    async def ingest_chapter(self, state: StoryState, current_chap_summary, max_retries: int = 3) -> Dict[str, Any]:
         """Summarize and extract structured details about a full chapter.
         Retries with LLM if parse_obj + parse + json_fixer all fail.
         """
@@ -205,7 +204,7 @@ class Ingestor:
         """
 
         for attempt in range(1, max_retries + 1):
-            resp = gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW INGEST CHAPTER RESPONSE:", clean_resp)
@@ -325,13 +324,12 @@ class DirectorGraph:
         # Get the latest director instructions
         director_instructions = self._get_latest_director_message(state)
         
-        # Create user-specific context for this scene generation
-        user_context = UserSceneContext.create_for_user(
-            user_id=self.memory.user_id,
-            story_id=self.memory.story_id,
-            director_instructions=director_instructions,
-            scene_chunk_callback=self.scene_chunk_callback
-        )
+        # user_context = UserSceneContext.create_for_user(
+        #     user_id=self.memory.user_id,
+        #     story_id=self.memory.story_id,
+        #     director_instructions=director_instructions,
+        #     scene_chunk_callback=self.scene_chunk_callback
+        # )
         
         if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
             print("❌ ERROR: CLASSIC_SCENE_PLANNER_SERVICE is None!")
@@ -339,6 +337,7 @@ class DirectorGraph:
         
         director_instructions = self._get_latest_director_message(state)
 
+        # Create user-specific context for this scene generation
         user_context = UserSceneContext.create_for_user(
             user_id=self.memory.user_id,
             story_id=self.memory.story_id,
@@ -367,7 +366,6 @@ class DirectorGraph:
         
         self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,
-            full_scene_text=scene_text,
             metadata={
                 "scene_id": state.scene_id,
                 "chapter_id": state.current_chapter_id,
@@ -433,8 +431,6 @@ class DirectorGraph:
             f"Chapter Number: {state.current_chapter_id}\n"
             f"Scene Number: {state.scene_id}\n"
             f"Summary of Current Chapter So Far: {self.current_chap_summary}\n"
-            
-            
         )
         
         #print("CONTEXT TO DIRECTOR:", context)
@@ -501,6 +497,46 @@ class DirectorGraph:
         
         if state.scene_id == 2:  # DEBUGGING Code
             action = "DEBUG"  # DEBUGGING Code
+
+        if action != "END":
+            from setup.shared_redis_pool import get_redis_client
+            try:
+                # Try to find the user/session-level structures
+                redis_client = get_redis_client()
+                queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+
+                # Build callback payload
+                resume_payload = {
+                    "type": "saved"
+                }
+                try:
+                    #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
+                    self.scene_chunk_callback(resume_payload)
+                except Exception as e:
+                    print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+                    import traceback; traceback.print_exc()
+
+                # Wait for user input from Redis List
+                try:
+                    #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+                    user_choice = False
+                    for _ in range(6000):
+                        choice = redis_client.lpop(queue_key)
+                        if choice and type(choice) != bool:
+                            user_choice = True
+                            break
+                        elif choice and type(choice) == bool:
+                            user_choice = choice
+                            break
+                        await asyncio.sleep(1.0)
+                    if not user_choice:
+                        return END
+                except Exception as e:
+                    print(f"❌ ERROR in Redis queue handling: {e}")
+                    import traceback; traceback.print_exc()
+            except Exception as e:
+                print(f"❌ ERROR in user input handling: {e}")
+                import traceback; traceback.print_exc()
 
         # finalize and return
         messages = state.messages or []

@@ -4,6 +4,8 @@ from langchain_openai import ChatOpenAI
 from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import os
+import asyncio
+from asyncio import Semaphore
 import time
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
@@ -13,6 +15,7 @@ SHARED_LLM_CLIENT = None
 
 class LLMClient:
     def __init__(self):
+        self.sem = Semaphore(5)  # Limit concurrent LLM calls
         # Load environment variables from .env file
         load_dotenv()
         try:
@@ -48,60 +51,37 @@ class LLMClient:
     async def groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
-        response = self.llm_groq.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt)
-        ])
-        
-        # Access the token usage from the response's metadata
-        token_usage = response.response_metadata.get('token_usage', {})
-
-        # Extract the prompt and completion token counts
-        prompt_tokens = token_usage.get('prompt_tokens', 0)
-        completion_tokens = token_usage.get('completion_tokens', 0)
-        total_tokens = token_usage.get('total_tokens', 0)
-        
-        print("--- Token Usage ---")
-        print(f"Prompt Tokens (Input): {prompt_tokens}")
-        print(f"Completion Tokens (Output): {completion_tokens}")
-        print(f"Total Tokens: {total_tokens}")
-        print("-------------------")
-        time.sleep(4)  # delay to avoid rate limits
-        return response
-    
-    def no_sync_groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
-        """Blocking call to Groq LLM – returns the full response and token counts."""
-        # The .invoke() method returns an object that contains the response metadata
-        response = self.llm_groq.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt)
-        ])
-        
-        # Access the token usage from the response's metadata
-        token_usage = response.response_metadata.get('token_usage', {})
-
-        # Extract the prompt and completion token counts
-        prompt_tokens = token_usage.get('prompt_tokens', 0)
-        completion_tokens = token_usage.get('completion_tokens', 0)
-        total_tokens = token_usage.get('total_tokens', 0)
-        
-        print("--- Token Usage ---")
-        print(f"Prompt Tokens (Input): {prompt_tokens}")
-        print(f"Completion Tokens (Output): {completion_tokens}")
-        print(f"Total Tokens: {total_tokens}")
-        print("-------------------")
-        time.sleep(4)  # delay to avoid rate limits
-        return response
-    
-
-    def openai_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
-        """Blocking call to OpenAI LLM – returns the full response and token counts."""
-
-        with get_openai_callback() as cb:
-            response = self.llm_openai.invoke([
+        async with self.sem:
+            response = self.llm_groq.invoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
             ])
+        
+        # Access the token usage from the response's metadata
+        token_usage = response.response_metadata.get('token_usage', {})
+
+        # Extract the prompt and completion token counts
+        prompt_tokens = token_usage.get('prompt_tokens', 0)
+        completion_tokens = token_usage.get('completion_tokens', 0)
+        total_tokens = token_usage.get('total_tokens', 0)
+        
+        print("--- Token Usage ---")
+        print(f"Prompt Tokens (Input): {prompt_tokens}")
+        print(f"Completion Tokens (Output): {completion_tokens}")
+        print(f"Total Tokens: {total_tokens}")
+        print("-------------------")
+        time.sleep(4)  # delay to avoid rate limits
+        return response    
+
+    async def openai_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+        """Blocking call to OpenAI LLM – returns the full response and token counts."""
+
+        with get_openai_callback() as cb:
+            async with self.sem:
+                response = self.llm_openai.invoke([
+                    SystemMessage(content=system_prompt),
+                    HumanMessage(content=human_prompt)
+                ])
 
             print("--- Token Usage ---")
             print(f"Prompt Tokens (Input): {cb.prompt_tokens}")
@@ -112,13 +92,13 @@ class LLMClient:
 
         return response
 
-    def gemini_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    async def gemini_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Gemini LLM – returns the full response."""
-        
-        response = self.llm_gemini.invoke([
-            SystemMessage(content=system_prompt),
-            HumanMessage(content=human_prompt)
-        ])
+        async with self.sem:
+            response = self.llm_gemini.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=human_prompt)
+            ])
         # Access the token usage from the response's metadata
         token_usage = response.usage_metadata
         
@@ -136,15 +116,14 @@ class LLMClient:
         return response
 
 
-
+init_lock = asyncio.Lock()
 # Convenience functions to access the shared instance
-def get_shared_client() -> LLMClient:
-    """Get the shared LLM client instance, creating it if necessary."""
-    global SHARED_LLM_CLIENT
-    if SHARED_LLM_CLIENT is None:
-        SHARED_LLM_CLIENT = LLMClient()
-        print("Initialized shared LLM client")
-    return SHARED_LLM_CLIENT
+async def get_shared_client():
+    async with init_lock:
+        global SHARED_LLM_CLIENT
+        if SHARED_LLM_CLIENT is None:
+            SHARED_LLM_CLIENT = LLMClient()
+        return SHARED_LLM_CLIENT
 
 # Convenience wrapper functions for easy access
 async def groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
@@ -152,17 +131,13 @@ async def groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMess
     client = get_shared_client()
     return await client.groq_client(system_prompt, human_prompt)
 
-def no_sync_groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
-    """Convenience function to access no_sync_groq_client through shared instance."""
-    client = get_shared_client()
-    return client.no_sync_groq_client(system_prompt, human_prompt)
 
-def openai_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def openai_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access openai_client through shared instance."""
     client = get_shared_client()
-    return client.openai_client(system_prompt, human_prompt)
+    return await client.openai_client(system_prompt, human_prompt)
 
-def gemini_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def gemini_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access gemini_client through shared instance."""
     client = get_shared_client()
-    return client.gemini_client(system_prompt, human_prompt)
+    return await client.gemini_client(system_prompt, human_prompt)

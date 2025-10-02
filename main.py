@@ -1,7 +1,7 @@
 from fastapi import HTTPException
 import asyncio
-import gc
-import redis
+import time
+import redis.asyncio as redis
 from fastapi import FastAPI, WebSocket
 import json
 from contextlib import asynccontextmanager
@@ -10,6 +10,9 @@ from setup.main_setup import MainSetup
 from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories
 from src.memory.shared_resources import SHARED_QDRANT
 from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
+from setup.story_types.interactive_setup import get_shared_interactive_setup, close_shared_interactive_setup
+from setup.story_types.classic_setup import get_shared_classic_setup, close_shared_classic_setup
+from src.story_engines.interactive_adventure.agents import shared_scene_planner as scene_planner_module
 
 # Initialize api_backend BEFORE lifespan
 print("🟡 Initializing APIBackend...")
@@ -35,65 +38,85 @@ async def cleanup_sessions_periodically():
         except Exception as e:
             print(f"❌ Error in session cleanup: {e}")
 
+
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # api_backend is already initialized above
     print("🚀 Starting up AI Story App...")
-    print("✅ Shared instances initialized")
-    
+
+    # Initialize shared resources
+    try:
+        await get_shared_interactive_setup()
+        await get_shared_classic_setup()
+        print("✅ Shared story setups initialized")
+    except Exception as e:
+        print(f"❌ Error initializing story setups: {e}")
+
     # Verify shared clients
-    # if scene_planner_module.SHARED_SCENE_PLANNER_SERVICE is None:
-    #     print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE was not initialized!")
-    # else:
-    #     print("✅ SHARED_SCENE_PLANNER_SERVICE is properly initialized")
+    if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
+        print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE was not initialized!")
+    else:
+        print("✅ SHARED_SCENE_PLANNER_SERVICE is properly initialized")
     if SHARED_QDRANT is None:
         print("❌ ERROR: SHARED_QDRANT was not initialized!")
     else:
         print("✅ SHARED_QDRANT is properly initialized")
-    
+
+    # Start background cleanup task
     global cleanup_task
     cleanup_task = asyncio.create_task(cleanup_sessions_periodically())
     print("✅ Background cleanup task started")
-    
+
     yield
-    
+
     # Shutdown
     print("🛑 Shutting down AI Story App...")
+
+    # Cancel background cleanup task
     if cleanup_task:
         cleanup_task.cancel()
         try:
             await cleanup_task
         except asyncio.CancelledError:
             pass
-    
-    # Clean up shared clients
+
+    # Clean up shared story setups
+    try:
+        await close_shared_interactive_setup()
+        await close_shared_classic_setup()
+        print("✅ Shared story setups closed")
+    except Exception as e:
+        print(f"❌ Error closing story setups: {e}")
+
+    # Clean up shared Qdrant client
     if SHARED_QDRANT:
         try:
-            SHARED_QDRANT.close()
+            await SHARED_QDRANT.close()  # Assuming AsyncQdrantClient
+            print("✅ SHARED_QDRANT closed")
         except Exception as e:
             print(f"❌ Error closing SHARED_QDRANT: {e}")
-    
+
     # Clean up all Redis sessions
     try:
-        client = get_redis_client()
-        keys = client.keys("session:*")
-        if keys:
-            for key in keys:
-                user_id = key.split(":")[1]
-                mainsetup.logout(user_id)  # Calls Redis-based logout
+        async with await get_redis_client() as client:
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match="session:*", count=100)
+                for key in keys:
+                    user_id = key.decode().split(":")[1]
+                    async with await redis_lock(client, f"lock:{key}"):  # Use async redis_lock
+                        await MainSetup.logout(user_id)  # Make logout async (see below)
+                if cursor == 0:
+                    break
             print(f"✅ Cleaned up {len(keys)} Redis session keys")
-        else:
-            print("✅ No Redis sessions to clean up")
     except redis.RedisError as e:
         print(f"❌ Error cleaning up Redis sessions: {e}")
     finally:
-        # Disconnect all connections in the pool
-        REDIS_POOL.disconnect()
+        # Disconnect Redis pool
+        await REDIS_POOL.disconnect()
         print("✅ Redis connection pool disconnected")
-    
-    # Force garbage collection to free memory
-    gc.collect()
-    print("✅ All sessions and shared clients cleaned up")
+
     print("✅ Shutdown complete")
 
 app = FastAPI(
@@ -102,7 +125,31 @@ app = FastAPI(
     lifespan=lifespan
 )
 
-# ---------------- Health Check ----------------
+# Async redis_lock (reused from interactive_setup.py)
+from contextlib import asynccontextmanager
+
+@asynccontextmanager
+async def redis_lock(client, lock_key, timeout=10):
+    lock_value = str(time.time())
+    acquired = await client.set(lock_key, lock_value, nx=True, ex=timeout)
+    if acquired:
+        try:
+            yield
+        finally:
+            lua = """
+            if redis.call("get", KEYS[1]) == ARGV[1] then
+                return redis.call("del", KEYS[1])
+            else
+                return 0
+            end
+            """
+            try:
+                await client.eval(lua, 1, lock_key, lock_value)
+            except redis.RedisError:
+                pass
+    else:
+        raise HTTPException(status_code=503, detail="Could not acquire lock")
+
 @app.get("/")
 async def root():
     return {"message": "status ok"}
@@ -139,6 +186,10 @@ async def api_get_story_progress(user_id: str, story_id: str, story_type: str):
 async def api_logout_story(user_id: str, story_id: str):
     return mainsetup.logout_story(user_id=user_id, story_id=story_id)
 
+@app.get("/stories/cluster/{user_id}/{story_id}")
+async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapter_number: int):
+    return mainsetup.get_story_cluster(user_id=user_id, story_id=story_id, story_type=story_type, chapter_number=chapter_number)
+
 # ---------------- User Session Management Routes ----------------
 @app.patch("/users/{user_id}/session")
 def api_logout(user_id: str):
@@ -149,11 +200,11 @@ def api_logout(user_id: str):
 async def api_get_active_users():
     """Retrieve all session data for active users from Redis."""
     try:
-        client = get_redis_client()
+        client = await get_redis_client()
         users = {}
         cursor = 0
         while True:
-            cursor, keys = client.scan(cursor, match="session:*", count=100)
+            cursor, keys = await client.scan(cursor, match="session:*", count=100)
             for key in keys:
                 try:
                     parts = key.split(":", 2)

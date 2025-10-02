@@ -27,3 +27,4 @@ gunicorn
 memory-profiler
 redis
 #websockets
+aiosqlite

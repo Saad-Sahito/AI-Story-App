@@ -1,7 +1,7 @@
-import redis
+import redis.asyncio as redis
 from fastapi import HTTPException
 from os import environ
-import time
+import asyncio
 
 # Initialize Redis connection pool
 REDIS_POOL = redis.ConnectionPool(
@@ -13,22 +13,22 @@ REDIS_POOL = redis.ConnectionPool(
     retry_on_timeout=True
 )
 
-def get_redis_client(max_retries=3, retry_delay=1):
+async def get_redis_client(max_retries=3, retry_delay=1):
     """Get a Redis client with retries and exponential backoff."""
     for attempt in range(max_retries):
         try:
             client = redis.Redis(connection_pool=REDIS_POOL)
-            client.ping()
+            await client.ping()
             # Check pool usage
             pool = REDIS_POOL
-            if pool._in_use_connections >= pool.max_connections:
+            if len(pool._in_use_connections) >= pool.max_connections:
                 print(f"⚠️ Warning: Redis connection pool exhausted ({pool._in_use_connections}/{pool.max_connections})")
                 raise redis.ConnectionError("Connection pool exhausted")
             return client
         except redis.ConnectionError as e:
             print(f"❌ Redis connection error, attempt {attempt + 1}/{max_retries}: {e}")
             if attempt < max_retries - 1:
-                time.sleep(retry_delay)
+                asyncio.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             continue
         except redis.RedisError as e:

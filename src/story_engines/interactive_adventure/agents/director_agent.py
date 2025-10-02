@@ -1,5 +1,5 @@
 # src/agents/director_agent.py
-
+import asyncio
 import json
 import gc
 from typing import Any, Dict, List, Literal
@@ -11,15 +11,13 @@ from langchain.output_parsers import PydanticOutputParser
 
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
-from .shared_scene_planner import ( 
-    UserSceneContext
-)
+from .shared_scene_planner import UserSceneContext
+
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import groq_client, gemini_client
 
 INTERACTIVE_DIRECTOR_AGENT = None
 
-# Keep existing state and models unchanged
 @dataclass
 class StoryState:
     current_chapter_id: int = 1
@@ -324,13 +322,12 @@ class DirectorGraph:
         # Get the latest director instructions
         director_instructions = self._get_latest_director_message(state)
         
-        # Create user-specific context for this scene generation
-        user_context = UserSceneContext.create_for_user(
-            user_id=self.memory.user_id,
-            story_id=self.memory.story_id,
-            director_instructions=director_instructions,
-            scene_chunk_callback=self.scene_chunk_callback
-        )
+        # user_context = UserSceneContext.create_for_user(
+        #     user_id=self.memory.user_id,
+        #     story_id=self.memory.story_id,
+        #     director_instructions=director_instructions,
+        #     scene_chunk_callback=self.scene_chunk_callback
+        # )
         
         if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
             print("❌ ERROR: INTERACTIVE_SCENE_PLANNER_SERVICE is None!")
@@ -338,6 +335,7 @@ class DirectorGraph:
         
         director_instructions = self._get_latest_director_message(state)
 
+        # Create user-specific context for this scene generation
         user_context = UserSceneContext.create_for_user(
             user_id=self.memory.user_id,
             story_id=self.memory.story_id,
@@ -357,16 +355,18 @@ class DirectorGraph:
         del ingestor
         gc.collect()
         
-        self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
-            "chapter_id": state.current_chapter_id, 
-            "story_title": state.story_title, 
-            "scene_id": state.scene_id, 
-            "word_count": state.word_count
-        })
+        self.memory.add_story_scene_cluster(
+            text=scene_cluster,
+            metadata={
+                "chapter_id": state.current_chapter_id, 
+                "story_title": state.story_title, 
+                "scene_id": state.scene_id, 
+                "word_count": state.word_count
+            }
+        )
         
         self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,
-            full_scene_text=scene_text,
             metadata={
                 "scene_id": state.scene_id,
                 "chapter_id": state.current_chapter_id,
@@ -407,11 +407,16 @@ class DirectorGraph:
             "Your output must be in the given JSON format. "
             "The 'instructions' value must be 200-500 words string, not a dictionary and contain the following sections:\n\n"
             "1. **Recap** - A concise summary of the story so far. Be concrete, include all key facts the Scene Writer needs. \n"
-            "2. **Characters** - List all relevant characters with names, ages, traits, and current state of mind. If a side character appears, provide their exact role and tone. \n"
-            "3. **Detailed Scene Blueprint** - A numbered, step-by-step breakdown of the scene's beats in strict order. Each beat must describe: location, action, at least one visual detail, at least one sound detail, suggest general dialogue idea. "
+            "2. **Characters** - List all relevant characters with names, ages, traits, and current state of mind. If a side character appears, "
+            "provide their exact role and tone. \n"
+            "3. **Detailed Scene Blueprint** - A numbered, step-by-step breakdown of the scene's beats in strict order. Each beat must describe: "
+            "location, action, "
+            "at least one visual detail, at least one sound detail, suggest general dialogue idea. "
             "Do not allow ambiguity. Do not say 'the writer should show this.' You must say 'this happens, in this way.' \n"
-            "4. **Main Character's (User) Decision Points** - Describe 1-2 explicit points in the scene where the scene writer prompts the user to make a choice, either dialogue or action.\n"
-            "5. **Screenplay Notes** - A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass,' 'Include two internal monologue lines showing anxiety'). "
+            "4. **Main Character's (User) Decision Points** - Describe 1-2 explicit points in the scene where the scene writer prompts the user to make a choice, "
+            "either dialogue or action.\n"
+            "5. **Screenplay Notes** - A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass', "
+            "'Include two internal monologue lines showing anxiety'). "
             "These are mandatory, not suggestions. \n"
             "6. **Chapter/Scene ID** - Exact chapter and scene number. \n\n"
             "Always be concrete, exhaustive, and prescriptive. "
@@ -499,6 +504,46 @@ class DirectorGraph:
         
         if state.scene_id == 2:  # DEBUGGING Code
             action = "DEBUG"  # DEBUGGING Code
+
+        if action != "END":
+            from setup.shared_redis_pool import get_redis_client
+            try:
+                # Try to find the user/session-level structures
+                redis_client = get_redis_client()
+                queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+
+                # Build callback payload
+                resume_payload = {
+                    "type": "saved"
+                }
+                try:
+                    #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
+                    self.scene_chunk_callback(resume_payload)
+                except Exception as e:
+                    print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+                    import traceback; traceback.print_exc()
+
+                # Wait for user input from Redis List
+                try:
+                    #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+                    user_choice = False
+                    for _ in range(6000):
+                        choice = redis_client.lpop(queue_key)
+                        if choice and type(choice) != bool:
+                            user_choice = True
+                            break
+                        elif choice and type(choice) == bool:
+                            user_choice = choice
+                            break
+                        await asyncio.sleep(1.0)
+                    if not user_choice:
+                        return END
+                except Exception as e:
+                    print(f"❌ ERROR in Redis queue handling: {e}")
+                    import traceback; traceback.print_exc()
+            except Exception as e:
+                print(f"❌ ERROR in user input handling: {e}")
+                import traceback; traceback.print_exc()
 
         # finalize and return
         messages = state.messages or []

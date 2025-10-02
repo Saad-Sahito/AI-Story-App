@@ -7,12 +7,11 @@ from dotenv import load_dotenv
 from memory_profiler import profile
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
-from src.story_engines.interactive_adventure.agents.story_author import StoryAuthor
-from src.story_engines.interactive_adventure.agents.director_agent import DirectorGraph
-import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
-from asyncio import Lock
+from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
+from src.story_engines.classic_narrative.agents.director_agent import DirectorGraph
+import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
 from typing import Optional
-
+from asyncio import Lock
 
 SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 
@@ -42,13 +41,12 @@ async def redis_lock(client, lock_key, timeout=10):
     else:
         raise HTTPException(status_code=503, detail="Could not acquire lock")
 
-class InteractiveStorySetup:
+class ClassicStorySetup:
     def __init__(self):
         #self.llm_client = get_shared_client()
-        if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
-            scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
-            print("Initialized interactive shared scene planner service")
-
+        if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
+            scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
+            print("Initialized classic shared scene planner service")
     async def _get_session(self, user_id: str, story_id: str = None):
         client = get_redis_client()
         async with client:
@@ -288,7 +286,6 @@ class InteractiveStorySetup:
         append_story(user_id=user_id, story_title=initial_story_data.get("Title", ""), story_id=story_id, story_type=initial_story_data.get("story_type", ""))
         return {"status": "success", "premise": "Premise set."}
 
-
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         """Handle WebSocket for story progression, using Redis sessions."""
         await websocket.accept()
@@ -492,7 +489,7 @@ class InteractiveStorySetup:
                         await client.delete(director_key)
                 except RuntimeError:
                     print("🔍 DEBUG: WebSocket already closed")
-        
+
     async def get_story_cluster(self, user_id: str, story_id: str, chapter_number: int):
         user_data = self._get_session(user_id)
         if not user_data:
@@ -518,7 +515,7 @@ class InteractiveStorySetup:
             return {"status": "error"}
     
     async def close(self):
-        """Clean up resources used by InteractiveStorySetup."""
+        """Clean up resources used by ClassicStorySetup."""
         try:
             # 1. Close Redis pool (if exists)
             from setup.shared_redis_pool import REDIS_POOL
@@ -546,40 +543,33 @@ class InteractiveStorySetup:
                             pass
                 print("✅ Background tasks cancelled")
 
-            print("✅ InteractiveStorySetup closed successfully")
+            print("✅ ClassicStorySetup closed successfully")
 
         except Exception as e:
-            print(f"❌ Error while closing InteractiveStorySetup: {e}")
+            print(f"❌ Error while closing ClassicStorySetup: {e}")
 
 
 
-SHARED_INTERACTIVE_STORY_SETUP: Optional[InteractiveStorySetup] = None
-_setup_lock = Lock()  # Global lock for initialization
 
-async def get_shared_interactive_setup() -> InteractiveStorySetup:
-    """
-    Safely initialize and return the shared InteractiveStorySetup instance.
-    Uses a lock to prevent race conditions during initialization.
-    """
-    global SHARED_INTERACTIVE_STORY_SETUP
+SHARED_CLASSIC_STORY_SETUP: Optional[ClassicStorySetup] = None
+_classic_setup_lock = Lock()
+
+async def get_shared_classic_setup() -> ClassicStorySetup:
+    global SHARED_CLASSIC_STORY_SETUP
     try:
-        async with _setup_lock:
-            if SHARED_INTERACTIVE_STORY_SETUP is None:
-                SHARED_INTERACTIVE_STORY_SETUP = InteractiveStorySetup()
-            return SHARED_INTERACTIVE_STORY_SETUP
+        async with _classic_setup_lock:
+            if SHARED_CLASSIC_STORY_SETUP is None:
+                SHARED_CLASSIC_STORY_SETUP = ClassicStorySetup()
+            return SHARED_CLASSIC_STORY_SETUP
     except Exception as e:
-        raise Exception(f"Failed to initialize InteractiveStorySetup: {e}")
+        raise Exception(f"Failed to initialize ClassicStorySetup: {e}")
 
-# src/setup/interactive_setup.py
-async def close_shared_interactive_setup():
-    """
-    Clean up the shared InteractiveStorySetup instance.
-    """
-    global SHARED_INTERACTIVE_STORY_SETUP
-    async with _setup_lock:
-        if SHARED_INTERACTIVE_STORY_SETUP is not None:
+async def close_shared_classic_setup():
+    global SHARED_CLASSIC_STORY_SETUP
+    async with _classic_setup_lock:
+        if SHARED_CLASSIC_STORY_SETUP is not None:
             try:
-                await SHARED_INTERACTIVE_STORY_SETUP.close()
+                await SHARED_CLASSIC_STORY_SETUP.close()
             except Exception as e:
-                print(f"Error closing InteractiveStorySetup: {e}")
-            SHARED_INTERACTIVE_STORY_SETUP = None
+                print(f"Error closing ClassicStorySetup: {e}")
+            SHARED_CLASSIC_STORY_SETUP = None
