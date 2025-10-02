@@ -13,8 +13,9 @@ git push origin main
 
 
 for branches
-git checkout -b story-sessions-fix   # created the branch
+git checkout -b feature-story-types   # created the branch
+
 # make changes
 git add .
 git commit -m "Fix session bug"
-git push -u origin story-sessions-fix
+git push -u origin feature-story-types

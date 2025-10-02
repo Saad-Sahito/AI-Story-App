@@ -23,26 +23,28 @@ def delete_sqlite_db(db_path: str) -> bool:
     except Exception as e:
         print(f"❌ Error deleting database: {e}")
         return False
-    
-def delete_all_qdrant_collections() -> None:
+
+
+
+async def delete_all_qdrant_collections() -> bool:
     """
     Deletes all collections in the connected Qdrant instance.
-
-    Args:
-        qdrant_client: Qdrant client instance (e.g. SHARED_QDRANT).
     """
     try:
-        collections = SHARED_QDRANT.get_collections().collections
+        collections_response = await SHARED_QDRANT.get_collections()
+        collections = collections_response.collections
+
         if not collections:
             print("⚠️ No collections found in Qdrant.")
-            return
+            return False
 
         for coll in collections:
-            SHARED_QDRANT.delete_collection(coll.name)
+            await SHARED_QDRANT.delete_collection(coll.name)
             print(f"🗑️ Deleted collection: {coll.name}")
+
         print("✅ All Qdrant collections deleted.")
         return True
-        
+
     except Exception as e:
         print(f"❌ Error deleting Qdrant collections: {e}")
         return False
