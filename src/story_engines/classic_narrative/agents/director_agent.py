@@ -72,6 +72,8 @@ class Ingestor:
     # ---- Scene Ingestion (this is part of the Ingestor class, not DirectorGraph) ----
     async def ingest_scene(self, state: StoryState, scene_text: str, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON using schema + parser."""
+        chars = await self.memory.get_long_term_characters()
+        worlds = await self.memory.get_long_term_worlds()
         system_prompt = "You are the Scene Breakdown Agent. Extract structured info from the scene. " \
         "Always include chapter and scene id in character and world details, in order to keep track later. " \
         "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, " \
@@ -86,10 +88,10 @@ class Ingestor:
 
         Character and World Names:
         Characters:
-        {self.memory.get_long_term_characters().keys()}
+        {chars.keys()}
 
         Worlds:
-        {self.memory.get_long_term_worlds().keys()}
+        {worlds.keys()}
 
         Respond ONLY in JSON with this schema:
         {scene_parser.get_format_instructions()}
@@ -114,7 +116,7 @@ class Ingestor:
             if success:
                 state.word_count += StoryHelpers._count_words_split(scene_text)
                 state.scene_id += 1
-                self.memory.update_story_progress(metadata={
+                await self.memory.update_story_progress(metadata={
                     "latest_chapter_id": state.current_chapter_id, 
                     "continue_scene_id": state.scene_id, 
                     "word_count": state.word_count, 
@@ -126,7 +128,7 @@ class Ingestor:
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
 
             try:
-                fixed_resp = StoryHelpers._json_fixer(clean_resp)
+                fixed_resp = await StoryHelpers._json_fixer(clean_resp)
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
                 del fixed_resp, clean_resp
                 gc.collect()
@@ -138,7 +140,7 @@ class Ingestor:
                 if success:
                     state.word_count += StoryHelpers._count_words_split(scene_text)
                     state.scene_id += 1
-                    self.memory.update_story_progress(metadata={
+                    await self.memory.update_story_progress(metadata={
                         "latest_chapter_id": state.current_chapter_id, 
                         "continue_scene_id": state.scene_id, 
                         "word_count": state.word_count, 
@@ -172,8 +174,8 @@ class Ingestor:
         print("Ingesting chapter...")
 
         #chapter_content = self.memory.get_current_chapter()
-        world_details = self.memory.get_long_term_worlds()
-        char_details = self.memory.get_long_term_characters()
+        world_details = await self.memory.get_long_term_worlds()
+        char_details = await self.memory.get_long_term_characters()
         
         # self.memory.add_story_chapter(
         #     text=chapter_content,
@@ -218,10 +220,10 @@ class Ingestor:
             # 1) try model_validate/parse_obj first, then parser
             success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, ChapterBundle, chapter_parser)
             if success:
-                self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
+                await self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                 state.current_chapter_id += 1
                 state.scene_id = 1
-                self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
                 #self.memory.close()
                 print("Chapter Complete!")
                 result.update({
@@ -236,7 +238,7 @@ class Ingestor:
 
             # 2) try json_fixer, then same validation sequence
             try:
-                fixed_resp = StoryHelpers._json_fixer(clean_resp)
+                fixed_resp = await StoryHelpers._json_fixer(clean_resp)
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
                 del clean_resp, fixed_resp
                 gc.collect()
@@ -246,10 +248,10 @@ class Ingestor:
                 success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, ChapterBundle, chapter_parser)
                 del fixed_clean
                 if success:
-                    self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
+                    await self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                     state.current_chapter_id += 1
                     state.scene_id = 1
-                    self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                    await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
                     #self.memory.close()
                     print("Chapter Complete!")
                     result.update({
@@ -353,18 +355,18 @@ class DirectorGraph:
 
         # Create Ingestor only for this ingestion
         ingestor = Ingestor(self.memory)
-        scene_bundle = ingestor.ingest_scene(state, scene_text)
+        scene_bundle = await ingestor.ingest_scene(state, scene_text)
         del ingestor
         gc.collect()
         
-        self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
+        await self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
             "chapter_id": state.current_chapter_id, 
             "story_title": state.story_title, 
             "scene_id": state.scene_id, 
             "word_count": state.word_count
         })
         
-        self.memory.add_post_scene_bundle(
+        await self.memory.add_post_scene_bundle(
             scene_bundle=scene_bundle,
             metadata={
                 "scene_id": state.scene_id,
@@ -376,6 +378,45 @@ class DirectorGraph:
         del scene_bundle, scene_cluster, scene_text
         gc.collect()
 
+        from setup.shared_redis_pool import get_redis_client
+        try:
+            # Try to find the user/session-level structures
+            redis_client = await get_redis_client()
+            queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+
+            # Build callback payload
+            resume_payload = {
+                "type": "saved"
+            }
+            try:
+                #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
+                self.scene_chunk_callback(resume_payload)
+            except Exception as e:
+                print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+                import traceback; traceback.print_exc()
+
+            # Wait for user input from Redis List
+            try:
+                #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+                user_choice = False
+                for _ in range(6000):
+                    choice = await redis_client.lpop(queue_key)
+                    if choice and type(choice) != bool:
+                        user_choice = True
+                        break
+                    elif choice and type(choice) == bool:
+                        user_choice = choice
+                        break
+                    await asyncio.sleep(1.0)
+                if not user_choice:
+                    yield END
+            except Exception as e:
+                print(f"❌ ERROR in Redis queue handling: {e}")
+                import traceback; traceback.print_exc()
+        except Exception as e:
+            print(f"❌ ERROR in user input handling: {e}")
+            import traceback; traceback.print_exc()
+
         # Return the final state for the next node
         yield {
             "scene_id": state.scene_id,
@@ -383,9 +424,9 @@ class DirectorGraph:
             "word_count": state.word_count,
         }
 
-    def ingest_chapter(self, state: StoryState):
+    async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
-        result = ingestor.ingest_chapter(state, self.current_chap_summary)
+        result = await ingestor.ingest_chapter(state, self.current_chap_summary)
         self.current_chap_summary = ""
         del ingestor
         gc.collect()
@@ -419,14 +460,14 @@ class DirectorGraph:
         )
 
         # Gather story context
-        self.current_chap_summary = self.memory.search_episodic_story_summary(chapter_number=state.current_chapter_id)
-        director_context = self.memory.get_director_context(
+        self.current_chap_summary = await self.memory.search_episodic_story_summary(chapter_number=state.current_chapter_id)
+        director_context = await self.memory.get_director_context(
             current_chapter_number=state.current_chapter_id,
             query=self.current_chap_summary if self.current_chap_summary else "",
             k=5
         )
         context = (
-            f"Story Premise: {self.memory.get_long_term_document('story_premise')}\n"
+            f"Story Premise: {await self.memory.get_long_term_document('story_premise')}\n"
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
             f"Scene Number: {state.scene_id}\n"
@@ -462,7 +503,7 @@ class DirectorGraph:
 
             # json_fixer attempt
             try:
-                fixed_resp = StoryHelpers._json_fixer(clean_resp)
+                fixed_resp = await StoryHelpers._json_fixer(clean_resp)
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
                 if isinstance(fixed_clean, dict):
                     fixed_clean = json.dumps(fixed_clean)
@@ -498,45 +539,8 @@ class DirectorGraph:
         if state.scene_id == 2:  # DEBUGGING Code
             action = "DEBUG"  # DEBUGGING Code
 
-        if action != "END":
-            from setup.shared_redis_pool import get_redis_client
-            try:
-                # Try to find the user/session-level structures
-                redis_client = get_redis_client()
-                queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
-
-                # Build callback payload
-                resume_payload = {
-                    "type": "saved"
-                }
-                try:
-                    #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
-                    self.scene_chunk_callback(resume_payload)
-                except Exception as e:
-                    print(f"❌ ERROR: scene_chunk_callback raised: {e}")
-                    import traceback; traceback.print_exc()
-
-                # Wait for user input from Redis List
-                try:
-                    #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
-                    user_choice = False
-                    for _ in range(6000):
-                        choice = redis_client.lpop(queue_key)
-                        if choice and type(choice) != bool:
-                            user_choice = True
-                            break
-                        elif choice and type(choice) == bool:
-                            user_choice = choice
-                            break
-                        await asyncio.sleep(1.0)
-                    if not user_choice:
-                        return END
-                except Exception as e:
-                    print(f"❌ ERROR in Redis queue handling: {e}")
-                    import traceback; traceback.print_exc()
-            except Exception as e:
-                print(f"❌ ERROR in user input handling: {e}")
-                import traceback; traceback.print_exc()
+        
+            
 
         # finalize and return
         messages = state.messages or []
@@ -553,7 +557,7 @@ class DirectorGraph:
     async def run(self, scene_chunk_callback):
         print("Running director agent...")
         self.scene_chunk_callback = scene_chunk_callback
-        story_progress = self.memory.get_story_progress()
+        story_progress = await self.memory.get_story_progress()
         
         if story_progress:
             initialized_state = StoryState(

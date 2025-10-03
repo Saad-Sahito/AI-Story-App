@@ -322,7 +322,7 @@ class SharedScenePlannerService:
                 timeout=30.0
             )
             clean_resp = llm_response.content.strip()
-            del llm_response, human_prompt
+            del llm_response
 
             try:
                 parsed = self.scene_writer_parser.parse(clean_resp)
@@ -364,7 +364,7 @@ class SharedScenePlannerService:
                         scene_text = retry_clean
                         # question_text = ""
                         # number_of_options = 0
-                del retry_clean
+                del retry_clean, human_prompt, retry_prompt
 
             #print(f"🔍 DEBUG: SceneWriter parsed - scene_text: {scene_text[:50]}..., question: {question_text}, options: {number_of_options}")
 

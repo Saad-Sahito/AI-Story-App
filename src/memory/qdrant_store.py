@@ -45,7 +45,7 @@ class QdrantStore:
         self.user_id = user_id
         self.story_id = story_id
         self.namespace = namespace or "default"
-        self.client = client or AsyncQdrantClient(...)  # Update SHARED_QDRANT to AsyncQdrantClient
+        self.client = client or SHARED_QDRANT
         if QdrantStore._shared_model is None:
             QdrantStore._shared_model = SentenceTransformer(model_name)
         self.model_name = model_name
@@ -114,7 +114,7 @@ class QdrantStore:
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put(self, text: str, metadata: Dict = None):
         async with self.request_semaphore:
-            vec = self._embed_text(text)
+            vec = await self._embed_text(text)
             print(f"Embedding length: {len(vec)}")  # should match self.dim
             print(f"Embedding dimension: {self.dim}")
             payload = metadata.copy() if metadata else {}
@@ -183,7 +183,7 @@ class QdrantStore:
                     )
 
                     point_id = search_results[0].id if search_results else str(uuid.uuid4())
-                    vec = self._embed_text(v)
+                    vec = await self._embed_text(v)
 
                     payload = (metadata.copy() if metadata else {})
                     payload.update({

@@ -28,7 +28,7 @@ async def get_redis_client(max_retries=3, retry_delay=1):
         except redis.ConnectionError as e:
             print(f"❌ Redis connection error, attempt {attempt + 1}/{max_retries}: {e}")
             if attempt < max_retries - 1:
-                asyncio.sleep(retry_delay)
+                await asyncio.sleep(retry_delay)
                 retry_delay *= 2  # Exponential backoff
             continue
         except redis.RedisError as e:

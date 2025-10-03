@@ -172,7 +172,7 @@ class StoryHelpers:
         return False, None, last_exc
 
     @staticmethod
-    def _json_fixer(text: str) -> str:
+    async def _json_fixer(text: str) -> str:
         """
         Uses the provided llm client to repair malformed JSON strings.
         The llm client must implement .gemini_client(system_prompt=..., human_prompt=...)
@@ -188,7 +188,7 @@ You are a JSON repair agent.
 """
 
         prompt = f"Fix the following json: {text}\nIf it is correct, then output as is, DO NOT add anything else, no leading or ending remarks."
-        resp = gemini_client(system_prompt=system_prompt, human_prompt=prompt)
+        resp = await gemini_client(system_prompt=system_prompt, human_prompt=prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         

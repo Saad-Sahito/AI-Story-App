@@ -1,146 +1,152 @@
 # src/memory/sqlite_store.py
 import aiosqlite
 import json
+#import sqlite3
 import asyncio
 from typing import Dict, Any, Optional, List
-from pathlib import Path
 from asyncio import Semaphore
+from contextlib import asynccontextmanager
 #from tenacity import retry, stop_after_attempt, wait_exponential
 
 
 class SQLiteStore:
     init_lock = asyncio.Lock()
-    def __init__(self, db_path: str = "story_memory.db", table: str = "long_form", 
-                 user_id: str = None, story_id: str = None):
+    def __init__(self, table: str = "long_form", 
+                 user_id: str = None, story_id: str = None, db_path: str = "story_memory.db"):
         self.db_path = db_path
         self.table = table
         self.user_id = user_id
         self.story_id = story_id
         self.semaphore = Semaphore(10)  # Limit to 10 concurrent connections
-        Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        asyncio.get_event_loop().run_until_complete(self._init_database())
+        #Path(db_path).parent.mkdir(parents=True, exist_ok=True)
+        #self._init_database()
 
+    @asynccontextmanager
     async def _get_connection(self):
-        async with self.semaphore:
+        async with self.semaphore:  # limits concurrent DB connections
+            conn = await aiosqlite.connect(self.db_path, timeout=5.0)
+            conn.row_factory = aiosqlite.Row
             try:
-                conn = await aiosqlite.connect(self.db_path, timeout=5.0)
-                conn.row_factory = aiosqlite.Row
-                return conn
-            except aiosqlite.Error as e:
-                raise Exception(f"Failed to connect to SQLite: {e}")
-    
-    async def _init_database(self):
+                yield conn   # ✅ yield, not return
+            finally:
+                await conn.close()
+    @staticmethod
+    async def _init_database(db_path):
         """Initialize database with all required tables."""
-        async with self.init_lock:
-            async with await aiosqlite.connect(self.db_path) as conn:
-                await conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL for concurrent reads
-                await conn.execute("PRAGMA synchronous=NORMAL;")
-                await conn.execute("PRAGMA foreign_keys = ON")
-                
-                # Users table
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS users (
-                        user_id TEXT NOT NULL,
-                        nickname TEXT NOT NULL,
-                        user_tag TEXT NOT NULL,
-                        age INTEGER,
-                        stories TEXT DEFAULT '[]', -- JSON array stored as text
-                        PRIMARY KEY (user_id),
-                        UNIQUE(user_id, user_tag)
-                    )
-                """)
-                
-                # Story texts table
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS story_texts (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id TEXT NOT NULL,
-                        story_id TEXT NOT NULL,
-                        chapter_id TEXT NOT NULL,
-                        text TEXT, -- JSON array stored as text
-                        metadata TEXT, -- JSON stored as text
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(user_id, story_id, chapter_id)
-                    )
-                """)
-                
-                # Characters table
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS characters (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id TEXT NOT NULL,
-                        story_id TEXT NOT NULL,
-                        name TEXT NOT NULL,
-                        details TEXT,
-                        metadata TEXT, -- JSON stored as text
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(user_id, story_id, name)
-                    )
-                """)
-                
-                # World elements table
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS world_elements (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id TEXT NOT NULL,
-                        story_id TEXT NOT NULL,
-                        name TEXT NOT NULL,
-                        details TEXT,
-                        metadata TEXT, -- JSON stored as text
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(user_id, story_id, name)
-                    )
-                """)
-                
-                # Director notes table
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS director_notes (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id TEXT NOT NULL,
-                        story_id TEXT NOT NULL,
-                        chapter_id TEXT NOT NULL,
-                        text TEXT,
-                        metadata TEXT, -- JSON serialized as text
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE (user_id, story_id, chapter_id)
-                    )
-                """)
-                
-                # Story progress table
-                await conn.execute("""
-                    CREATE TABLE IF NOT EXISTS story_progress (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        user_id TEXT NOT NULL,
-                        story_id TEXT NOT NULL,
-                        latest_chapter_id INTEGER,
-                        continue_scene_id INTEGER,
-                        word_count INTEGER DEFAULT 0,
-                        metadata TEXT, -- JSON stored as text
-                        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                        UNIQUE(user_id, story_id)
-                    )
-                """)
-                
-                # Create indexes for better performance
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_user_tag ON users(user_tag)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_texts_user_story ON story_texts(user_id, story_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_story ON characters(user_id, story_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_world_elements_user_story ON world_elements(user_id, story_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_director_notes_user_story ON director_notes(user_id, story_id)")
-                await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_progress_user_story ON story_progress(user_id, story_id)")
-                
-                await conn.commit()
+        #async with self.init_lock:
+        async with aiosqlite.connect(db_path) as conn:
+        #conn = sqlite3.connect(db_path)
+        
+            await conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL for concurrent reads
+            await conn.execute("PRAGMA synchronous=NORMAL;")
+            await conn.execute("PRAGMA foreign_keys = ON")
+            
+            # Users table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS users (
+                    user_id TEXT NOT NULL,
+                    nickname TEXT NOT NULL,
+                    user_tag TEXT NOT NULL,
+                    age INTEGER,
+                    stories TEXT DEFAULT '[]', -- JSON array stored as text
+                    PRIMARY KEY (user_id),
+                    UNIQUE(user_id, user_tag)
+                )
+            """)
+            
+            # Story texts table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS story_texts (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    story_id TEXT NOT NULL,
+                    chapter_id TEXT NOT NULL,
+                    text TEXT, -- JSON array stored as text
+                    metadata TEXT, -- JSON stored as text
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, story_id, chapter_id)
+                )
+            """)
+            
+            # Characters table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS characters (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    story_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    details TEXT,
+                    metadata TEXT, -- JSON stored as text
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, story_id, name)
+                )
+            """)
+            
+            # World elements table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS world_elements (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    story_id TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    details TEXT,
+                    metadata TEXT, -- JSON stored as text
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, story_id, name)
+                )
+            """)
+            
+            # Director notes table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS director_notes (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    story_id TEXT NOT NULL,
+                    chapter_id TEXT NOT NULL,
+                    text TEXT,
+                    metadata TEXT, -- JSON serialized as text
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE (user_id, story_id, chapter_id)
+                )
+            """)
+            
+            # Story progress table
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS story_progress (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id TEXT NOT NULL,
+                    story_id TEXT NOT NULL,
+                    latest_chapter_id INTEGER,
+                    continue_scene_id INTEGER,
+                    word_count INTEGER DEFAULT 0,
+                    metadata TEXT, -- JSON stored as text
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(user_id, story_id)
+                )
+            """)
+            
+            # Create indexes for better performance
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_user_tag ON users(user_tag)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_texts_user_story ON story_texts(user_id, story_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_story ON characters(user_id, story_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_world_elements_user_story ON world_elements(user_id, story_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_director_notes_user_story ON director_notes(user_id, story_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_progress_user_story ON story_progress(user_id, story_id)")
+            
+            await conn.commit()
+        # finally:
+        #     conn.close()
 
     # ---------- User Management Methods ----------
     async def add_user(self, nickname: str, user_tag: str, age: Optional[int], user_id: str, stories: List[Dict] = None):
         """Add a new user to the users table."""
         stories = stories or []
         try:
-            async with await self._get_connection() as conn:
+            async with self._get_connection() as conn:
                 # Check if user_id already exists
                 cursor = await conn.execute(
                     "SELECT user_id FROM users WHERE user_id = ?",
@@ -177,7 +183,7 @@ class SQLiteStore:
     async def append_story(self, user_id: str, story_title: str, story_id: str, story_type: str):
         """Append a story to the user's stories list."""
         try:
-            async with await self._get_connection() as conn:
+            async with self._get_connection() as conn:
                 cursor = await conn.execute(
                     "SELECT stories FROM users WHERE user_id = ?",
                     (user_id,)
@@ -212,7 +218,7 @@ class SQLiteStore:
     async def delete_story(self, user_id: str, story_title: str, story_id: str):
         """Delete a story from the user's stories list AND all related tables."""
         try:
-            async with await self._get_connection() as conn:
+            async with self._get_connection() as conn:
                 cursor = await conn.execute(
                     "SELECT stories FROM users WHERE user_id = ?",
                     (user_id,)
@@ -269,7 +275,7 @@ class SQLiteStore:
     async def get_user_profile_with_stories(self, user_id: str):
         """Fetch user profile and their stories with progress (hardened)."""
         try:
-            async with await self._get_connection() as conn:
+            async with self._get_connection() as conn:
                 # Fetch user profile
                 cursor = await conn.execute(
                     """
@@ -394,7 +400,7 @@ class SQLiteStore:
             "story_title": story_title
         }
         
-        async with await self._get_connection() as conn:
+        async with self._get_connection() as conn:
             await conn.execute("""
                 INSERT INTO story_progress (user_id, story_id, latest_chapter_id, continue_scene_id, word_count, metadata)
                 VALUES (?, ?, ?, ?, ?, ?)
@@ -415,7 +421,7 @@ class SQLiteStore:
 
     async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):
         """Append new details to existing character/world details."""
-        async with await self._get_connection() as conn:
+        async with self._get_connection() as conn:
             for name, details in details_dict.items():
                 # Get existing details
                 cursor = await conn.execute(
@@ -450,7 +456,7 @@ class SQLiteStore:
     # ---------- GET methods ----------
     async def get_text(self, chapter_id: str) -> List[dict]:
         """Get the full JSON array (list of dicts) for a chapter."""
-        async with await self._get_connection() as conn:
+        async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"SELECT text FROM {self.table} WHERE user_id = ? AND story_id = ? AND chapter_id = ?",
                 (self.user_id, self.story_id, chapter_id)
@@ -481,7 +487,7 @@ class SQLiteStore:
 
     async def get_character_or_world(self, name: str) -> Optional[Dict[str, Any]]:
         """Get specific character or world element."""
-        async with await self._get_connection() as conn:
+        async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"SELECT name, details, metadata FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
                 (self.user_id, self.story_id, name)
@@ -498,12 +504,13 @@ class SQLiteStore:
 
     async def get_all_characters_or_worlds(self) -> Dict[str, Any]:
         """Get all characters or world elements."""
-        async with await self._get_connection() as conn:
+        async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"SELECT name, details FROM {self.table} WHERE user_id = ? AND story_id = ?",
                 (self.user_id, self.story_id)
             )
-            return {row['name']: row['details'] for row in cursor.fetchall()}
+            rows = await cursor.fetchall()   # ✅ must be awaited
+            return {row['name']: row['details'] for row in rows}
 
     async def close(self):
         """Close database connection (SQLite handles this automatically)."""

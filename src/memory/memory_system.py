@@ -3,7 +3,6 @@
 from typing import Dict, Any
 from asyncio import Lock
 from .qdrant_store import QdrantStore
-#from .sqlite_store import SQLiteStore
 from .shared_resources import SHARED_QDRANT, get_sqlite_store
 
 
@@ -14,176 +13,175 @@ class StoryMemorySystem:
         self.story_id = story_id
         self.db_path = db_path  # Optional custom database path
 
-        # Long-term storage using SQLite
+        # Long-term storage using SQLite (lazy-initialized via getter methods)
         self._long_term_story = None
         self._long_term_characters = None
         self._long_term_worlds = None
         self._long_term_docs = None
         self._long_term_story_progress = None
+        self._long_term_users = None
 
-        # Episodic storage using Qdrant (keeping this as you had it)
+        # Episodic storage using Qdrant
         self.episodic_story = None
         self.episodic_characters = None
         self.episodic_worlds = None
 
-    @property
+    # ---------- Long-term SQLite getters (async) ----------
     async def long_term_story(self):
         async with self._lock:
             if self._long_term_story is None:
+                # get_sqlite_store is async and returns a SQLiteStore instance
                 self._long_term_story = await get_sqlite_store(
-                    table="story_texts", 
-                    user_id=self.user_id, 
+                    table="story_texts",
+                    user_id=self.user_id,
                     story_id=self.story_id,
-                    db_path=self.db_path
+                    # db_path=self.db_path
                 )
             return self._long_term_story
-    
-    @property
+
     async def long_term_characters(self):
         async with self._lock:
             if self._long_term_characters is None:
                 self._long_term_characters = await get_sqlite_store(
-                    table="characters", 
-                    user_id=self.user_id, 
+                    table="characters",
+                    user_id=self.user_id,
                     story_id=self.story_id,
-                    db_path=self.db_path
                 )
             return self._long_term_characters
 
-    @property
     async def long_term_worlds(self):
         async with self._lock:
             if self._long_term_worlds is None:
                 self._long_term_worlds = await get_sqlite_store(
-                    table="world_elements", 
-                    user_id=self.user_id, 
+                    table="world_elements",
+                    user_id=self.user_id,
                     story_id=self.story_id,
-                    db_path=self.db_path
                 )
             return self._long_term_worlds
-    
-    @property
+
     async def long_term_docs(self):
         async with self._lock:
             if self._long_term_docs is None:
                 self._long_term_docs = await get_sqlite_store(
-                    table="director_notes", 
-                    user_id=self.user_id, 
+                    table="director_notes",
+                    user_id=self.user_id,
                     story_id=self.story_id,
-                    db_path=self.db_path
                 )
             return self._long_term_docs
-    
-    @property
+
     async def long_term_story_progress(self):
         async with self._lock:
             if self._long_term_story_progress is None:
                 self._long_term_story_progress = await get_sqlite_store(
-                    table="story_progress", 
-                    user_id=self.user_id, 
+                    table="story_progress",
+                    user_id=self.user_id,
                     story_id=self.story_id,
-                    db_path=self.db_path
                 )
             return self._long_term_story_progress
 
-    @property
     async def long_term_users(self):
         async with self._lock:
             if self._long_term_users is None:
                 self._long_term_users = await get_sqlite_store(
-                    table="users", 
-                    user_id=self.user_id, 
+                    table="users",
+                    user_id=self.user_id,
                     story_id=None,
-                    db_path=self.db_path
                 )
             return self._long_term_users
 
+    # ---------- Qdrant initialization (episodic) ----------
     async def qdrant_initialize(self):
         if self.episodic_story is None:
             base = QdrantStore(
-                collection="episodic_story_memory", 
-                user_id=self.user_id, 
-                story_id=self.story_id, 
-                client=SHARED_QDRANT
+                collection="episodic_story_memory",
+                user_id=self.user_id,
+                story_id=self.story_id,
+                client=SHARED_QDRANT,
             )
             await base.async_init()
             self.episodic_story = base.with_namespace("episodic_story")
             self.episodic_characters = base.with_namespace("episodic_characters")
             self.episodic_worlds = base.with_namespace("episodic_worlds")
 
-    # ---------- Episodic (keeping your existing methods) ----------
+    # ---------- Episodic methods ----------
     async def add_story_summary(self, summary: str, metadata: dict = None):
         await self.episodic_story.put(summary, metadata=metadata or {})
 
-    async def add_character_summary(self, summary: Dict[str,str], metadata: dict[str,int] = None):
+    async def add_character_summary(self, summary: Dict[str, str], metadata: dict[str, int] = None):
         await self.episodic_characters.put_dict_replace_character(
             data=summary, metadata=metadata or {}
         )
 
-    async def add_world_summary(self, summary: Dict[str,str], metadata: dict[str,int] = None):
+    async def add_world_summary(self, summary: Dict[str, str], metadata: dict[str, int] = None):
         await self.episodic_worlds.put_dict_replace_world(data=summary, metadata=metadata or {})
 
-    async def search_episodic(self, query: str, metadata: dict = None, k=5):
+    async def search_episodic(self, query: str, metadata: dict = None, k: int = 5):
         return {
             "story": await self.episodic_story.search(query, metadata=metadata, k=k),
             "characters": await self.episodic_characters.search(query, metadata=metadata, k=k),
             "world": await self.episodic_worlds.search(query, metadata=metadata, k=k),
         }
-    
+
     async def search_episodic_story_summary(self, chapter_number):
         hits = await self.episodic_story.get_chapter_content(chapter_number=chapter_number)
         return "\n".join(hits)
 
-    async def get_context_for_scene(self, current_chapter_number, query: str, k=10):
+    async def get_context_for_scene(self, current_chapter_number, query: str, k: int = 10):
         episodic_raw = await self.search_episodic(
             query, metadata={"chapter_id": current_chapter_number}, k=k
         )
         return episodic_raw
-    
-    # ---------- Long-Term (SQLite) ----------
+
+    # ---------- Long-Term (SQLite) operations ----------
     async def add_story_scene_cluster(self, text: list, metadata: dict[str, Any] = None):
+        store = await self.long_term_story()
         for entry in text:
-            await self.long_term_story.put_text(entry, metadata=metadata or {})
+            await store.put_text(entry, metadata=metadata or {})
 
     async def add_character_detail(self, scene_bundle, metadata):
-        await self.long_term_characters.put_characters_or_world(
-            details_dict=scene_bundle, metadata=metadata
-        )
+        store = await self.long_term_characters()
+        await store.put_characters_or_world(details_dict=scene_bundle, metadata=metadata or {})
 
     async def add_world_detail(self, scene_bundle, metadata):
-        await self.long_term_worlds.put_characters_or_world(
-            details_dict=scene_bundle, metadata=metadata
-        )
+        store = await self.long_term_worlds()
+        await store.put_characters_or_world(details_dict=scene_bundle, metadata=metadata or {})
 
     async def get_story_cluster(self, chapter_id):
-        return await self.long_term_story.get_text(chapter_id=chapter_id)
+        store = await self.long_term_story()
+        return await store.get_text(chapter_id)
 
     async def get_long_term_characters(self):
-        return await self.long_term_characters.get_all_characters_or_worlds()
-    
+        store = await self.long_term_characters()
+        return await store.get_all_characters_or_worlds()
+
     async def get_long_term_worlds(self):
-        return await self.long_term_worlds.get_all_characters_or_worlds()
+        store = await self.long_term_worlds()
+        return await store.get_all_characters_or_worlds()
 
     # ---------- Director Docs (Long-Term) ----------
     async def add_long_term_document(self, text: str, metadata: dict = None):
-        # For director notes, we'll store text directly
-        await self.long_term_docs.put_text({"content": text}, metadata=metadata)
+        store = await self.long_term_docs()
+        # For director notes, we'll store text directly as an entry
+        await store.put_text({"content": text}, metadata=metadata or {})
 
     async def get_long_term_document(self, name: str) -> str:
-        docs = await self.long_term_docs.get_text(name)  # Use name as chapter_id
+        store = await self.long_term_docs()
+        docs = await store.get_text(name)  # Use name as chapter_id
         if docs:
             # Assuming it's stored as [{"content": "..."}], return the last one's content
             last_doc = docs[-1] if isinstance(docs, list) else docs
             if isinstance(last_doc, dict):
                 return last_doc.get("content", "")
         return ""
-    
+
     # ----------- Story Progress (Long-Term) ----------
     async def update_story_progress(self, metadata: dict = None):
-        await self.long_term_story_progress.put_progress(metadata=metadata or {})
-    
+        store = await self.long_term_story_progress()
+        await store.put_progress(metadata=metadata or {})
+
     async def get_story_progress(self) -> dict:
-        return await self.long_term_story_progress.get_progress() or {}
+        store = await self.long_term_story_progress()
+        return await store.get_progress() or {}
 
     # ---------- Unified scene ingestion ----------
     async def add_post_scene_bundle(self, scene_bundle: Dict[str, Any], metadata: Dict[str, Any]):
@@ -200,23 +198,32 @@ class StoryMemorySystem:
         if parts.get("world_summary"):
             await self.add_world_summary(parts["world_summary"], metadata)
 
-    async def get_director_context(self, current_chapter_number, query: str, k=5):
+    async def get_director_context(self, current_chapter_number, query: str, k: int = 5):
         return await self.get_context_for_scene(current_chapter_number, query, k)
-    
+
     async def close(self):
         """Close all storage connections."""
-        for attr in ["_long_term_story",
+        for attr in [
+            "_long_term_story",
             "_long_term_characters",
             "_long_term_worlds",
             "_long_term_docs",
             "_long_term_story_progress",
+            "_long_term_users",
             "episodic_story",
             "episodic_characters",
-            "episodic_worlds"]:
+            "episodic_worlds",
+        ]:
             store = getattr(self, attr, None)
-            if store is not None and hasattr(store, "close"):
-                await store.close()
-        
+            if store is not None:
+                # Some store.close may be async; try awaiting if coroutine
+                close_func = getattr(store, "close", None)
+                if close_func:
+                    # call and await if coroutine
+                    result = close_func()
+                    if hasattr(result, "__await__"):
+                        await result
+
         import gc
         gc.collect()
 
