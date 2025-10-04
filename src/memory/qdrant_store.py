@@ -4,7 +4,7 @@ from qdrant_client.http import models
 import uuid
 from asyncio import get_event_loop
 from concurrent.futures import ThreadPoolExecutor
-from qdrant_client.async_qdrant_client import AsyncQdrantClient
+#from qdrant_client.async_qdrant_client import AsyncQdrantClient
 from .shared_resources import SHARED_QDRANT  # Import the shared client
 from contextlib import asynccontextmanager
 from setup.shared_redis_pool import get_redis_client
@@ -12,15 +12,40 @@ from tenacity import retry, stop_after_attempt, wait_exponential
 from asyncio import Semaphore
 import asyncio
 import time
+from fastapi import HTTPException
+import redis.asyncio as redis
+
 
 @asynccontextmanager
-async def redis_lock(client, lock_key, timeout=10):
+async def redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
     lock_value = str(time.time())
-    acquired = await client.set(lock_key, lock_value, nx=True, ex=timeout)
-    if acquired:
-        try:
-            yield
-        finally:
+    acquired = False
+    try:
+        for attempt in range(retries):
+            try:
+                acquired = await client.set(lock_key, lock_value, nx=True, ex=timeout)
+                if acquired:
+                    print(f"✅ Acquired lock for {lock_key} at {time.time()}")
+                    break
+                ttl = await client.ttl(lock_key)
+                if ttl == -1:  # Stale lock with no TTL
+                    print(f"🔍 Detected stale lock with no TTL for {lock_key}, removing")
+                    await client.delete(lock_key)
+                elif ttl == -2:  # Lock doesn't exist
+                    print(f"🔍 Lock {lock_key} does not exist, retrying")
+                else:
+                    print(f"🔍 Lock acquisition failed for {lock_key} at {time.time()}, attempt {attempt + 1}/{retries}, TTL={ttl}")
+                await asyncio.sleep(retry_delay)
+            except redis.RedisError as e:
+                print(f"❌ Redis error during lock acquisition for {lock_key}: {e}")
+                await asyncio.sleep(retry_delay)
+        if not acquired:
+            raise HTTPException(status_code=503, detail=f"Could not acquire lock for {lock_key} after {retries} attempts")
+        
+        yield
+        
+    finally:
+        if acquired:
             lua = """
             if redis.call("get", KEYS[1]) == ARGV[1] then
                 return redis.call("del", KEYS[1])
@@ -29,11 +54,23 @@ async def redis_lock(client, lock_key, timeout=10):
             end
             """
             try:
-                await client.eval(lua, 1, lock_key, lock_value)
-            except Exception:
-                pass
-    else:
-        raise Exception("Could not acquire lock")
+                result = await client.eval(lua, 1, lock_key, lock_value)
+                if result == 1:
+                    print(f"✅ Released lock for {lock_key} at {time.time()}")
+                else:
+                    print(f"🔍 Lock {lock_key} not released: different lock value or already expired")
+            except redis.RedisError as e:
+                print(f"❌ Failed to release lock for {lock_key}: {e}")
+                # Attempt to remove stale lock if it matches our value
+                try:
+                    current_value = await client.get(lock_key)
+                    if current_value == lock_value.encode():
+                        await client.delete(lock_key)
+                        print(f"✅ Forcibly released stale lock for {lock_key}")
+                    else:
+                        print(f"🔍 Lock {lock_key} not forcibly released: different lock value")
+                except redis.RedisError as e:
+                    print(f"❌ Failed to forcibly release lock for {lock_key}: {e}")
     
 class QdrantStore:
     _shared_model = None  # Global singleton for SentenceTransformer
@@ -56,7 +93,7 @@ class QdrantStore:
 
     async def async_init(self):
         # Ensure collection exists
-        async with self.collection_init_lock:
+        async with QdrantStore.collection_init_lock:
             collections = await self.client.get_collections()
             existing_collections = [c.name for c in collections.collections]
             if self.collection not in existing_collections:
@@ -93,14 +130,16 @@ class QdrantStore:
     #     import gc; gc.collect()
 
     def with_namespace(self, namespace: str):
-        """Return a new store bound to a namespace (same collection)."""
-        return QdrantStore(
+        store = QdrantStore(
             collection=self.collection,
             user_id=self.user_id,
             story_id=self.story_id,
             model_name=self.model_name,
             namespace=namespace,
+            client=self.client,
         )
+        store.model = self.model
+        return store
 
     async def _embed_text(self, text: str) -> List[float]:
         truncated = text[:512]
@@ -134,7 +173,7 @@ class QdrantStore:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put_dict_replace_character(self, data: Dict[str, str], metadata: Dict[str, int] = None):
-        client = get_redis_client()  # Assume this returns an async Redis client
+        client = await get_redis_client()  # Assume this returns an async Redis client
         async with self.request_semaphore:
             for k, v in data.items():
                 lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:character:{k}"
@@ -165,7 +204,7 @@ class QdrantStore:
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put_dict_replace_world(self, data: Dict[str, str], metadata: Dict[str, int] = None):
-        client = get_redis_client()
+        client = await get_redis_client()
         async with self.request_semaphore:
             for k, v in data.items():
                 lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:world_element:{k}"
@@ -176,7 +215,7 @@ class QdrantStore:
                         models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                         models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
                     ]
-                    search_results, _ = self.client.scroll(
+                    search_results, _ = await self.client.scroll(
                         collection_name=self.collection,
                         scroll_filter=models.Filter(must=filter_conds),
                         limit=1,
@@ -266,4 +305,7 @@ class QdrantStore:
             except Exception:
                 pass
         self.client = None
-        self.executor.shutdown(wait=True)
+        try:
+            self.executor.shutdown(wait=False)
+        except Exception:
+            pass

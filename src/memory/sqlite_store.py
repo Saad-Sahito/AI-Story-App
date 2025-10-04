@@ -418,6 +418,8 @@ class SQLiteStore:
                 word_count,
                 json.dumps(clean_meta)
             ))
+            await conn.commit()
+
 
     async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):
         """Append new details to existing character/world details."""
@@ -435,6 +437,7 @@ class SQLiteStore:
                 if isinstance(details, dict):
                     details = " ".join(f"{k}: {v}" for k, v in details.items())
                 
+
                 new_details = (old_details + " " + details).strip()
                 
                 # Upsert the record
@@ -452,6 +455,8 @@ class SQLiteStore:
                     new_details,
                     json.dumps(metadata)
                 ))
+                await conn.commit()
+
 
     # ---------- GET methods ----------
     async def get_text(self, chapter_id: str) -> List[dict]:
