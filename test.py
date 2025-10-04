@@ -13,7 +13,7 @@ from main import app  # Ensure main.py is in the same directory or adjust the im
 
 API_BASE = "http://localhost:8000"
 WS_BASE = "ws://localhost:8000"
-CONCURRENT_USERS = 1
+CONCURRENT_USERS = 15
 SERVER_PORT = 8000
 
 async def cleanup_redis():

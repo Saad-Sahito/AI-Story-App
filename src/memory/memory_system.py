@@ -6,6 +6,7 @@ from .qdrant_store import QdrantStore
 from .shared_resources import SHARED_QDRANT, get_sqlite_store
 
 
+
 class StoryMemorySystem:
     def __init__(self, user_id: str, story_id: str, db_path: str = None):
         self._lock = Lock()

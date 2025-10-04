@@ -14,6 +14,8 @@ import asyncio
 import time
 from fastapi import HTTPException
 import redis.asyncio as redis
+#from src.utilities.redis_lock import with_redis_lock
+
 
 
 @asynccontextmanager
@@ -154,8 +156,8 @@ class QdrantStore:
     async def put(self, text: str, metadata: Dict = None):
         async with self.request_semaphore:
             vec = await self._embed_text(text)
-            print(f"Embedding length: {len(vec)}")  # should match self.dim
-            print(f"Embedding dimension: {self.dim}")
+            #print(f"Embedding length: {len(vec)}")  # should match self.dim
+            #print(f"Embedding dimension: {self.dim}")
             payload = metadata.copy() if metadata else {}
             payload.update({
                 "text": text,

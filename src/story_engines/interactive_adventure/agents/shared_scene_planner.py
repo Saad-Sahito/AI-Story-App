@@ -208,7 +208,7 @@ class SharedScenePlannerService:
                 try:
                     # Try to find the user/session-level structures
                     user_context_id = state.user_context_id
-                    redis_client = get_redis_client()
+                    redis_client = await get_redis_client()
                     queue_key = f"input_queue:{user_context_id}:{scene_memory.story_id}"
 
                     # Build callback payload
