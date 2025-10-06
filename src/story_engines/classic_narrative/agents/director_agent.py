@@ -311,6 +311,7 @@ class DirectorGraph:
 
         self.compiled = self.graph.compile()
         self.current_chap_summary = ""
+        
 
     def _get_latest_director_message(self, state: StoryState) -> str:
         """Extract the latest director instructions from state messages"""
@@ -378,11 +379,10 @@ class DirectorGraph:
                 user_choice = False
                 for _ in range(6000):
                     choice = await redis_client.lpop(queue_key)
-                    if choice and type(choice) != bool:
+                    if choice == 1:
                         user_choice = True
                         break
-                    elif choice and type(choice) == bool:
-                        user_choice = choice
+                    elif choice != 1:
                         break
                     await asyncio.sleep(1.0)
                 if not user_choice:
@@ -559,30 +559,61 @@ class DirectorGraph:
             "next_action": "generate_and_ingest" if action == "generate_and_ingest" else "END",
         }
 
-    async def run(self, scene_chunk_callback):
-        print("Running director agent...")
+    # inside DirectorGraph class
+    async def run(self, scene_chunk_callback, stop_event: asyncio.Event | None = None):
+        print("🎬 Running director agent...")
         self.scene_chunk_callback = scene_chunk_callback
-        story_progress = await self.memory.get_story_progress()
-        
-        if story_progress:
-            initialized_state = StoryState(
-                current_chapter_id=story_progress.get("latest_chapter_id", 1),
-                scene_id=story_progress.get("continue_scene_id", 1),
-                story_title=story_progress.get("metadata", {}).get("story_title", "None"),
-                word_count=story_progress.get("word_count", 0),
-                messages=[],
-                next_action=""
+        self.stop_event = stop_event or asyncio.Event()
+
+        try:
+            # Load story progress
+            story_progress = await self.memory.get_story_progress()
+
+            if story_progress:
+                initialized_state = StoryState(
+                    current_chapter_id=story_progress.get("latest_chapter_id", 1),
+                    scene_id=story_progress.get("continue_scene_id", 1),
+                    story_title=story_progress.get("metadata", {}).get("story_title", "None"),
+                    word_count=story_progress.get("word_count", 0),
+                    messages=[],
+                    next_action=""
+                )
+            else:
+                initialized_state = StoryState(
+                    current_chapter_id=1,
+                    scene_id=1,
+                    story_title="None",
+                    word_count=0,
+                    messages=[],
+                    next_action=""
+                )
+
+            # ✅ Run LangGraph inside a cancellable task
+            task = asyncio.create_task(
+                self.compiled.ainvoke(initialized_state, {"recursion_limit": 50, "stop_event": self.stop_event})
             )
-        else:
-            initialized_state = StoryState(
-                current_chapter_id=1,
-                scene_id=1,
-                story_title="None",
-                word_count=0,
-                messages=[],
-                next_action=""
-            )
-        
-        result = await self.compiled.ainvoke(initialized_state, {"recursion_limit": 50})
-        print("Director Node Finished: ", result)
-        return result
+
+            while not task.done():
+                if stop_event.is_set():
+                    print("🛑 Stop event received — cancelling DirectorGraph task...")
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        print("✅ DirectorGraph task cancelled cleanly")
+                    return None
+                await asyncio.sleep(0.2)
+
+            result = await task
+            print("✅ Director Node Finished:", result)
+            return result
+
+        except asyncio.CancelledError:
+            print("🛑 DirectorGraph CancelledError caught")
+            raise
+        except Exception as e:
+            print(f"❌ Error in DirectorGraph.run: {e}")
+            import traceback; traceback.print_exc()
+            raise
+        finally:
+            print("🎬 DirectorGraph stopped gracefully")

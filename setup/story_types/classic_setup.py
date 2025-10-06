@@ -116,6 +116,7 @@ class ClassicStorySetup:
                             raise HTTPException(status_code=500, detail=f"Failed to initialize memory system: {str(e)}")
                         session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
                         session_data['user_input_queue'] = asyncio.Queue()
+                        story_data["memory_system_initialized"] = True
                     async with client.pipeline() as pipe:
                         pipe.expire(key, SESSION_TTL)
                         await pipe.execute()
@@ -163,6 +164,7 @@ class ClassicStorySetup:
                                     #     continue
                                     story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
                                     story_session['user_input_queue'] = asyncio.Queue()
+                                    story_data["memory_system_initialized"] = True
                                 user_session["stories"][story_id] = story_session
                         if cursor == 0:
                             break
@@ -203,6 +205,7 @@ class ClassicStorySetup:
                             print(f"❌ AttributeError in _set_session for memory_system: {e}")
                             serializable_data['memory_system_params'] = {}
                     del serializable_data['memory_system']
+                    data["memory_system_initialized"] = False
                 if 'director' in serializable_data:
                     del serializable_data['director']
                 if 'user_input_queue' in serializable_data:
@@ -349,12 +352,16 @@ class ClassicStorySetup:
         """
         Handle WebSocket connection for story progression.
         Ensures locks are acquired and released properly, with parallel send/recv/director loops.
+        Gracefully cancels the DirectorGraph if the client disconnects.
         """
         await websocket.accept()
         client = await get_redis_client()
         ws_key = f"{BASE_SESSION_KEY}_active_ws:{user_id}:{story_id}"
         director_key = f"director_running:{user_id}:{story_id}"
         SESSION_TTL = 3600  # 1h TTL
+
+        # Event to coordinate clean shutdown on disconnect
+        disconnect_event = asyncio.Event()
 
         try:
             print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
@@ -433,7 +440,7 @@ class ClassicStorySetup:
 
             async def refresh_ttl_loop():
                 try:
-                    while True:
+                    while not disconnect_event.is_set():
                         await asyncio.sleep(30)
                         async with client.pipeline() as pipe:
                             pipe.expire(user_key, SESSION_TTL)
@@ -444,7 +451,7 @@ class ClassicStorySetup:
 
             async def send_loop():
                 try:
-                    while True:
+                    while not disconnect_event.is_set():
                         item = await queue.get()
                         if item is None:
                             break
@@ -456,7 +463,7 @@ class ClassicStorySetup:
 
             async def recv_loop():
                 try:
-                    while True:
+                    while not disconnect_event.is_set():
                         msg = await websocket.receive_json()
                         if "choice" in msg:
                             choice = msg["choice"].strip()
@@ -470,8 +477,15 @@ class ClassicStorySetup:
                                     await pipe.execute()
                         elif "continue_chapter" in msg:
                             choice = msg["continue_chapter"]
-                            if not choice:
+
+                            # Skip if it's None
+                            if choice is None:
                                 continue
+
+                            # Convert string "1"/"0" to int if needed
+                            if isinstance(choice, str) and choice.isdigit():
+                                choice = int(choice)
+
                             queue_key = f"continue_input_queue:{user_id}:{story_id}"
                             async with redis_lock(client, f"lock:{queue_key}"):
                                 async with client.pipeline() as pipe:
@@ -480,12 +494,16 @@ class ClassicStorySetup:
                                     await pipe.execute()
                 except WebSocketDisconnect:
                     print("❌ Client disconnected")
+                    disconnect_event.set()
                 except asyncio.CancelledError:
                     return
 
             async def run_director():
                 try:
-                    await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
+                    await story_data["director"].run(
+                        scene_chunk_callback=scene_chunk_callback,
+                        stop_event=disconnect_event
+                        )
                     await queue.put({"chapter_complete": True})
                 except Exception as e:
                     await queue.put({"error": f"Director failed: {str(e)}"})
@@ -497,8 +515,16 @@ class ClassicStorySetup:
             send_task = asyncio.create_task(send_loop())
             recv_task = asyncio.create_task(recv_loop())
             ttl_task = asyncio.create_task(refresh_ttl_loop())
+
             try:
-                await asyncio.gather(director_task, send_task, recv_task, ttl_task)
+                await asyncio.wait(
+                    [director_task, send_task, recv_task, ttl_task],
+                    return_when=asyncio.FIRST_COMPLETED
+                )
+
+                # If any task ends (like disconnect), trigger shutdown
+                disconnect_event.set()
+
             finally:
                 for t in [director_task, send_task, recv_task, ttl_task]:
                     t.cancel()

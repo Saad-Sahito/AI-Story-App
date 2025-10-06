@@ -92,17 +92,18 @@ class StoryMemorySystem:
 
     # ---------- Qdrant initialization (episodic) ----------
     async def qdrant_initialize(self):
-        if self.episodic_story is None:
-            base = QdrantStore(
-                collection="episodic_story_memory",
-                user_id=self.user_id,
-                story_id=self.story_id,
-                client=SHARED_QDRANT,
-            )
-            await base.async_init()
-            self.episodic_story = base.with_namespace("episodic_story")
-            self.episodic_characters = base.with_namespace("episodic_characters")
-            self.episodic_worlds = base.with_namespace("episodic_worlds")
+        async with self._lock:
+            if self.episodic_story is None:
+                base = QdrantStore(
+                    collection="episodic_story_memory",
+                    user_id=self.user_id,
+                    story_id=self.story_id,
+                    client=SHARED_QDRANT,
+                )
+                await base.async_init()
+                self.episodic_story = base.with_namespace("episodic_story")
+                self.episodic_characters = base.with_namespace("episodic_characters")
+                self.episodic_worlds = base.with_namespace("episodic_worlds")
 
     # ---------- Episodic methods ----------
     async def add_story_summary(self, summary: str, metadata: dict = None):

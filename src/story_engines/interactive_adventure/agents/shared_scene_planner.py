@@ -104,41 +104,65 @@ class SharedScenePlannerService:
         
         self.compiled = self.graph.compile()
     
-    async def run_scene(self, user_context: UserSceneContext) -> tuple[str, list]:
-        """Process scene for a specific user using their context"""
+    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None) -> tuple[str, list]:
+        """Process scene for a specific user using their context, cancellable via stop_event."""
         print(f"🔍 DEBUG: Starting run_scene with user_id={user_context.user_id}, story_id={user_context.story_id}")
+
         try:
-            print(f"🔍 DEBUG: Setting user_context_id")
             user_context.scene_state.user_context_id = user_context.user_id
         except Exception as e:
             print(f"❌ ERROR: Failed to set user_context_id: {e}")
             import traceback
             traceback.print_exc()
             return "", []
-        
+
         try:
             print(f"🔍 DEBUG: Invoking graph for {user_context.user_id}/{user_context.story_id}")
-            result = await self.compiled.ainvoke(
-                user_context.scene_state,
-                {"recursion_limit": 25}
+
+            # ✅ Run LangGraph inside a cancellable task
+            task = asyncio.create_task(
+                self.compiled.ainvoke(
+                    user_context.scene_state,
+                    {"recursion_limit": 25, "stop_event": stop_event}
+                )
             )
 
+            # ✅ Monitor for cancellation
+            while not task.done():
+                if stop_event and stop_event.is_set():
+                    print("🛑 Stop event received — cancelling SceneGraph task...")
+                    task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        print("✅ SceneGraph task cancelled cleanly")
+                    return "", []
+                await asyncio.sleep(0.2)
+
+            # ✅ Get final result
+            result = await task
+
             print(f"🔍 DEBUG: Graph result: {result}")
-            
+
             scene_memory: SceneMemory = result["scene_memory"]
             print(f"🔍 DEBUG: Scene memory: so_far={scene_memory.scene_so_far[:50]}..., cluster_len={len(scene_memory.scene_cluster)}")
-            
+
             if result.get("next_node") == "END":
                 print("✅ Scene reached END normally")
                 return scene_memory.scene_so_far, scene_memory.scene_cluster
-            
+
             print("✅ Scene completed normally")
             return scene_memory.scene_so_far, scene_memory.scene_cluster
+
+        except asyncio.CancelledError:
+            print("🛑 SceneGraph run_scene() cancelled cleanly (asyncio.CancelledError caught)")
+            return "", []
         except Exception as e:
             print(f"❌ ERROR in run_scene: {e}")
             import traceback
             traceback.print_exc()
             return "", []
+
     
     def _initializer(self, state: SceneState) -> SceneState:
         print(f"🔍 DEBUG: Initializer node for user_context_id={state.user_context_id}")

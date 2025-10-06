@@ -144,11 +144,11 @@ class QdrantStore:
         return store
 
     async def _embed_text(self, text: str) -> List[float]:
-        truncated = text[:512]
+        #truncated = text[:512]
         loop = get_event_loop()
         return await loop.run_in_executor(
             self.executor,
-            lambda: self.model.encode([truncated], convert_to_numpy=True)[0].tolist()
+            lambda: self.model.encode([text], convert_to_numpy=True)[0].tolist()
         )
 
     # ---------- Upserts ----------

@@ -24,7 +24,7 @@ async def get_sqlite_store(table: str, user_id: str, story_id: str, db_path: str
 
 SHARED_QDRANT = AsyncQdrantClient(
     url="http://localhost:6333",
-    timeout=30.0
+    timeout=60.0
 )
 
 
