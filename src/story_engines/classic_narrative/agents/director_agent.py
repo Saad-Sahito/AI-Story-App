@@ -353,30 +353,7 @@ class DirectorGraph:
         del user_context
         gc.collect()
 
-        # Create Ingestor only for this ingestion
-        ingestor = Ingestor(self.memory)
-        scene_bundle = await ingestor.ingest_scene(state, scene_text)
-        del ingestor
-        gc.collect()
-        
-        await self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
-            "chapter_id": state.current_chapter_id, 
-            "story_title": state.story_title, 
-            "scene_id": state.scene_id, 
-            "word_count": state.word_count
-        })
-        
-        await self.memory.add_post_scene_bundle(
-            scene_bundle=scene_bundle,
-            metadata={
-                "scene_id": state.scene_id,
-                "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title
-            }
-        )
-        
-        del scene_bundle, scene_cluster, scene_text
-        gc.collect()
+       
 
         from setup.shared_redis_pool import get_redis_client
         try:
@@ -417,6 +394,34 @@ class DirectorGraph:
             print(f"❌ ERROR in user input handling: {e}")
             import traceback; traceback.print_exc()
 
+
+        # Save Story    
+        # Create Ingestor only for this ingestion
+        ingestor = Ingestor(self.memory)
+        scene_bundle = await ingestor.ingest_scene(state, scene_text)
+        del ingestor
+        gc.collect()
+        
+        await self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
+            "chapter_id": state.current_chapter_id, 
+            "story_title": state.story_title, 
+            "scene_id": state.scene_id, 
+            "word_count": state.word_count
+        })
+        
+        await self.memory.add_post_scene_bundle(
+            scene_bundle=scene_bundle,
+            metadata={
+                "scene_id": state.scene_id,
+                "chapter_id": state.current_chapter_id,
+                "story_title": state.story_title
+            }
+        )
+        
+        del scene_bundle, scene_cluster, scene_text
+        gc.collect()
+
+        
         # Return the final state for the next node
         yield {
             "scene_id": state.scene_id,

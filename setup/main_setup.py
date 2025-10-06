@@ -14,10 +14,10 @@ class MainSetup:
     async def initialize_story(self, user_id: str, story_type: str, story_title: str = ""):
         if story_type == 'interactive':
             setup = await get_shared_interactive_setup()
-            await setup.initialize_story(user_id=user_id, story_title=story_title)
+            return await setup.initialize_story(user_id=user_id, story_title=story_title)
         elif story_type == 'classic':
             setup = await get_shared_classic_setup()
-            await setup.initialize_story(user_id=user_id, story_title=story_title)
+            return await setup.initialize_story(user_id=user_id, story_title=story_title)
 
     async def continue_story(self, user_id: str, story_id: str, story_type: str) -> dict:
         if story_type == 'interactive':
