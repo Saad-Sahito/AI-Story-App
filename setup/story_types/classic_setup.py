@@ -468,6 +468,16 @@ class ClassicStorySetup:
                                     pipe.rpush(queue_key, choice)
                                     pipe.expire(queue_key, SESSION_TTL)
                                     await pipe.execute()
+                        elif "continue_chapter" in msg:
+                            choice = msg["continue_chapter"].strip()
+                            if not choice:
+                                continue
+                            queue_key = f"continue_input_queue:{user_id}:{story_id}"
+                            async with redis_lock(client, f"lock:{queue_key}"):
+                                async with client.pipeline() as pipe:
+                                    pipe.rpush(queue_key, choice)
+                                    pipe.expire(queue_key, SESSION_TTL)
+                                    await pipe.execute()
                 except WebSocketDisconnect:
                     print("❌ Client disconnected")
                 except asyncio.CancelledError:

@@ -387,7 +387,7 @@ class DirectorGraph:
 
             # Build callback payload
             resume_payload = {
-                "type": "saved"
+                "type": "save"
             }
             try:
                 #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")

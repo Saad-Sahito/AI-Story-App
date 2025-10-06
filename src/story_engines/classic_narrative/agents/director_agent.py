@@ -363,7 +363,7 @@ class DirectorGraph:
 
             # Build callback payload
             resume_payload = {
-                "type": "saved"
+                "type": "save"
             }
             try:
                 #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
@@ -421,7 +421,7 @@ class DirectorGraph:
         del scene_bundle, scene_cluster, scene_text
         gc.collect()
 
-        
+
         # Return the final state for the next node
         yield {
             "scene_id": state.scene_id,
