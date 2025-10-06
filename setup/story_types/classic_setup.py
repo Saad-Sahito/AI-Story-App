@@ -469,7 +469,7 @@ class ClassicStorySetup:
                                     pipe.expire(queue_key, SESSION_TTL)
                                     await pipe.execute()
                         elif "continue_chapter" in msg:
-                            choice = msg["continue_chapter"].strip()
+                            choice = msg["continue_chapter"]
                             if not choice:
                                 continue
                             queue_key = f"continue_input_queue:{user_id}:{story_id}"
