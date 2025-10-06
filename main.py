@@ -1,4 +1,4 @@
-from fastapi import HTTPException
+from fastapi import HTTPException, Query
 import asyncio
 import time
 import redis.asyncio as redis
@@ -181,7 +181,7 @@ async def api_create_premise(initial_story_data: dict):
     return await mainsetup.create_premise(initial_story_data=initial_story_data)
 
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
-async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str, story_type: str):
+async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str, story_type: str = Query(...)):
     try:
         print(f"🔵 Calling api_backend.handle_story_websocket...")
         await mainsetup.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id, story_type=story_type)
