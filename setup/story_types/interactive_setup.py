@@ -108,7 +108,7 @@ class InteractiveStorySetup:
                     except json.JSONDecodeError as e:
                         print(f"❌ JSON decode error for {key}: {e}")
                         raise HTTPException(status_code=500, detail="Invalid session data format")
-                    if 'memory_system_params' in session_data:
+                    if not session_data.get("memory_system_initialized", False):
                         params = session_data['memory_system_params']
                         if not all(k in params for k in ['user_id', 'story_id']):
                             print(f"❌ Invalid memory_system_params: {params}")
@@ -124,7 +124,7 @@ class InteractiveStorySetup:
                             raise HTTPException(status_code=500, detail=f"Failed to initialize memory system: {str(e)}")
                         session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
                         session_data['user_input_queue'] = asyncio.Queue()
-                        story_data["memory_system_initialized"] = True
+                        session_data["memory_system_initialized"] = True
                     async with client.pipeline() as pipe:
                         pipe.expire(key, SESSION_TTL)
                         await pipe.execute()
@@ -156,7 +156,7 @@ class InteractiveStorySetup:
                                 except json.JSONDecodeError as e:
                                     print(f"❌ JSON decode error for {story_key}: {e}")
                                     continue
-                                if 'memory_system_params' in story_session:
+                                if not story_session.get("memory_system_initialized", False):
                                     params = story_session['memory_system_params']
                                     if not all(k in params for k in ['user_id', 'story_id']):
                                         print(f"❌ Invalid memory_system_params for {story_key}: {params}")
@@ -172,7 +172,7 @@ class InteractiveStorySetup:
                                     #     continue
                                     story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
                                     story_session['user_input_queue'] = asyncio.Queue()
-                                    story_data["memory_system_initialized"] = True
+                                    story_session["memory_system_initialized"] = True
                                 user_session["stories"][story_id] = story_session
                         if cursor == 0:
                             break
@@ -212,7 +212,7 @@ class InteractiveStorySetup:
                             print(f"❌ AttributeError in _set_session for memory_system: {e}")
                             serializable_data['memory_system_params'] = {}
                     del serializable_data['memory_system']
-                    data["memory_system_initialized"] = False
+                    serializable_data["memory_system_initialized"] = data.get("memory_system_initialized", True)
                 if 'director' in serializable_data:
                     del serializable_data['director']
                 if 'user_input_queue' in serializable_data:
