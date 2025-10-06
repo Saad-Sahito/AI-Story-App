@@ -271,14 +271,14 @@ class InteractiveStorySetup:
             story_progress_data = await memory_system.get_story_progress()
             if not story_progress_data:
                 raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
-            await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
-            user_session = await self._get_session(user_id)  # Reload session
-            print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
-            story_text = (
-                await user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
-                or "No story text for this chapter found."
-            )
-            return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
+        await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
+        user_session = await self._get_session(user_id)  # Reload session
+        print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
+        story_text = (
+            await user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
+            or "No story text for this chapter found."
+        )
+        return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
 
     #@profile
     async def create_premise(self, initial_story_data: dict):
