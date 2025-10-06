@@ -205,16 +205,16 @@ async def api_get_story_progress(user_id: str, story_id: str, story_type: str):
 
 @app.patch("/stories/logout/{user_id}/{story_id}")
 async def api_logout_story(user_id: str, story_id: str, story_type: str):
-    return mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
+    return await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
 
 @app.get("/stories/cluster/{user_id}/{story_id}")
 async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapter_number: int):
-    return mainsetup.get_story_cluster(user_id=user_id, story_id=story_id, story_type=story_type, chapter_number=chapter_number)
+    return await mainsetup.get_story_cluster(user_id=user_id, story_id=story_id, story_type=story_type, chapter_number=chapter_number)
 
 # ---------------- User Session Management Routes ----------------
 @app.patch("/users/{user_id}/session")
-def api_logout(user_id: str):
-    return mainsetup.logout(user_id)
+async def api_logout(user_id: str):
+    return await mainsetup.logout(user_id)
 
 # gets all active users in redis pool (for app manager use)
 @app.get("/users/active")
