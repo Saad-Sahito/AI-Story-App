@@ -29,7 +29,7 @@ class StoryState:
 
 class SceneBundle(BaseModel):
     story_summary: str = Field(
-        description="Detailed but short summary of the scene."
+        description="Detailed summary of the scene."
     )
     character_details: Dict[str, str] = Field(
         description="Dictionary: {character_name: details about traits/actions/motivations this scene inline all of it str not dict, also mention the chapter/scene number} "
@@ -42,7 +42,7 @@ scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
 
 class ChapterBundle(BaseModel):
     summary: str = Field(
-        description="A detailed but short summary of the entire chapter."
+        description="A detailed summary of the entire chapter."
     )
     character_summary: Dict[str, str] = Field(
         description="Dictionary: {character_name: summary of the character regarding their traits/actions/motivations inline all of it str not dict.} "
@@ -340,7 +340,7 @@ class DirectorGraph:
         print("Called Generate and Ingest Node!")
         
         # Get the latest director instructions
-        director_instructions = self._get_latest_director_message(state)
+        #director_instructions = self._get_latest_director_message(state)
         
         if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
             print("❌ ERROR: CLASSIC_SCENE_PLANNER_SERVICE is None!")
@@ -388,6 +388,7 @@ class DirectorGraph:
                     choice = await redis_client.lpop(queue_key)
                     if choice == b'1' or choice == 1 or choice == '1':  # ✅ Check both byte and int
                         user_choice = True
+                        print("✅ User chose to save continue")
                         break
                     elif choice is not None:  # ✅ Got a response but not "1"
                         break
