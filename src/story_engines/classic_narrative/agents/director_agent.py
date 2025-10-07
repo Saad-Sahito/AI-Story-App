@@ -305,8 +305,23 @@ class DirectorGraph:
                 "END": "ingest_chapter",
             },
         )
-
-        self.graph.add_edge("generate_and_ingest", "director_node")
+        # ✅ FIX: Add conditional edge from generate_and_ingest
+        # Check if user wants to end or continue
+        def route_after_generate(state: StoryState):
+            """Route based on whether user chose to continue"""
+            if state.next_action == "END":
+                return END  # End immediately without ingesting chapter
+            return "director_node"
+        
+        self.graph.add_conditional_edges(
+            "generate_and_ingest",
+            route_after_generate,
+            {
+                "director_node": "director_node",
+                END: END  # Direct route to END
+            }
+        )
+        #self.graph.add_edge("generate_and_ingest", "director_node")
         self.graph.add_edge("ingest_chapter", END)
 
         self.compiled = self.graph.compile()
@@ -327,13 +342,6 @@ class DirectorGraph:
         # Get the latest director instructions
         director_instructions = self._get_latest_director_message(state)
         
-        # user_context = UserSceneContext.create_for_user(
-        #     user_id=self.memory.user_id,
-        #     story_id=self.memory.story_id,
-        #     director_instructions=director_instructions,
-        #     scene_chunk_callback=self.scene_chunk_callback
-        # )
-        
         if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
             print("❌ ERROR: CLASSIC_SCENE_PLANNER_SERVICE is None!")
             raise
@@ -349,12 +357,13 @@ class DirectorGraph:
         )
         
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(user_context=user_context, stop_event=self.stop_event)
-    
+        scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
+            user_context=user_context, 
+            stop_event=self.stop_event
+        )
+
         del user_context
         gc.collect()
-
-       
 
         from setup.shared_redis_pool import get_redis_client
         try:
@@ -367,7 +376,6 @@ class DirectorGraph:
                 "type": "save"
             }
             try:
-                #print(f"🔍 DEBUG: Sending decision prompt to frontend for {user_context_id}/{scene_memory.story_id}: {decision_payload}")
                 self.scene_chunk_callback(resume_payload)
             except Exception as e:
                 print(f"❌ ERROR: scene_chunk_callback raised: {e}")
@@ -375,25 +383,45 @@ class DirectorGraph:
 
             # Wait for user input from Redis List
             try:
-                #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
                 user_choice = False
                 for _ in range(6000):
                     choice = await redis_client.lpop(queue_key)
-                    if choice == 1:
+                    if choice == b'1' or choice == 1:  # ✅ Check both byte and int
                         user_choice = True
                         break
-                    elif choice != 1:
+                    elif choice is not None:  # ✅ Got a response but not "1"
                         break
                     await asyncio.sleep(1.0)
+                
+                # ✅ FIX: Return dict with flag instead of END
                 if not user_choice:
-                    return END
+                    print("🛑 User chose not to continue")
+                    return {
+                        "scene_id": state.scene_id,
+                        "current_chapter_id": state.current_chapter_id,
+                        "word_count": state.word_count,
+                        "next_action": "END",  # Signal to stop via state
+                    }
             except Exception as e:
                 print(f"❌ ERROR in Redis queue handling: {e}")
                 import traceback; traceback.print_exc()
+                # Return state with END action on error
+                return {
+                    "scene_id": state.scene_id,
+                    "current_chapter_id": state.current_chapter_id,
+                    "word_count": state.word_count,
+                    "next_action": "END",
+                }
         except Exception as e:
             print(f"❌ ERROR in user input handling: {e}")
             import traceback; traceback.print_exc()
-
+            # Return state with END action on error
+            return {
+                "scene_id": state.scene_id,
+                "current_chapter_id": state.current_chapter_id,
+                "word_count": state.word_count,
+                "next_action": "END",
+            }
 
         # Save Story    
         # Create Ingestor only for this ingestion
@@ -421,14 +449,14 @@ class DirectorGraph:
         del scene_bundle, scene_cluster, scene_text
         gc.collect()
 
-
-        # Return the final state for the next node
+        # ✅ Return state WITHOUT next_action or with empty string
+        # This allows the conditional edge to route back to director_node
         return {
             "scene_id": state.scene_id + 1,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
+            # Don't set next_action here - let it stay as empty string or previous value
         }
-
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
         result = await ingestor.ingest_chapter(state, self.current_chap_summary)

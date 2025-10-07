@@ -87,6 +87,7 @@ class ClassicStorySetup:
     async def _get_session(self, user_id: str, story_id: str = None):
         client = await get_redis_client()
         try:
+        
             if story_id:
                 key = f"{BASE_SESSION_KEY}:{user_id}:{story_id}"
                 lock_key = f"lock:{key}"
