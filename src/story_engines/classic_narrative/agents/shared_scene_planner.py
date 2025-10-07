@@ -108,7 +108,7 @@ class SharedScenePlannerService:
     async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None) -> tuple[str, list]:
         """Process scene for a specific user using their context"""
         print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
-        stop_event = stop_event or asyncio.Event()
+        
 
         try:
             user_context.scene_state.user_context_id = user_context.user_id
@@ -120,7 +120,7 @@ class SharedScenePlannerService:
         try:
             # Run LangGraph in a cancellable task
             task = asyncio.create_task(
-                self.compiled.ainvoke(user_context.scene_state, {"recursion_limit": 25, "stop_event": self.stop_event})
+                self.compiled.ainvoke(user_context.scene_state, {"recursion_limit": 25, "stop_event": stop_event})
             )
 
             while not task.done():

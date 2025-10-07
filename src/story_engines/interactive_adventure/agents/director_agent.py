@@ -346,7 +346,7 @@ class DirectorGraph:
         )
         
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(user_context)
+        scene_text, scene_cluster = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(user_context=user_context, stop_event = self.stop_event)
     
         del user_context
         gc.collect()
@@ -563,7 +563,7 @@ class DirectorGraph:
     async def run(self, scene_chunk_callback, stop_event: asyncio.Event | None = None):
         print("🎬 Running director agent...")
         self.scene_chunk_callback = scene_chunk_callback
-        stop_event = stop_event or asyncio.Event()
+        self.stop_event = stop_event or asyncio.Event()
 
         try:
             # Load story progress
