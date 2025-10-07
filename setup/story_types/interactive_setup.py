@@ -470,7 +470,15 @@ class InteractiveStorySetup:
             async def recv_loop():
                 try:
                     while not disconnect_event.is_set():
-                        msg = await websocket.receive_json()
+                        try:
+                            msg = await websocket.receive_json()
+                        except asyncio.TimeoutError:
+                            # Prevent exit due to inactivity
+                            continue
+                        except WebSocketDisconnect:
+                            print("❌ Client disconnected during recv_loop")
+                            disconnect_event.set()
+                            break
                         if "choice" in msg:
                             choice = msg["choice"].strip()
                             if not choice:
@@ -484,7 +492,6 @@ class InteractiveStorySetup:
                         elif "continue_chapter" in msg:
                             choice = msg["continue_chapter"]
 
-                            # Skip if it's None
                             if choice is None:
                                 continue
 
@@ -498,8 +505,8 @@ class InteractiveStorySetup:
                                     pipe.rpush(queue_key, choice)
                                     pipe.expire(queue_key, SESSION_TTL)
                                     await pipe.execute()
-                except WebSocketDisconnect:
-                    print("❌ Client disconnected")
+                except Exception as e:
+                    print(f"❌ recv_loop crashed: {e}")
                     disconnect_event.set()
                 except asyncio.CancelledError:
                     return

@@ -95,35 +95,35 @@ class QdrantStore:
 
     async def async_init(self):
         # Ensure collection exists
-        async with QdrantStore.collection_init_lock:
-            collections = await self.client.get_collections()
-            existing_collections = [c.name for c in collections.collections]
-            if self.collection not in existing_collections:
-                await self.client.create_collection(
-                    collection_name=self.collection,
-                    vectors_config=models.VectorParams(size=self.dim, distance=models.Distance.COSINE),
-                    on_disk_payload=True,
-                )
+        #async with QdrantStore.collection_init_lock:
+        collections = await self.client.get_collections()
+        existing_collections = [c.name for c in collections.collections]
+        if self.collection not in existing_collections:
+            await self.client.create_collection(
+                collection_name=self.collection,
+                vectors_config=models.VectorParams(size=self.dim, distance=models.Distance.COSINE),
+                on_disk_payload=True,
+            )
 
-            # Ensure payload indexes exist
-            required_indexes = {
-                "user_id": models.PayloadSchemaType.KEYWORD,
-                "story_id": models.PayloadSchemaType.KEYWORD,
-                "namespace": models.PayloadSchemaType.KEYWORD,
-                "character_name": models.PayloadSchemaType.KEYWORD,
-                "world_element": models.PayloadSchemaType.KEYWORD,
-                "chapter_id": models.PayloadSchemaType.INTEGER,
-            }
-            for field, schema in required_indexes.items():
-                try:
-                    await self.client.create_payload_index(
-                        collection_name=self.collection,
-                        field_name=field,
-                        field_schema=schema,
-                    )
-                except Exception as e:
-                    if "already exists" not in str(e):
-                        raise
+        # Ensure payload indexes exist
+        required_indexes = {
+            "user_id": models.PayloadSchemaType.KEYWORD,
+            "story_id": models.PayloadSchemaType.KEYWORD,
+            "namespace": models.PayloadSchemaType.KEYWORD,
+            "character_name": models.PayloadSchemaType.KEYWORD,
+            "world_element": models.PayloadSchemaType.KEYWORD,
+            "chapter_id": models.PayloadSchemaType.INTEGER,
+        }
+        for field, schema in required_indexes.items():
+            try:
+                await self.client.create_payload_index(
+                    collection_name=self.collection,
+                    field_name=field,
+                    field_schema=schema,
+                )
+            except Exception as e:
+                if "already exists" not in str(e):
+                    raise
 
     # @classmethod
     # def clear_shared_models(cls):

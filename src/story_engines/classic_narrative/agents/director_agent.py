@@ -423,7 +423,7 @@ class DirectorGraph:
 
 
         # Return the final state for the next node
-        yield {
+        return {
             "scene_id": state.scene_id + 1,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
