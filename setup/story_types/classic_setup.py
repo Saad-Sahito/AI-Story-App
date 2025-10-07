@@ -90,6 +90,9 @@ class ClassicStorySetup:
             if story_id:
                 key = f"{BASE_SESSION_KEY}:{user_id}:{story_id}"
                 lock_key = f"lock:{key}"
+                # Add initialization lock to prevent concurrent Qdrant operations
+                init_lock_key = f"init_lock:{key}"
+                
                 async with redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
                     data = await client.get(key)
                     if not data:
@@ -100,29 +103,101 @@ class ClassicStorySetup:
                     except json.JSONDecodeError as e:
                         print(f"❌ JSON decode error for {key}: {e}")
                         raise HTTPException(status_code=500, detail="Invalid session data format")
+                    
+                    # Check if initialization is needed
                     if not session_data.get("memory_system_initialized", False):
+                        print(f"🔍 Memory system not initialized for {key}, attempting initialization")
+                        
+                        # Use a separate lock for initialization to prevent concurrent Qdrant operations
+                        async with redis_lock(client, init_lock_key, timeout=60, retries=20, retry_delay=2.0):
+                            # Double-check after acquiring init lock (another request might have initialized)
+                            fresh_data = await client.get(key)
+                            if fresh_data:
+                                try:
+                                    fresh_session = json.loads(fresh_data)
+                                    if fresh_session.get("memory_system_initialized", False):
+                                        print(f"✅ Memory system already initialized by another request for {key}")
+                                        session_data = fresh_session
+                                        # Recreate in-memory objects
+                                        params = session_data['memory_system_params']
+                                        session_data['memory_system'] = StoryMemorySystem(
+                                            user_id=params['user_id'],
+                                            story_id=params['story_id']
+                                        )
+                                        await session_data['memory_system'].qdrant_initialize()
+                                        session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
+                                        session_data['user_input_queue'] = asyncio.Queue()
+                                        async with client.pipeline() as pipe:
+                                            pipe.expire(key, SESSION_TTL)
+                                            await pipe.execute()
+                                        return session_data
+                                except json.JSONDecodeError:
+                                    pass
+                            
+                            # Still need to initialize
+                            params = session_data['memory_system_params']
+                            if not all(k in params for k in ['user_id', 'story_id']):
+                                print(f"❌ Invalid memory_system_params: {params}")
+                                raise HTTPException(status_code=400, detail="Invalid session data")
+                            
+                            print(f"🔄 Initializing memory system for {key}")
+                            session_data['memory_system'] = StoryMemorySystem(
+                                user_id=params['user_id'],
+                                story_id=params['story_id']
+                            )
+                            
+                            try:
+                                # Add retry logic for Qdrant initialization
+                                max_retries = 3
+                                for attempt in range(max_retries):
+                                    try:
+                                        await session_data['memory_system'].qdrant_initialize()
+                                        print(f"✅ Qdrant initialized successfully for {key}")
+                                        break
+                                    except Exception as e:
+                                        if attempt < max_retries - 1:
+                                            print(f"⚠️ Qdrant initialization attempt {attempt + 1} failed: {e}, retrying...")
+                                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                                        else:
+                                            print(f"❌ Qdrant initialization failed after {max_retries} attempts: {e}")
+                                            raise
+                            except Exception as e:
+                                print(f"❌ Qdrant initialization error: {e}")
+                                raise HTTPException(status_code=500, detail=f"Failed to initialize memory system: {str(e)}")
+                            
+                            session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
+                            session_data['user_input_queue'] = asyncio.Queue()
+                            session_data["memory_system_initialized"] = True
+                            
+                            # Save initialized state back to Redis
+                            serializable_data = {
+                                "memory_system_params": session_data.get("memory_system_params", {}),
+                                "last_active": time.time(),
+                                "memory_system_initialized": True,
+                            }
+                            async with client.pipeline() as pipe:
+                                pipe.set(key, json.dumps(serializable_data))
+                                pipe.expire(key, SESSION_TTL)
+                                await pipe.execute()
+                            print(f"✅ Memory system initialized and saved for {key}")
+                    else:
+                        # Already initialized, just recreate in-memory objects
                         params = session_data['memory_system_params']
-                        if not all(k in params for k in ['user_id', 'story_id']):
-                            print(f"❌ Invalid memory_system_params: {params}")
-                            raise HTTPException(status_code=400, detail="Invalid session data")
                         session_data['memory_system'] = StoryMemorySystem(
                             user_id=params['user_id'],
                             story_id=params['story_id']
                         )
-                        try:
-                            await session_data['memory_system'].qdrant_initialize()
-                        except Exception as e:
-                            print(f"❌ Qdrant initialization error: {e}")
-                            raise HTTPException(status_code=500, detail=f"Failed to initialize memory system: {str(e)}")
+                        await session_data['memory_system'].qdrant_initialize()
                         session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
                         session_data['user_input_queue'] = asyncio.Queue()
-                        session_data["memory_system_initialized"] = True
+                    
                     async with client.pipeline() as pipe:
                         pipe.expire(key, SESSION_TTL)
                         await pipe.execute()
-                    print(f"🔍 Retrieved story_session for {key}: {session_data}")
+                    print(f"🔍 Retrieved story_session for {key}")
                     return session_data
             else:
+                # User session logic (unchanged for brevity, but apply similar pattern if needed)
                 key = f"{BASE_SESSION_KEY}:{user_id}"
                 lock_key = f"lock:{key}"
                 async with redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
@@ -140,7 +215,7 @@ class ClassicStorySetup:
                     while True:
                         cursor, story_keys = await client.scan(cursor, match=f"{BASE_SESSION_KEY}:{user_id}:*", count=100)
                         for story_key in story_keys:
-                            story_id = story_key.split(":")[-1]
+                            story_id_from_key = story_key.split(":")[-1]
                             story_data = await client.get(story_key)
                             if story_data:
                                 try:
@@ -148,30 +223,59 @@ class ClassicStorySetup:
                                 except json.JSONDecodeError as e:
                                     print(f"❌ JSON decode error for {story_key}: {e}")
                                     continue
+                                
                                 if not story_session.get("memory_system_initialized", False):
-                                    params = story_session['memory_system_params']
-                                    if not all(k in params for k in ['user_id', 'story_id']):
-                                        print(f"❌ Invalid memory_system_params for {story_key}: {params}")
+                                    init_lock_key = f"init_lock:{story_key}"
+                                    try:
+                                        async with redis_lock(client, init_lock_key, timeout=60, retries=20, retry_delay=2.0):
+                                            # Double-check pattern
+                                            fresh_story_data = await client.get(story_key)
+                                            if fresh_story_data:
+                                                fresh_story_session = json.loads(fresh_story_data)
+                                                if fresh_story_session.get("memory_system_initialized", False):
+                                                    story_session = fresh_story_session
+                                                else:
+                                                    params = story_session['memory_system_params']
+                                                    if not all(k in params for k in ['user_id', 'story_id']):
+                                                        print(f"❌ Invalid memory_system_params for {story_key}: {params}")
+                                                        continue
+                                                    story_session['memory_system'] = StoryMemorySystem(
+                                                        user_id=params['user_id'],
+                                                        story_id=params['story_id']
+                                                    )
+                                                    await story_session['memory_system'].qdrant_initialize()
+                                                    story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
+                                                    story_session['user_input_queue'] = asyncio.Queue()
+                                                    story_session["memory_system_initialized"] = True
+                                                    
+                                                    # Save state
+                                                    serializable_data = {
+                                                        "memory_system_params": story_session.get("memory_system_params", {}),
+                                                        "last_active": time.time(),
+                                                        "memory_system_initialized": True,
+                                                    }
+                                                    await client.set(story_key, json.dumps(serializable_data))
+                                    except Exception as e:
+                                        print(f"⚠️ Failed to initialize memory for {story_key}: {e}")
                                         continue
+                                else:
+                                    # Already initialized
+                                    params = story_session['memory_system_params']
                                     story_session['memory_system'] = StoryMemorySystem(
                                         user_id=params['user_id'],
                                         story_id=params['story_id']
                                     )
-                                    #try:
                                     await story_session['memory_system'].qdrant_initialize()
-                                    # except Exception as e:
-                                    #     print(f"❌ Qdrant initialization error for {story_key}: {e}")
-                                    #     continue
                                     story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
                                     story_session['user_input_queue'] = asyncio.Queue()
-                                    story_session["memory_system_initialized"] = True
-                                user_session["stories"][story_id] = story_session
+                                
+                                user_session["stories"][story_id_from_key] = story_session
                         if cursor == 0:
                             break
                     async with client.pipeline() as pipe:
                         pipe.expire(key, SESSION_TTL)
                         await pipe.execute()
-                    print(f"🔍 Retrieved user_session for {user_id}: {user_session}")
+                    print(f"🔍 Retrieved user_session for {user_id}")
                     return user_session
         except redis.RedisError as e:
             print(f"❌ Redis error in _get_session: {e}")
@@ -183,7 +287,6 @@ class ClassicStorySetup:
             import traceback
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Unexpected error in session retrieval: {str(e)}")
-        
 
     async def _set_session(self, user_id: str, story_id: str = None, data: dict = None):
         client = await get_redis_client()

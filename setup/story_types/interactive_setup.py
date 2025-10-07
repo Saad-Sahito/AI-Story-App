@@ -98,6 +98,9 @@ class InteractiveStorySetup:
             if story_id:
                 key = f"{BASE_SESSION_KEY}:{user_id}:{story_id}"
                 lock_key = f"lock:{key}"
+                # Add initialization lock to prevent concurrent Qdrant operations
+                init_lock_key = f"init_lock:{key}"
+                
                 async with redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
                     data = await client.get(key)
                     if not data:
@@ -108,29 +111,101 @@ class InteractiveStorySetup:
                     except json.JSONDecodeError as e:
                         print(f"❌ JSON decode error for {key}: {e}")
                         raise HTTPException(status_code=500, detail="Invalid session data format")
+                    
+                    # Check if initialization is needed
                     if not session_data.get("memory_system_initialized", False):
+                        print(f"🔍 Memory system not initialized for {key}, attempting initialization")
+                        
+                        # Use a separate lock for initialization to prevent concurrent Qdrant operations
+                        async with redis_lock(client, init_lock_key, timeout=60, retries=20, retry_delay=2.0):
+                            # Double-check after acquiring init lock (another request might have initialized)
+                            fresh_data = await client.get(key)
+                            if fresh_data:
+                                try:
+                                    fresh_session = json.loads(fresh_data)
+                                    if fresh_session.get("memory_system_initialized", False):
+                                        print(f"✅ Memory system already initialized by another request for {key}")
+                                        session_data = fresh_session
+                                        # Recreate in-memory objects
+                                        params = session_data['memory_system_params']
+                                        session_data['memory_system'] = StoryMemorySystem(
+                                            user_id=params['user_id'],
+                                            story_id=params['story_id']
+                                        )
+                                        await session_data['memory_system'].qdrant_initialize()
+                                        session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
+                                        session_data['user_input_queue'] = asyncio.Queue()
+                                        async with client.pipeline() as pipe:
+                                            pipe.expire(key, SESSION_TTL)
+                                            await pipe.execute()
+                                        return session_data
+                                except json.JSONDecodeError:
+                                    pass
+                            
+                            # Still need to initialize
+                            params = session_data['memory_system_params']
+                            if not all(k in params for k in ['user_id', 'story_id']):
+                                print(f"❌ Invalid memory_system_params: {params}")
+                                raise HTTPException(status_code=400, detail="Invalid session data")
+                            
+                            print(f"🔄 Initializing memory system for {key}")
+                            session_data['memory_system'] = StoryMemorySystem(
+                                user_id=params['user_id'],
+                                story_id=params['story_id']
+                            )
+                            
+                            try:
+                                # Add retry logic for Qdrant initialization
+                                max_retries = 3
+                                for attempt in range(max_retries):
+                                    try:
+                                        await session_data['memory_system'].qdrant_initialize()
+                                        print(f"✅ Qdrant initialized successfully for {key}")
+                                        break
+                                    except Exception as e:
+                                        if attempt < max_retries - 1:
+                                            print(f"⚠️ Qdrant initialization attempt {attempt + 1} failed: {e}, retrying...")
+                                            await asyncio.sleep(2 ** attempt)  # Exponential backoff
+                                        else:
+                                            print(f"❌ Qdrant initialization failed after {max_retries} attempts: {e}")
+                                            raise
+                            except Exception as e:
+                                print(f"❌ Qdrant initialization error: {e}")
+                                raise HTTPException(status_code=500, detail=f"Failed to initialize memory system: {str(e)}")
+                            
+                            session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
+                            session_data['user_input_queue'] = asyncio.Queue()
+                            session_data["memory_system_initialized"] = True
+                            
+                            # Save initialized state back to Redis
+                            serializable_data = {
+                                "memory_system_params": session_data.get("memory_system_params", {}),
+                                "last_active": time.time(),
+                                "memory_system_initialized": True,
+                            }
+                            async with client.pipeline() as pipe:
+                                pipe.set(key, json.dumps(serializable_data))
+                                pipe.expire(key, SESSION_TTL)
+                                await pipe.execute()
+                            print(f"✅ Memory system initialized and saved for {key}")
+                    else:
+                        # Already initialized, just recreate in-memory objects
                         params = session_data['memory_system_params']
-                        if not all(k in params for k in ['user_id', 'story_id']):
-                            print(f"❌ Invalid memory_system_params: {params}")
-                            raise HTTPException(status_code=400, detail="Invalid session data")
                         session_data['memory_system'] = StoryMemorySystem(
                             user_id=params['user_id'],
                             story_id=params['story_id']
                         )
-                        try:
-                            await session_data['memory_system'].qdrant_initialize()
-                        except Exception as e:
-                            print(f"❌ Qdrant initialization error: {e}")
-                            raise HTTPException(status_code=500, detail=f"Failed to initialize memory system: {str(e)}")
+                        await session_data['memory_system'].qdrant_initialize()
                         session_data['director'] = DirectorGraph(memory_system=session_data['memory_system'])
                         session_data['user_input_queue'] = asyncio.Queue()
-                        session_data["memory_system_initialized"] = True
+                    
                     async with client.pipeline() as pipe:
                         pipe.expire(key, SESSION_TTL)
                         await pipe.execute()
-                    print(f"🔍 Retrieved story_session for {key}: {session_data}")
+                    print(f"🔍 Retrieved story_session for {key}")
                     return session_data
             else:
+                # User session logic (unchanged for brevity, but apply similar pattern if needed)
                 key = f"{BASE_SESSION_KEY}:{user_id}"
                 lock_key = f"lock:{key}"
                 async with redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
@@ -148,7 +223,7 @@ class InteractiveStorySetup:
                     while True:
                         cursor, story_keys = await client.scan(cursor, match=f"{BASE_SESSION_KEY}:{user_id}:*", count=100)
                         for story_key in story_keys:
-                            story_id = story_key.split(":")[-1]
+                            story_id_from_key = story_key.split(":")[-1]
                             story_data = await client.get(story_key)
                             if story_data:
                                 try:
@@ -156,30 +231,59 @@ class InteractiveStorySetup:
                                 except json.JSONDecodeError as e:
                                     print(f"❌ JSON decode error for {story_key}: {e}")
                                     continue
+                                
                                 if not story_session.get("memory_system_initialized", False):
-                                    params = story_session['memory_system_params']
-                                    if not all(k in params for k in ['user_id', 'story_id']):
-                                        print(f"❌ Invalid memory_system_params for {story_key}: {params}")
+                                    init_lock_key = f"init_lock:{story_key}"
+                                    try:
+                                        async with redis_lock(client, init_lock_key, timeout=60, retries=20, retry_delay=2.0):
+                                            # Double-check pattern
+                                            fresh_story_data = await client.get(story_key)
+                                            if fresh_story_data:
+                                                fresh_story_session = json.loads(fresh_story_data)
+                                                if fresh_story_session.get("memory_system_initialized", False):
+                                                    story_session = fresh_story_session
+                                                else:
+                                                    params = story_session['memory_system_params']
+                                                    if not all(k in params for k in ['user_id', 'story_id']):
+                                                        print(f"❌ Invalid memory_system_params for {story_key}: {params}")
+                                                        continue
+                                                    story_session['memory_system'] = StoryMemorySystem(
+                                                        user_id=params['user_id'],
+                                                        story_id=params['story_id']
+                                                    )
+                                                    await story_session['memory_system'].qdrant_initialize()
+                                                    story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
+                                                    story_session['user_input_queue'] = asyncio.Queue()
+                                                    story_session["memory_system_initialized"] = True
+                                                    
+                                                    # Save state
+                                                    serializable_data = {
+                                                        "memory_system_params": story_session.get("memory_system_params", {}),
+                                                        "last_active": time.time(),
+                                                        "memory_system_initialized": True,
+                                                    }
+                                                    await client.set(story_key, json.dumps(serializable_data))
+                                    except Exception as e:
+                                        print(f"⚠️ Failed to initialize memory for {story_key}: {e}")
                                         continue
+                                else:
+                                    # Already initialized
+                                    params = story_session['memory_system_params']
                                     story_session['memory_system'] = StoryMemorySystem(
                                         user_id=params['user_id'],
                                         story_id=params['story_id']
                                     )
-                                    #try:
                                     await story_session['memory_system'].qdrant_initialize()
-                                    # except Exception as e:
-                                    #     print(f"❌ Qdrant initialization error for {story_key}: {e}")
-                                    #     continue
                                     story_session['director'] = DirectorGraph(memory_system=story_session['memory_system'])
                                     story_session['user_input_queue'] = asyncio.Queue()
-                                    story_session["memory_system_initialized"] = True
-                                user_session["stories"][story_id] = story_session
+                                
+                                user_session["stories"][story_id_from_key] = story_session
                         if cursor == 0:
                             break
                     async with client.pipeline() as pipe:
                         pipe.expire(key, SESSION_TTL)
                         await pipe.execute()
-                    print(f"🔍 Retrieved user_session for {user_id}: {user_session}")
+                    print(f"🔍 Retrieved user_session for {user_id}")
                     return user_session
         except redis.RedisError as e:
             print(f"❌ Redis error in _get_session: {e}")
@@ -191,7 +295,7 @@ class InteractiveStorySetup:
             import traceback
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=f"Unexpected error in session retrieval: {str(e)}")
-
+    
     async def _set_session(self, user_id: str, story_id: str = None, data: dict = None):
         client = await get_redis_client()
         #async with client:
@@ -566,212 +670,6 @@ class InteractiveStorySetup:
                 await websocket.close(code=1000)
                 print(f"✅ WebSocket closed for {user_id}/{story_id}")
 
-
-
-
-    # async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
-    #     """Handle WebSocket for story progression, using Redis sessions."""
-    #     await websocket.accept()
-    #     client = await get_redis_client()  # Now async
-    #     #async with client:
-    #     try:
-    #         #print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
-    #         # Check for existing WebSocket connection
-    #         ws_key = f"{BASE_SESSION_KEY}_active_ws:{user_id}:{story_id}"
-    #         async with redis_lock(client, f"lock:{ws_key}"):
-    #             if await client.get(ws_key):
-    #                 print(f"❌ Another WebSocket connection active for {user_id}/{story_id}")
-    #                 await websocket.send_json({"error": "Another connection is active for this story"})
-    #                 await websocket.close()
-    #                 return
-    #             await client.set(ws_key, "1", ex=SESSION_TTL)
-
-    #         init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
-    #         user_id = init_data.get("user_id")
-    #         story_id = init_data.get("story_id")
-    #         print(f"🔍 DEBUG: Received init_data: user_id={user_id}, story_id={story_id}")
-    #         if not user_id or not story_id:
-    #             print(f"❌ Invalid init_data: user_id={user_id}, story_id={story_id}")
-    #             await websocket.send_json({"error": "Missing user_id or story_id"})
-    #             await websocket.close()
-    #             return
-
-    #         user_key = f"{BASE_SESSION_KEY}:{user_id}"
-    #         user_lock_key = f"lock:{user_key}"
-    #         async with redis_lock(client, user_lock_key):
-    #             user_data = await self._get_session(user_id)  # Now async
-    #             if not user_data:
-    #                 print(f"❌ No user session for user_id={user_id}")
-    #                 await websocket.send_json({"error": "Invalid user ID"})
-    #                 await websocket.close()
-    #                 return
-    #             story_data = user_data["stories"].get(story_id)
-    #             if not story_data:
-    #                 print(f"❌ No story session for story_id={story_id}")
-    #                 await websocket.send_json({"error": "Invalid story ID"})
-    #                 await websocket.close()
-    #                 return
-
-    #             # Check if director is already running
-    #             director_key = f"director_running:{user_id}:{story_id}"
-    #             async with redis_lock(client, f"lock:{director_key}"):
-    #                 if await client.get(director_key):
-    #                     print(f"❌ Director already running for {user_id}/{story_id}")
-    #                     await websocket.send_json({"error": "Story progression already active"})
-    #                     await websocket.close()
-    #                     return
-    #                 await client.set(director_key, "1", ex=SESSION_TTL)
-
-    #             serializable_story_data = {
-    #                 "memory_system_params": story_data.get("memory_system_params", {}),
-    #                 "last_active": time.time(),
-    #             }
-    #             user_data["stories"][story_id] = serializable_story_data
-    #             story_key = f"{BASE_SESSION_KEY}:{user_id}:{story_id}"
-    #             async with client.pipeline() as pipe:
-    #                 pipe.set(user_key, json.dumps(user_data))
-    #                 pipe.expire(user_key, SESSION_TTL)
-    #                 pipe.set(story_key, json.dumps(serializable_story_data))
-    #                 pipe.expire(story_key, SESSION_TTL)
-    #                 await pipe.execute()
-    #             print(f"✅ DEBUG: Saved story session for {user_id}/{story_id}")
-    #             print(f"🔍 DEBUG: Story data initialized: {serializable_story_data}")
-
-    #         queue = asyncio.Queue()
-
-    #         def scene_chunk_callback(chunk: dict):
-    #             print(f"🔍 DEBUG: scene_chunk_callback: {chunk}")
-    #             queue.put_nowait(chunk)
-
-    #         async def refresh_ttl_loop():
-    #             try:
-    #                 while True:
-    #                     await asyncio.sleep(30)  # Refresh every 30 seconds
-    #                     async with client.pipeline() as pipe:
-    #                         pipe.expire(user_key, SESSION_TTL)
-    #                         pipe.expire(story_key, SESSION_TTL)
-    #                         pipe.expire(f"input_queue:{user_id}:{story_id}", SESSION_TTL)
-    #                         pipe.expire(f"continue_input_queue:{user_id}:{story_id}", SESSION_TTL)
-    #                         await pipe.execute()
-    #                     print(f"🔍 DEBUG: Refreshed TTLs for {user_id}/{story_id}")
-    #             except asyncio.CancelledError:
-    #                 print("🔍 DEBUG: refresh_ttl_loop cancelled")
-    #                 return
-    #             except Exception as e:
-    #                 print(f"❌ refresh_ttl_loop error: {e}")
-    #                 import traceback
-    #                 traceback.print_exc()
-
-    #         async def send_loop():
-    #             try:
-    #                 while True:
-    #                     item = await queue.get()
-    #                     if item is None:
-    #                         print("🔍 DEBUG: send_loop received None, exiting")
-    #                         break
-    #                     print(f"🔍 DEBUG: Sending to WebSocket: {item}")
-    #                     await websocket.send_json(item)
-    #             except asyncio.CancelledError:
-    #                 print("🔍 DEBUG: send_loop cancelled")
-    #                 return
-    #             except Exception as e:
-    #                 print(f"❌ send_loop error: {e}")
-    #                 import traceback
-    #                 traceback.print_exc()
-
-    #         async def recv_loop():
-    #             try:
-    #                 while True:
-    #                     msg = await websocket.receive_json()
-    #                     print(f"🔍 DEBUG: Received WebSocket message: {msg}")
-    #                     if "choice" in msg:
-    #                         choice = msg["choice"].strip()
-    #                         if not choice:
-    #                             print(f"⚠️ WARNING: Empty choice received for {user_id}/{story_id}")
-    #                             continue
-    #                         queue_key = f"input_queue:{user_id}:{story_id}"
-    #                         queue_lock_key = f"lock:{queue_key}"
-    #                         async with redis_lock(client, queue_lock_key):
-    #                             async with client.pipeline() as pipe:
-    #                                 pipe.rpush(queue_key, choice)
-    #                                 pipe.expire(queue_key, SESSION_TTL)
-    #                                 await pipe.execute()
-    #                             print(f"✅ DEBUG: Pushed choice '{choice}' to Redis queue {queue_key}")
-    #                     elif "continue_chapter" in msg:
-    #                         continue_chapter = msg["continue_chapter"]
-    #                         queue_key = f"continue_input_queue:{user_id}:{story_id}"
-    #                         queue_lock_key = f"lock:{queue_key}"
-    #                         async with redis_lock(client, queue_lock_key):
-    #                             async with client.pipeline() as pipe:
-    #                                 pipe.rpush(queue_key, continue_chapter)
-    #                                 pipe.expire(queue_key, SESSION_TTL)
-    #                                 await pipe.execute()
-    #                             print(f"✅ DEBUG: Pushed continue chapter '{continue_chapter}' to Redis queue {queue_key}")
-    #             except WebSocketDisconnect:
-    #                 print("❌ Client disconnected")
-    #             except asyncio.CancelledError:
-    #                 print("🔍 DEBUG: recv_loop cancelled")
-    #                 return
-    #             except Exception as e:
-    #                 print(f"❌ recv_loop error: {e}")
-    #                 import traceback
-    #                 traceback.print_exc()
-
-    #         async def run_director():
-    #             try:
-    #                 print(f"🔍 DEBUG: Starting director.run for {user_id}/{story_id}")
-    #                 await story_data["director"].run(scene_chunk_callback=scene_chunk_callback)
-    #                 print("✅ Director run completed")
-    #                 await queue.put({"chapter_complete": True})
-    #                 await queue.put(None)
-    #             except Exception as e:
-    #                 print(f"❌ ERROR in run_director: {e}")
-    #                 import traceback
-    #                 traceback.print_exc()
-    #                 await queue.put({"error": f"Director failed: {str(e)}"})
-    #                 await queue.put(None)
-
-    #         director_task = asyncio.create_task(run_director())
-    #         send_task = asyncio.create_task(send_loop())
-    #         recv_task = asyncio.create_task(recv_loop())
-    #         ttl_task = asyncio.create_task(refresh_ttl_loop())
-    #         try:
-    #             await asyncio.gather(director_task, send_task, recv_task, ttl_task, return_exceptions=False)
-    #         except Exception as e:
-    #             print(f"❌ ERROR in asyncio.gather: {e}")
-    #             import traceback
-    #             traceback.print_exc()
-    #             await websocket.send_json({"error": f"WebSocket task failed: {str(e)}"})
-    #         finally:
-    #             director_task.cancel()
-    #             send_task.cancel()
-    #             recv_task.cancel()
-    #             ttl_task.cancel()
-    #             # Clean up Redis flags
-    #             async with redis_lock(client, f"lock:{ws_key}"):
-    #                 await client.delete(ws_key)
-    #             async with redis_lock(client, f"lock:{director_key}"):
-    #                 await client.delete(director_key)
-    #             # Close queues/resources
-    #     except asyncio.TimeoutError:
-    #         print("❌ Timeout waiting for init_data")
-    #         await websocket.send_json({"error": "Timeout waiting for initial data"})
-    #     except Exception as e:
-    #         print(f"❌ Error in handle_story_websocket: {e}")
-    #         import traceback
-    #         traceback.print_exc()
-    #         await websocket.send_json({"error": str(e)})
-    #     finally:
-    #         try:
-    #             await websocket.close()
-    #             print("🔍 DEBUG: WebSocket closed")
-    #             # Ensure Redis flags are cleaned up even on error
-    #             async with redis_lock(client, f"lock:{ws_key}"):
-    #                 await client.delete(ws_key)
-    #             async with redis_lock(client, f"lock:{director_key}"):
-    #                 await client.delete(director_key)
-    #         except RuntimeError:
-    #             print("🔍 DEBUG: WebSocket already closed")
         
     async def get_story_cluster(self, user_id: str, story_id: str, chapter_number: int):
         user_data = await self._get_session(user_id)

@@ -2,6 +2,8 @@
 
 from typing import Dict, Any
 from asyncio import Lock
+import asyncio
+from fastapi import HTTPException
 from .qdrant_store import QdrantStore
 from .shared_resources import SHARED_QDRANT, get_sqlite_store
 
@@ -92,18 +94,60 @@ class StoryMemorySystem:
 
     # ---------- Qdrant initialization (episodic) ----------
     async def qdrant_initialize(self):
+        """
+        Initialize Qdrant with retry logic for handling timeouts.
+        """
         async with self._lock:
             if self.episodic_story is None:
-                base = QdrantStore(
-                    collection="episodic_story_memory",
-                    user_id=self.user_id,
-                    story_id=self.story_id,
-                    client=SHARED_QDRANT,
-                )
-                await base.async_init()
-                self.episodic_story = base.with_namespace("episodic_story")
-                self.episodic_characters = base.with_namespace("episodic_characters")
-                self.episodic_worlds = base.with_namespace("episodic_worlds")
+                max_retries = 3
+                last_error = None
+                
+                for attempt in range(max_retries):
+                    try:
+                        print(f"🔄 Initializing Qdrant (attempt {attempt + 1}/{max_retries})")
+                        
+                        base = QdrantStore(
+                            collection="episodic_story_memory",
+                            user_id=self.user_id,
+                            story_id=self.story_id,
+                            client=SHARED_QDRANT,
+                        )
+                        
+                        # This is where the timeout can occur
+                        await base.async_init()
+                        
+                        # Create namespaced stores
+                        self.episodic_story = base.with_namespace("episodic_story")
+                        self.episodic_characters = base.with_namespace("episodic_characters")
+                        self.episodic_worlds = base.with_namespace("episodic_worlds")
+                        
+                        print(f"✅ Qdrant initialized successfully")
+                        return  # Success!
+                        
+                    except Exception as e:
+                        last_error = e
+                        error_msg = str(e).lower()
+                        
+                        # Check if it's a timeout or connection issue
+                        if "timeout" in error_msg or "408" in error_msg:
+                            if attempt < max_retries - 1:
+                                wait_time = 2 ** attempt  # Exponential backoff: 1s, 2s, 4s
+                                print(f"⚠️ Qdrant timeout on attempt {attempt + 1}, retrying in {wait_time}s...")
+                                await asyncio.sleep(wait_time)
+                            else:
+                                print(f"❌ Qdrant initialization failed after {max_retries} attempts")
+                                raise HTTPException(
+                                    status_code=503,
+                                    detail=f"Qdrant service unavailable: {str(e)}"
+                                )
+                        else:
+                            # Non-timeout error, don't retry
+                            print(f"❌ Qdrant initialization failed with non-timeout error: {e}")
+                            raise
+                
+                # If we get here, all retries failed
+                if last_error:
+                    raise last_error
 
     # ---------- Episodic methods ----------
     async def add_story_summary(self, summary: str, metadata: dict = None):
