@@ -29,7 +29,7 @@ async def redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
             try:
                 acquired = await client.set(lock_key, lock_value, nx=True, ex=timeout)
                 if acquired:
-                    print(f"✅ Acquired lock for {lock_key} at {time.time()}")
+                    #print(f"✅ Acquired lock for {lock_key} at {time.time()}")
                     break
                 ttl = await client.ttl(lock_key)
                 if ttl == -1:  # Stale lock with no TTL
@@ -60,7 +60,8 @@ async def redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
             try:
                 result = await client.eval(lua, 1, lock_key, lock_value)
                 if result == 1:
-                    print(f"✅ Released lock for {lock_key} at {time.time()}")
+                    pass
+                    #print(f"✅ Released lock for {lock_key} at {time.time()}")
                 else:
                     print(f"🔍 Lock {lock_key} not released: different lock value or already expired")
             except redis.RedisError as e:

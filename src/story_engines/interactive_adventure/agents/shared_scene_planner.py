@@ -259,7 +259,7 @@ class SharedScenePlannerService:
 
                     # Wait for user input from Redis List
                     try:
-                        #print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
+                        print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
                         user_choice = None
                         for _ in range(5000):
                             choice = await redis_client.lpop(queue_key)
@@ -279,7 +279,7 @@ class SharedScenePlannerService:
                             scene_memory.UserInput = user_choice
                             scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {user_choice})\n"
                         else:
-                            print(f"❌ TIMEOUT: No user input received within 30 seconds for {user_context_id}/{scene_memory.story_id}")
+                            print(f"❌ TIMEOUT: No user input received within 5000 seconds for {user_context_id}/{scene_memory.story_id}")
                             scene_memory.UserInput = ""
                     except Exception as e:
                         print(f"❌ ERROR in Redis queue handling: {e}")
@@ -322,7 +322,7 @@ class SharedScenePlannerService:
             "Include the number of options in the 'number_of_options' field."
         )
 
-        max_scene_length = 500  # Reduced for memory efficiency
+        max_scene_length = 2500  # Reduced for memory efficiency
         truncated_scene = scene_memory.scene_so_far[-max_scene_length:] if len(scene_memory.scene_so_far) > max_scene_length else scene_memory.scene_so_far
         human_prompt = f"""
         Director's Instructions:
