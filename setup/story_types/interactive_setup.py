@@ -523,17 +523,23 @@ class InteractiveStorySetup:
             ttl_task = asyncio.create_task(refresh_ttl_loop())
 
             try:
-                await asyncio.wait(
+                done, pending = await asyncio.wait(
                     [director_task, send_task, recv_task, ttl_task],
                     return_when=asyncio.FIRST_COMPLETED
                 )
 
-                # If any task ends (like disconnect), trigger shutdown
+                # 🔍 Log which task finished first
+                for finished in done:
+                    print(f"✅ Task completed first: {finished.get_coro().__name__}")
+
+                # Trigger graceful shutdown
                 disconnect_event.set()
 
             finally:
+                # Cancel all running tasks
                 for t in [director_task, send_task, recv_task, ttl_task]:
                     t.cancel()
+
 
         except Exception as e:
             print(f"❌ Error in handle_story_websocket: {e}")

@@ -115,10 +115,10 @@ class Ingestor:
             
             if success:
                 state.word_count += StoryHelpers._count_words_split(scene_text)
-                state.scene_id += 1
+                
                 await self.memory.update_story_progress(metadata={
                     "latest_chapter_id": state.current_chapter_id, 
-                    "continue_scene_id": state.scene_id, 
+                    "continue_scene_id": state.scene_id + 1, 
                     "word_count": state.word_count, 
                     "story_title": state.story_title
                 })
@@ -139,10 +139,10 @@ class Ingestor:
                 del fixed_clean
                 if success:
                     state.word_count += StoryHelpers._count_words_split(scene_text)
-                    state.scene_id += 1
+                    
                     await self.memory.update_story_progress(metadata={
                         "latest_chapter_id": state.current_chapter_id, 
-                        "continue_scene_id": state.scene_id, 
+                        "continue_scene_id": state.scene_id + 1, 
                         "word_count": state.word_count, 
                         "story_title": state.story_title
                     })
@@ -424,7 +424,7 @@ class DirectorGraph:
 
         # Return the final state for the next node
         yield {
-            "scene_id": state.scene_id,
+            "scene_id": state.scene_id + 1,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
         }
