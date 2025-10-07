@@ -509,7 +509,7 @@ class DirectorGraph:
             f"Current Chapter So Far Summary: {self.current_chap_summary}\n"   
         )
         
-        #print("CONTEXT TO DIRECTOR:", context)
+        print("CONTEXT TO DIRECTOR:", context)
         human_prompt = f"""
         {context}
 

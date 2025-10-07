@@ -233,7 +233,7 @@ class SharedScenePlannerService:
 
         {self.scene_writer_parser.get_format_instructions()}
         """
-
+        print("SCENE WRITER CONTEXT: ", human_prompt)
         try:
             llm_response = await asyncio.wait_for(
                 groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
