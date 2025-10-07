@@ -380,9 +380,9 @@ class DirectorGraph:
             # Wait for user input from Redis List
             try:
                 user_choice = False
-                for _ in range(6000):
+                for _ in range(5000):
                     choice = await redis_client.lpop(queue_key)
-                    if choice == b'1' or choice == 1:  # ✅ Check both byte and int
+                    if choice == b'1' or choice == 1 or choice == '1':  # ✅ Check both byte and int
                         user_choice = True
                         break
                     elif choice is not None:  # ✅ Got a response but not "1"
@@ -390,7 +390,7 @@ class DirectorGraph:
                     await asyncio.sleep(1.0)
                 
                 # ✅ FIX: Return dict with flag instead of END
-                if not user_choice:
+                if user_choice == False:
                     print("🛑 User chose not to continue")
                     return {
                         "scene_id": state.scene_id,
