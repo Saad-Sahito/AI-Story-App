@@ -223,7 +223,7 @@ class SharedScenePlannerService:
             "Do not repeat the entire scene so far, only continue it with one new paragraph. "
         )
 
-        max_scene_length = 500  # Reduced for memory efficiency
+        max_scene_length = 2500  # Reduced for memory efficiency
         truncated_scene = scene_memory.scene_so_far[-max_scene_length:] if len(scene_memory.scene_so_far) > max_scene_length else scene_memory.scene_so_far
         human_prompt = f"""
         Director's Instructions:

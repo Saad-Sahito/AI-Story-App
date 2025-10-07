@@ -7,7 +7,7 @@ import asyncio
 from typing import List, Optional, Callable
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
-from src.llm_client.llm_client import groq_client
+from src.llm_client.llm_client import groq_client, groq_zero_temp_client
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, BaseMessage
 from src.utilities.story_helpers import StoryHelpers
@@ -188,7 +188,7 @@ class SharedScenePlannerService:
 
         try:
             llm_response = await asyncio.wait_for(
-                groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                groq_zero_temp_client(system_prompt=system_prompt, human_prompt=human_prompt),
                 timeout=30.0
             )
             raw_resp = llm_response.content.strip()
@@ -212,8 +212,6 @@ class SharedScenePlannerService:
                     print("⚠️ Forcing Complete to avoid infinite loop")
                     parsed.action = "Complete"
 
-            state.next_node = parsed.action
-
         except asyncio.TimeoutError:
             print(f"❌ TIMEOUT: LLM call in ScenePlanner timed out after 30 seconds")
             state.next_node = "Complete"
@@ -226,7 +224,7 @@ class SharedScenePlannerService:
 
         try:
             # Only trigger decision flow if planner says Not Complete AND there's an ai_question awaiting answer
-            if state.next_node == "Not Complete" and scene_memory and scene_memory.ai_question.strip():
+            if parsed.action == "Not Complete" and scene_memory and scene_memory.ai_question.strip():
                 print(f"🔍 DEBUG: Need user input for question: {scene_memory.ai_question}")
                 from setup.shared_redis_pool import get_redis_client
                 try:
@@ -299,6 +297,7 @@ class SharedScenePlannerService:
             scene_memory.UserInput = ""
 
         # Persist updated scene memory back into state
+        state.next_node = parsed.action
         state.scene_memory = scene_memory
         gc.collect()
         return state

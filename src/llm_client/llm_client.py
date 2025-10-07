@@ -26,6 +26,7 @@ class LLMClient:
             #self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
             self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
             self.llm_groq = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5, groq_api_key=groq_api_key)
+            self.llm_groq_zero_temp = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.0, groq_api_key=groq_api_key)
             self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0.5, google_api_key=google_api_key)
         except Exception as e:
             print(f"Failed to initialize LLMClient: {e}")
@@ -71,8 +72,33 @@ class LLMClient:
         # print(f"Total Tokens: {total_tokens}")
         # print("-------------------")
         time.sleep(4)  # delay to avoid rate limits
-        return response    
+        return response
+    
+    async def groq_zero_temp_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+        """Blocking call to Groq LLM – returns the full response and token counts."""
+        # The .invoke() method returns an object that contains the response metadata
+        async with self.sem:
+            response = self.llm_groq_zero_temp.invoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=human_prompt)
+            ])
+        
+        # Access the token usage from the response's metadata
+        token_usage = response.response_metadata.get('token_usage', {})
 
+        # Extract the prompt and completion token counts
+        prompt_tokens = token_usage.get('prompt_tokens', 0)
+        completion_tokens = token_usage.get('completion_tokens', 0)
+        total_tokens = token_usage.get('total_tokens', 0)
+        
+        # print("--- Token Usage ---")
+        # print(f"Prompt Tokens (Input): {prompt_tokens}")
+        # print(f"Completion Tokens (Output): {completion_tokens}")
+        # print(f"Total Tokens: {total_tokens}")
+        # print("-------------------")
+        time.sleep(4)  # delay to avoid rate limits
+        return response
+    
     async def openai_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to OpenAI LLM – returns the full response and token counts."""
 
@@ -131,6 +157,10 @@ async def groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMess
     client = await get_shared_client()
     return await client.groq_client(system_prompt, human_prompt)
 
+async def groq_zero_temp_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    """Convenience function to access groq_client through shared instance."""
+    client = await get_shared_client()
+    return await client.groq_zero_temp_client(system_prompt, human_prompt)
 
 async def openai_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access openai_client through shared instance."""

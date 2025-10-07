@@ -455,8 +455,8 @@ class DirectorGraph:
             "scene_id": state.scene_id + 1,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
-            # Don't set next_action here - let it stay as empty string or previous value
         }
+    
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
         result = await ingestor.ingest_chapter(state, self.current_chap_summary)
@@ -571,9 +571,6 @@ class DirectorGraph:
         
         #if state.scene_id == 2:  # DEBUGGING Code
          #   action = "DEBUG"  # DEBUGGING Code
-
-        
-            
 
         # finalize and return
         messages = state.messages or []
