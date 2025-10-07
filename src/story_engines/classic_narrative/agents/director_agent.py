@@ -386,7 +386,7 @@ class DirectorGraph:
                         break
                     await asyncio.sleep(1.0)
                 if not user_choice:
-                    yield END
+                    return END
             except Exception as e:
                 print(f"❌ ERROR in Redis queue handling: {e}")
                 import traceback; traceback.print_exc()
