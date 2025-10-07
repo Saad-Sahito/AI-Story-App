@@ -26,7 +26,7 @@ class LLMClient:
             #self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
             self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
             self.llm_groq = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5, groq_api_key=groq_api_key)
-            self.llm_groq_zero_temp = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.0, groq_api_key=groq_api_key)
+            self.llm_groq_zero_temp = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, groq_api_key=groq_api_key)
             self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0.5, google_api_key=google_api_key)
         except Exception as e:
             print(f"Failed to initialize LLMClient: {e}")
