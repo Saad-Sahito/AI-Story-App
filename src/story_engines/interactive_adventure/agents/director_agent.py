@@ -338,8 +338,8 @@ class DirectorGraph:
         # Get the latest director instructions
         director_instructions = self._get_latest_director_message(state)
         
-        if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
-            print("❌ ERROR: CLASSIC_SCENE_PLANNER_SERVICE is None!")
+        if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
+            print("❌ ERROR: INTERACTIVE_SCENE_PLANNER_SERVICE is None!")
             raise
         
         director_instructions = self._get_latest_director_message(state)
@@ -353,7 +353,7 @@ class DirectorGraph:
         )
         
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
+        scene_text, scene_cluster = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(
             user_context=user_context, 
             stop_event=self.stop_event
         )
