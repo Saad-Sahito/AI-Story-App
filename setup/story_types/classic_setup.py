@@ -388,8 +388,12 @@ class ClassicStorySetup:
         """Create story premise and update session in Redis."""
         client = await get_redis_client()
         tone_dict = {
-            0: "Light", 20: "Humorous", 40: "Epic",
-            60: "Serious", 80: "Dark", 100: "Gritty"
+            0: "Playful", 20: "Lighthearted", 40: "Adventurous",
+            60: "Dramatic", 80: "Serious", 100: "Intense"
+        }
+        tone_temp_dict = {
+            0: 0.8, 20: 0.7, 40: 0.75,
+            60: 0.7, 80: 0.65, 100: 0.75
         }
         length_dict = {
             0: "Flash Fiction (1,000 - 2,500 words)",
@@ -415,8 +419,10 @@ class ClassicStorySetup:
             if "Tone" in initial_story_data:
                 tone_value = initial_story_data["Tone"]
                 mapped_tone = tone_dict.get(tone_value)
+                mapped_tone_temp = tone_temp_dict.get(tone_value, 0.7)
                 if mapped_tone is None:
                     mapped_tone = tone_dict[min(tone_dict.keys(), key=lambda k: abs(k - tone_value))]
+                    mapped_tone_temp = tone_temp_dict.get(min(tone_temp_dict.keys(), key=lambda k: abs(k - tone_value)), 0.7)
                 initial_story_data["Tone"] = mapped_tone
             if "Length" in initial_story_data:
                 length_value = initial_story_data["Length"]
@@ -437,6 +443,7 @@ class ClassicStorySetup:
                     "continue_scene_id": 1,
                     "story_title": initial_story_data["Title"],
                     "word_count": 0,
+                    "tone_temp": mapped_tone_temp,
                 }
             )
             # Create a serializable copy of story_data

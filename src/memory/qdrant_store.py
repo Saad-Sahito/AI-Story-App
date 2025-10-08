@@ -1,4 +1,4 @@
-from typing import List, Dict
+from typing import List, Dict, Any
 from sentence_transformers import SentenceTransformer
 from qdrant_client.http import models
 import uuid
@@ -10,6 +10,7 @@ from setup.shared_redis_pool import get_redis_client
 from tenacity import retry, stop_after_attempt, wait_exponential
 from asyncio import Semaphore
 import asyncio
+import json
 import time
 from fastapi import HTTPException
 import redis.asyncio as redis
@@ -221,15 +222,15 @@ class QdrantStore:
             )
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
-    async def put_dict_replace_character(self, data: Dict[str, str], metadata: Dict[str, int] = None):
+    async def put_dict_replace_character(self, data: Dict[str, dict], metadata: Dict[str, Any] = None):
         client = await get_redis_client()
         async with self.request_semaphore:
-            for k, v in data.items():
-                lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:character:{k}"
-                
+            for name, info in data.items():
+                lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:character:{name}"
                 async with redis_lock(client=client, lock_key=lock_key):
+                    # --- 1️⃣ Find existing point ---
                     filter_conds = [
-                        models.FieldCondition(key="character_name", match=models.MatchValue(value=k)),
+                        models.FieldCondition(key="character_name", match=models.MatchValue(value=name)),
                         models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                         models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                         models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
@@ -240,26 +241,50 @@ class QdrantStore:
                         limit=1,
                     )
                     point_id = search_results[0].id if search_results else str(uuid.uuid4())
-                    vec = await self._embed_text(v)
-                    payload = (metadata.copy() if metadata else {})
+
+                    # --- 2️⃣ Prepare embedding text ---
+                    # Convert structured info into a text summary for embeddings
+                    embed_text = (
+                        f"Name: {info.get('name')}\n"
+                        f"Summary: {info.get('summary', '')}\n"
+                        f"Traits: {', '.join(info.get('traits', []))}\n"
+                        f"Relationships: {json.dumps(info.get('relationships', {}))}\n"
+                        f"Emotional State: {info.get('emotional_state', '')}\n"
+                        f"Goals: {info.get('goals', '')}\n"
+                        f"Status Changes: {info.get('status_changes', '')}"
+                    )
+                    vec = await self._embed_text(embed_text)
+
+                    # --- 3️⃣ Create full payload ---
+                    payload = metadata.copy() if metadata else {}
                     payload.update({
-                        "key": k, "value": v, "text": v, "character_name": k,
-                        "user_id": self.user_id, "story_id": self.story_id, "namespace": self.namespace,
+                        "key": name,
+                        "value": info["summary"],  # human-readable search value
+                        "text": embed_text,        # full text used for vector embedding
+                        "character_name": name,
+                        "structured_data": info,   # <-- full structured object here
+                        "user_id": self.user_id,
+                        "story_id": self.story_id,
+                        "namespace": self.namespace,
+                        "type": "character"
                     })
+
+                    # --- 4️⃣ Upsert into Qdrant ---
                     await self.client.upsert(
                         collection_name=self.collection,
                         points=[models.PointStruct(id=point_id, vector=vec, payload=payload)]
                     )
 
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
-    async def put_dict_replace_world(self, data: Dict[str, str], metadata: Dict[str, int] = None):
+    async def put_dict_replace_world(self, data: Dict[str, dict], metadata: Dict[str, Any] = None):
         client = await get_redis_client()
         async with self.request_semaphore:
-            for k, v in data.items():
-                lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:world_element:{k}"
+            for name, info in data.items():
+                lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:world:{name}"
                 async with redis_lock(client=client, lock_key=lock_key):
                     filter_conds = [
-                        models.FieldCondition(key="world_element", match=models.MatchValue(value=k)),
+                        models.FieldCondition(key="world_element", match=models.MatchValue(value=name)),
                         models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                         models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                         models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
@@ -269,84 +294,131 @@ class QdrantStore:
                         scroll_filter=models.Filter(must=filter_conds),
                         limit=1,
                     )
-
                     point_id = search_results[0].id if search_results else str(uuid.uuid4())
-                    vec = await self._embed_text(v)
 
-                    payload = (metadata.copy() if metadata else {})
+                    embed_text = (
+                        f"Name: {info.get('name')}\n"
+                        f"Summary: {info.get('summary', '')}\n"
+                        f"Atmosphere: {info.get('atmosphere', '')}\n"
+                        f"Culture: {info.get('culture', '')}\n"
+                        f"Events: {info.get('events', '')}\n"
+                        f"Connections: {json.dumps(info.get('connections', {}))}"
+                    )
+                    vec = await self._embed_text(embed_text)
+
+                    payload = metadata.copy() if metadata else {}
                     payload.update({
-                        "key": k,
-                        "value": v,
-                        "text": v,
-                        "world_element": k,
+                        "key": name,
+                        "value": info["summary"],
+                        "text": embed_text,
+                        "world_element": name,
+                        "structured_data": info,
                         "user_id": self.user_id,
                         "story_id": self.story_id,
                         "namespace": self.namespace,
+                        "type": "world"
                     })
 
-                    await self.client.upsert(collection_name=self.collection, points=[models.PointStruct(id=point_id, vector=vec, payload=payload)])
+                    await self.client.upsert(
+                        collection_name=self.collection,
+                        points=[models.PointStruct(id=point_id, vector=vec, payload=payload)]
+                    )
 
     # ---------- Search ----------
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
-    async def search(self, query: str, k: int = 5, metadata: Dict[str, str] = None):
+    async def search(self, query: str, k: int = 5, metadata: Dict[str, Any] = None):
         async with self.request_semaphore:
             vec = await self._embed_text(query)
+
+            # Base conditions (always required)
             must_conds = [
                 models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                 models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                 models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
             ]
             must_not_conds = []
+
+            # Optional filters based on metadata
             if metadata:
-                for key, val in metadata.items():
-                    must_not_conds.append(models.FieldCondition(key=key, match=models.MatchValue(value=val)))
+                # If "type" exists — include it as a positive filter
+                if "type" in metadata:
+                    must_conds.append(
+                        models.FieldCondition(key="type", match=models.MatchValue(value=metadata["type"]))
+                    )
+
+                # If "chapter_id" exists — exclude it (avoid current chapter)
+                if "chapter_id" in metadata:
+                    must_not_conds.append(
+                        models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_id"]))
+                    )
+
+            # Build final filter
             search_filter = models.Filter(must=must_conds, must_not=must_not_conds)
+
+            # Execute the vector search
             results = await self.client.search(
                 collection_name=self.collection,
                 query_vector=vec,
                 limit=k,
                 query_filter=search_filter
             )
+
+            # Format results
             hits = []
             for r in results:
                 payload = r.payload or {}
                 base_text = payload.get("value") or payload.get("text") or ""
                 merged = f"{payload.get('key', '')}: {base_text}" if "key" in payload else base_text
+
                 ignore_keys = {"text", "value", "key", "user_id", "story_id", "namespace"}
                 if metadata:
                     ignore_keys.update(metadata.keys())
+
                 meta_parts = [f"{k}={v}" for k, v in payload.items() if k not in ignore_keys]
                 if meta_parts:
                     merged = f"{merged} | {'; '.join(meta_parts)}"
                 merged = f"{merged} (score={r.score:.3f})"
                 hits.append(merged)
+
             return hits
 
+
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
-    async def get_chapter_content(self, chapter_number: int) -> list[str]:
+    async def get_chapter_content(self, metadata: Dict[str, Any] = None) -> list[str]:
         async with self.request_semaphore:
             all_texts = []
             offset = None
+
+            # Build base must conditions
+            must_conds = [
+                models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_number"])),
+                models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
+                models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
+            ]
+
+            # Add type filter if provided
+            if metadata and "type" in metadata:
+                must_conds.append(
+                    models.FieldCondition(key="type", match=models.MatchValue(value=metadata["type"]))
+                )
+
             while True:
                 scroll_results, next_offset = await self.client.scroll(
                     collection_name=self.collection,
-                    scroll_filter=models.Filter(
-                        must=[
-                            models.FieldCondition(key="chapter_id", match=models.MatchValue(value=chapter_number)),
-                            models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
-                            models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
-                            models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
-                        ]
-                    ),
+                    scroll_filter=models.Filter(must=must_conds),
                     limit=100,
                     offset=offset,
                 )
+
                 all_texts.extend(r.payload["text"] for r in scroll_results if "text" in r.payload)
+
                 if next_offset is None:
                     break
                 offset = next_offset
+
             return all_texts
-    
+
     async def close(self):
         if self.client is not SHARED_QDRANT:
             try:

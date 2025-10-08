@@ -4,12 +4,12 @@ import json
 import re
 import gc
 import asyncio
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Any
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
-from src.llm_client.llm_client import groq_client
+from src.llm_client.llm_client import groq_client, llm_for_scene_planner_groq_client
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import AIMessage, BaseMessage
+#from langchain_core.messages import AIMessage, BaseMessage
 from src.utilities.story_helpers import StoryHelpers
 from langchain.output_parsers import PydanticOutputParser
 
@@ -17,13 +17,13 @@ from langchain.output_parsers import PydanticOutputParser
 CLASSIC_SCENE_PLANNER_SERVICE = None
 
 class SceneMemory(BaseModel):
-    DirectorInstructions: str = Field(description="The director's detailed instructions for this scene.")
+    DirectorInstructions: Any = Field(description="The director's detailed instructions for this scene.")
     scene_so_far: str = Field(default="", description="Accumulated text of the scene written so far.")
     scene_cluster: List = Field(default=[], description="Combination of scene text, questions and user choices stored as dicts inside the list.")
     story_id: Optional[str] = Field(default="", description="The story ID associated with this scene.")
 
 class SceneState(BaseModel):
-    messages: List[BaseMessage] = []
+    #messages: List[BaseMessage] = []
     scene_memory: SceneMemory | None = None
     next_node: str | None = None
     user_context_id: Optional[str] = Field(default=None, description="User ID for this scene")
@@ -43,7 +43,7 @@ class ScenePlannerOutput(BaseModel):
 class UserSceneContext:
     user_id: str
     story_id: str
-    director_instructions: str
+    director_instructions: Any
     scene_state: SceneState
     scene_memory: SceneMemory
     scene_chunk_callback: Callable
@@ -57,7 +57,7 @@ class UserSceneContext:
         )
         
         scene_state = SceneState(
-            messages=[AIMessage(content=director_instructions)],
+            #messages=[AIMessage(content=director_instructions)],
             scene_memory=scene_memory,
             next_node=None,
             user_context_id=user_id,
@@ -99,11 +99,10 @@ class SharedScenePlannerService:
         self.compiled = self.graph.compile()
         
     
-    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None) -> tuple[str, list]:
+    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7) -> tuple[str, list]:
         """Process scene for a specific user using their context"""
         print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
-        
-
+        self.llm_temp = llm_temp
         try:
             user_context.scene_state.user_context_id = user_context.user_id
         except Exception as e:
@@ -168,7 +167,7 @@ class SharedScenePlannerService:
 
         try:
             llm_response = await asyncio.wait_for(
-                groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                llm_for_scene_planner_groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
                 timeout=30.0
             )
             raw_resp = llm_response.content.strip()
@@ -216,9 +215,9 @@ class SharedScenePlannerService:
         
         system_prompt = (
             "You are the Scene Writer Agent. Write one paragraph continuing the scene based on the Director's Instructions. "
-            "The scene blueprint that you need to follow strictly for this scene. "
+            #"The scene blueprint that you need to follow strictly for this scene. "
             "You do not know anything beyond what the Director tells you, so be sure to include all relevant context in your writing. "
-            "Write in a vivid, engaging style, with rich descriptions and immersive details. "
+            #"Write in a vivid, engaging style, with rich descriptions and immersive details. "
             "Do not make up any new characters or worlds that the Director has not mentioned. "
             "Do not repeat the entire scene so far, only continue it with one new paragraph. "
         )
@@ -236,7 +235,7 @@ class SharedScenePlannerService:
         print("SCENE WRITER CONTEXT: ", human_prompt)
         try:
             llm_response = await asyncio.wait_for(
-                groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp),
                 timeout=30.0
             )
             clean_resp = llm_response.content.strip()

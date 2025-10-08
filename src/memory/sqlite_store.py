@@ -70,7 +70,7 @@ class SQLiteStore:
             
             # Characters table
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS characters (
+                CREATE TABLE IF NOT EXISTS characters_raw (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
@@ -85,7 +85,7 @@ class SQLiteStore:
             
             # World elements table
             await conn.execute("""
-                CREATE TABLE IF NOT EXISTS world_elements (
+                CREATE TABLE IF NOT EXISTS world_elements_raw (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
@@ -104,14 +104,17 @@ class SQLiteStore:
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
-                    chapter_id TEXT NOT NULL,
+                    chapter_id INTEGER NOT NULL,
+                    type TEXT,              -- Added for filtering by note type
+                    story_title TEXT,       -- Added for filtering by story title
                     text TEXT,
-                    metadata TEXT, -- JSON serialized as text
+                    metadata TEXT,          -- Keep JSON metadata for flexibility
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE (user_id, story_id, chapter_id)
+                    UNIQUE (user_id, story_id, chapter_id, type, story_title)
                 )
             """)
+
             
             # Story progress table
             await conn.execute("""
@@ -384,6 +387,41 @@ class SQLiteStore:
                     json.dumps(metadata or {})
                 ))
                 await conn.commit()  # Commit transaction
+    
+    async def put_to_director_notes(self, entry: Any, metadata: Optional[Dict[str, Any]] = None):
+        """
+        Insert or replace a director note entry for a given chapter_id, type, and story_title.
+        Does NOT append — overwrites any existing record for that combination.
+        """
+        metadata = metadata or {}
+        chapter_id = int(metadata.get("chapter_id", 0))
+        type_ = metadata.get("type", "default")
+        story_title = metadata.get("story_title", "Untitled")
+
+        async with self._get_connection() as conn:
+            async with conn.execute('BEGIN'):  # Start transaction
+                await conn.execute(f"""
+                    INSERT INTO {self.table} (
+                        user_id, story_id, chapter_id, type, story_title, text, metadata
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, story_id, chapter_id, type, story_title)
+                    DO UPDATE SET
+                        text = excluded.text,
+                        metadata = excluded.metadata,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (
+                    self.user_id,
+                    self.story_id,
+                    chapter_id,
+                    type_,
+                    story_title,
+                    json.dumps(entry),
+                    json.dumps(metadata)
+                ))
+
+                await conn.commit()
+
 
     async def put_progress(self, metadata: Optional[Dict[str, Any]] = None):
         """Insert or update story progress."""
@@ -392,12 +430,14 @@ class SQLiteStore:
         scene_id = metadata.get("continue_scene_id")
         word_count = metadata.get("word_count", 0)
         story_title = metadata.get("story_title", None)
+        tone_temp = metadata.get("tone_temp", None)
         
         clean_meta = {
             "chapter_id": chapter_id,
             "scene_id": scene_id,
             "word_count": word_count,
-            "story_title": story_title
+            "story_title": story_title,
+            "tone_temp": tone_temp
         }
         
         async with self._get_connection() as conn:
@@ -471,6 +511,44 @@ class SQLiteStore:
             if row and row['text']:
                 return json.loads(row['text'])
             return []
+        
+    async def get_from_director_notes(self, metadata: dict):
+        """
+        Retrieve text entry by chapter_id, type, and story_title.
+        Returns either a list or a single string depending on stored data.
+        """
+        chapter_id = metadata.get("chapter_id", 0)
+        type_ = metadata.get("type", "default")
+        story_title = metadata.get("story_title", "Untitled")
+
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT text FROM {self.table}
+                WHERE user_id = ?
+                AND story_id = ?
+                AND chapter_id = ?
+                AND type = ?
+                AND story_title = ?
+                """,
+                (self.user_id, self.story_id, chapter_id, type_, story_title)
+            )
+            row = await cursor.fetchone()
+
+            if not row or not row["text"]:
+                return []
+
+            text = row["text"]
+
+            try:
+                # Decode JSON if it's stored as a list or dict
+                decoded = json.loads(text)
+                return decoded
+            except json.JSONDecodeError:
+                # If it's a plain string, just return it as-is
+                return text
+
+
 
     async def get_progress(self) -> Optional[Dict[str, Any]]:
         """Get the latest story progress."""

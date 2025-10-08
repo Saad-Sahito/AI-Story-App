@@ -2,7 +2,7 @@
 import asyncio
 import json
 import gc
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
@@ -14,7 +14,7 @@ from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
 
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
-from src.llm_client.llm_client import groq_client, gemini_client
+from src.llm_client.llm_client import groq_client, ingestor_gemini_client
 
 INTERACTIVE_DIRECTOR_AGENT = None
 
@@ -40,16 +40,29 @@ class SceneBundle(BaseModel):
 
 scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
 
+class CharacterMemory(BaseModel):
+    name: str
+    chapter_id: str
+    summary: str = Field(description="Inline summary of the character's actions/motivations/changes upto this chapter.")
+    traits: List[str] = Field(default_factory=list, description="Key personality traits expressed upto this chapter.")
+    relationships: Dict[str, str] = Field(default_factory=dict, description="Map of other characters and current relationship status or changes.")
+    emotional_state: Optional[str] = Field(None, description="Dominant emotion or mindset towards the end.")
+    goals: Optional[str] = Field(None, description="Current goals or motivations going forward.")
+    status_changes: Optional[str] = Field(None, description="Any physical, social, or narrative changes (e.g., wounded, promoted, betrayed).")
+
+class WorldElementMemory(BaseModel):
+    name: str
+    chapter_id: str
+    summary: str = Field(description="Summary of how this world element appeared or changed upto this chapter.")
+    atmosphere: Optional[str] = Field(None, description="Mood or tone of this location or environment.")
+    culture: Optional[str] = Field(None, description="Cultural or societal information revealed upto this chapter.")
+    events: Optional[str] = Field(None, description="Notable events or changes affecting this location.")
+    connections: Dict[str, str] = Field(default_factory=dict, description="Links or relations to other world elements or characters.")
+
 class ChapterBundle(BaseModel):
-    summary: str = Field(
-        description="A detailed summary of the entire chapter."
-    )
-    character_summary: Dict[str, str] = Field(
-        description="Dictionary: {character_name: summary of the character regarding their traits/actions/motivations inline all of it str not dict.} "
-    )
-    world_summary: Dict[str, str] = Field(
-        description="Dictionary: {world_element: summary of the world element regarding its atmosphere/culture/environment inline all of it str not dict.} "
-    )
+    summary: str = Field(description="Detailed summary of the entire chapter.")
+    character_summary: Dict[str, CharacterMemory] = Field(description="Dictionary: {character_name: structured character memory object}")
+    world_summary: Dict[str, WorldElementMemory] = Field(description="Dictionary: {world_element: structured world memory object}")
 
 chapter_parser = PydanticOutputParser(pydantic_object=ChapterBundle)
 
@@ -78,7 +91,9 @@ class Ingestor:
         "Always include chapter and scene id in character and world details, in order to keep track later. " \
         "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, " \
         "if any need to be changed then create new entry for that entity mentioning previous name in the new entry, " \
-        "if not present then create new names as needed."
+        "if not present then create new names as needed."        
+        "Respond ONLY in JSON with this schema:"
+        f"{scene_parser.get_format_instructions()}"
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
@@ -92,15 +107,12 @@ class Ingestor:
 
         Worlds:
         {worlds.keys()}
-
-        Respond ONLY in JSON with this schema:
-        {scene_parser.get_format_instructions()}
         """
         
         #print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
 
         for attempt in range(1, max_retries + 1):
-            resp = await gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -176,19 +188,20 @@ class Ingestor:
         #chapter_content = self.memory.get_current_chapter()
         world_details = await self.memory.get_long_term_worlds()
         char_details = await self.memory.get_long_term_characters()
-        
-        # self.memory.add_story_chapter(
-        #     text=chapter_content,
-        #     metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
-        # )
 
-        system_prompt = (
-            "You are the Chapter Breakdown Agent. Extract structured info from the "
-            "chapter content and character details and world details. "
-            "The character and world names should be exactly as the keys presented to you under Character and World Details, "
-            "separated by Character and Worlds respectively. "
-            "Always include chapter id in character and world details, in order to keep track later."
-        )
+        system_prompt = f"""
+        You are the Chapter Breakdown Agent. Your task is to analyze the full chapter content, 
+        along with detailed character and world information, and produce a structured breakdown.
+
+        Follow these steps:
+        1. Write a detailed textual summary of the chapter under 'summary'.
+        2. For each character listed under "Character Details", produce a structured object with fields mentioned below:
+        3. For each world element listed under "World Details", produce a structured object with fields mentioned below:
+        4. Always use exact character and world names as given in the input.
+
+        Return output strictly as a JSON object matching this structure:
+        {chapter_parser.get_format_instructions()}
+        """
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}
@@ -199,14 +212,11 @@ class Ingestor:
         {char_details}
 
         World Details:
-        {world_details}
-
-        Respond ONLY in JSON with this schema:
-        {chapter_parser.get_format_instructions()}
+        {world_details}        
         """
 
         for attempt in range(1, max_retries + 1):
-            resp = await gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW INGEST CHAPTER RESPONSE:", clean_resp)
@@ -439,7 +449,8 @@ class DirectorGraph:
             metadata={
                 "scene_id": state.scene_id,
                 "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title
+                "story_title": state.story_title,
+                "type": "scene summary"
             }
         )
         
@@ -496,14 +507,14 @@ class DirectorGraph:
         )
 
         # Gather story context
-        self.current_chap_summary = await self.memory.search_episodic_story_summary(chapter_number=state.current_chapter_id)
+        self.current_chap_summary = await self.memory.search_episodic_scene_summary(chapter_number=state.current_chapter_id, summary_type="scene summary")
         director_context = await self.memory.get_director_context(
             current_chapter_number=state.current_chapter_id,
             query=self.current_chap_summary if self.current_chap_summary else "",
             k=5
         )
         context = (
-            f"Story Premise: {await self.memory.get_long_term_document('story_premise')}\n"
+            f"Story Premise: {await self.memory.get_long_term_document(metadata={"type":'story_premise', "chapter_id":state.current_chapter_id, "story_title": state.story_title})}\n"
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
             f"Scene Number: {state.scene_id}\n"

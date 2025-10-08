@@ -20,14 +20,14 @@ class LLMClient:
         load_dotenv()
         try:
             # Get the Groq API key from the environment
-            groq_api_key = os.environ.get("GROQ_API_KEY")
+            self.groq_api_key = os.environ.get("GROQ_API_KEY")
             openai_api_key = os.environ.get("OPENAI_API_KEY")
             google_api_key = os.environ.get("GOOGLE_API_KEY")
             #self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
             self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=openai_api_key)
-            self.llm_groq = ChatGroq(model="openai/gpt-oss-120b", temperature=0.5, groq_api_key=groq_api_key)
-            self.llm_groq_zero_temp = ChatGroq(model="openai/gpt-oss-120b", temperature=0.2, groq_api_key=groq_api_key)
-            self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash-lite", temperature=0.5, google_api_key=google_api_key)
+            
+            self.llm_for_scene_planner = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.2, groq_api_key=self.groq_api_key)
+            self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.2, google_api_key=google_api_key)
         except Exception as e:
             print(f"Failed to initialize LLMClient: {e}")
             raise
@@ -49,11 +49,16 @@ class LLMClient:
     #         if hasattr(chunk, "content") and chunk.content:
     #             yield chunk.content
 
-    async def groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    async def classic_director_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+        """Since it is a less frequent call, we can use a high quality model."""
+        pass
+
+    async def groq_client(self, system_prompt: str = "", human_prompt: str = "", llm_temp: int = 0.7) -> AIMessage:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
+        llm = ChatGroq(model="openai/gpt-oss-120b", temperature=llm_temp, groq_api_key=self.groq_api_key)
         async with self.sem:
-            response = self.llm_groq.invoke([
+            response = llm.invoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
             ])
@@ -74,11 +79,11 @@ class LLMClient:
         time.sleep(4)  # delay to avoid rate limits
         return response
     
-    async def groq_zero_temp_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    async def llm_for_scene_planner_groq_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
         async with self.sem:
-            response = self.llm_groq_zero_temp.invoke([
+            response = self.llm_for_scene_planner.invoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
             ])
@@ -118,7 +123,7 @@ class LLMClient:
 
         return response
 
-    async def gemini_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    async def ingestor_gemini_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Gemini LLM – returns the full response."""
         async with self.sem:
             response = self.llm_gemini.invoke([
@@ -152,22 +157,22 @@ async def get_shared_client():
         return SHARED_LLM_CLIENT
 
 # Convenience wrapper functions for easy access
-async def groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def groq_client(system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7) -> AIMessage:
     """Convenience function to access groq_client through shared instance."""
     client = await get_shared_client()
-    return await client.groq_client(system_prompt, human_prompt)
+    return await client.groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=llm_temp)
 
-async def groq_zero_temp_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def llm_for_scene_planner_groq_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access groq_client through shared instance."""
     client = await get_shared_client()
-    return await client.groq_zero_temp_client(system_prompt, human_prompt)
+    return await client.llm_for_scene_planner_groq_client(system_prompt, human_prompt)
 
 async def openai_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access openai_client through shared instance."""
     client = await get_shared_client()
     return await client.openai_client(system_prompt, human_prompt)
 
-async def gemini_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def ingestor_gemini_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access gemini_client through shared instance."""
     client = await get_shared_client()
-    return await client.gemini_client(system_prompt, human_prompt)
+    return await client.ingestor_gemini_client(system_prompt, human_prompt)

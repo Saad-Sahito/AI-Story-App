@@ -19,7 +19,7 @@ class StoryAuthor:
                                                     "to follow.",
                                                     human_prompt=f"Given User Context: {user_context}")
             detailed_premise = detailed_premise.content.strip()
-            await self.memory.add_long_term_document(text=detailed_premise, metadata={"chapter_id":"story_premise", "story_title": story_title})
+            await self.memory.add_long_term_document(text=detailed_premise, metadata={"type":"story_premise", "story_title": story_title})
         else:
             detailed_premise = await self.memory.get_long_term_document(name="story_premise")
             #detailed_premise = detailed_premise["text"]

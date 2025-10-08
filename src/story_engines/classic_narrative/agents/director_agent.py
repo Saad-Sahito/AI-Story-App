@@ -3,11 +3,10 @@
 import json
 import asyncio
 import gc
-from typing import Any, Dict, List, Literal
+from typing import Any, Dict, List, Literal, Optional
 from langgraph.graph import StateGraph, END
-from langchain_core.messages import AIMessage
+#from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
-
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
 
@@ -15,7 +14,7 @@ from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
-from src.llm_client.llm_client import groq_client, gemini_client
+from src.llm_client.llm_client import groq_client, ingestor_gemini_client
 
 # Keep existing state and models unchanged
 @dataclass
@@ -24,8 +23,48 @@ class StoryState:
     scene_id: int = 1
     story_title: str = "None"
     word_count: int = 0
-    messages: List[Any] = field(default_factory=list)
+    #messages: List[Any] = field(default_factory=list)
+    chapter_plan: Optional[List[Dict[str, Any]]] = field(default_factory=list)
     next_action: str = ""
+
+class ScenePlan(BaseModel):
+    scene_id: str = Field(..., description="Unique identifier for the scene")
+    scene_goal: str = Field(..., description="Immediate purpose of the scene (e.g., introduce antagonist)")
+    main_characters: List[str] = Field(..., description="List of characters involved in the scene")
+    location: str = Field(..., description="Where the scene takes place")
+    time_context: str = Field(..., description="When or under what condition the scene occurs (e.g., night, dream)")
+    key_events: List[str] = Field(..., description="Bullet points describing key narrative events")
+    emotional_beats: List[str] = Field(..., description="Target emotional moods (e.g., fear, doubt, resolve)")
+    thematic_notes: List[str] = Field(..., description="How the scene ties into the story's core themes")
+
+class ChapterPlan(BaseModel):
+    chapter_number: int = Field(..., description="Sequential chapter index")
+    chapter_title: str = Field(..., description="Title or label of the chapter")
+    narrative_purpose: str = Field(
+        ...,
+        description="Summary of what this chapter accomplishes (e.g., 'Hero begins questioning his loyalty.')"
+    )
+    emotional_arc: str = Field(
+        ...,
+        description="Description of emotional tone progression (e.g., 'tense → sorrowful → hopeful')"
+    )
+    scenes: List[ScenePlan] = Field(..., description="List of perfectly planned scenes in this chapter, each scene should be so detailed " \
+    "that a scene writer can plan the scene text directly from it. The scene writer will not have any other context except the particular scene plan given to it.")
+    chapter_closure_condition: str = Field(
+        ...,
+        description="Criteria for considering the chapter complete (e.g., 'Protagonist achieves escape.')"
+    )
+
+class DirectorOutput(BaseModel):
+    chapter_plan: Optional[ChapterPlan] = Field(
+        None,
+        description="Structured chapter plan describing scenes, arcs, and emotional flow. Required for chapter planning stages."
+    )
+    action: Literal["generate_and_ingest", "END"] = Field(
+        description="Action to take after instructions. 'generate_and_ingest' continues to scene generation; 'END' stops the story."
+    )
+
+director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
 
 class SceneBundle(BaseModel):
     story_summary: str = Field(
@@ -40,28 +79,33 @@ class SceneBundle(BaseModel):
 
 scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
 
+class CharacterMemory(BaseModel):
+    name: str
+    chapter_id: str
+    summary: str = Field(description="Inline summary of the character's actions/motivations/changes upto this chapter.")
+    traits: List[str] = Field(default_factory=list, description="Key personality traits expressed upto this chapter.")
+    relationships: Dict[str, str] = Field(default_factory=dict, description="Map of other characters and current relationship status or changes.")
+    emotional_state: Optional[str] = Field(None, description="Dominant emotion or mindset towards the end.")
+    goals: Optional[str] = Field(None, description="Current goals or motivations going forward.")
+    status_changes: Optional[str] = Field(None, description="Any physical, social, or narrative changes (e.g., wounded, promoted, betrayed).")
+
+class WorldElementMemory(BaseModel):
+    name: str
+    chapter_id: str
+    summary: str = Field(description="Summary of how this world element appeared or changed upto this chapter.")
+    atmosphere: Optional[str] = Field(None, description="Mood or tone of this location or environment.")
+    culture: Optional[str] = Field(None, description="Cultural or societal information revealed upto this chapter.")
+    events: Optional[str] = Field(None, description="Notable events or changes affecting this location.")
+    connections: Dict[str, str] = Field(default_factory=dict, description="Links or relations to other world elements or characters.")
+
 class ChapterBundle(BaseModel):
-    summary: str = Field(
-        description="A detailed summary of the entire chapter."
-    )
-    character_summary: Dict[str, str] = Field(
-        description="Dictionary: {character_name: summary of the character regarding their traits/actions/motivations inline all of it str not dict.} "
-    )
-    world_summary: Dict[str, str] = Field(
-        description="Dictionary: {world_element: summary of the world element regarding its atmosphere/culture/environment inline all of it str not dict.} "
-    )
+    summary: str = Field(description="Detailed summary of the entire chapter.")
+    character_summary: Dict[str, CharacterMemory] = Field(description="Dictionary: {character_name: structured character memory object}")
+    world_summary: Dict[str, WorldElementMemory] = Field(description="Dictionary: {world_element: structured world memory object}")
 
 chapter_parser = PydanticOutputParser(pydantic_object=ChapterBundle)
 
-class DirectorOutput(BaseModel):
-    instructions: str = Field(
-        description="200–500 words of detailed scene instructions. Do not make a nested dictionary, just plain string type text."
-    )
-    action: Literal["generate_and_ingest", "END"] = Field(
-        description="Action to take after instructions."
-    )
 
-director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
 
 # Keep Ingestor class unchanged (it's already fine)
 class Ingestor:
@@ -70,7 +114,7 @@ class Ingestor:
         self.memory = memory_system
 
     # ---- Scene Ingestion (this is part of the Ingestor class, not DirectorGraph) ----
-    async def ingest_scene(self, state: StoryState, scene_text: str, max_retries: int = 3) -> Dict[str, str]:
+    async def ingest_scene(self, state: StoryState, scene_text: str, llm_temp: float, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON using schema + parser."""
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
@@ -79,6 +123,8 @@ class Ingestor:
         "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, " \
         "if any need to be changed then create new entry for that entity mentioning previous name in the new entry, " \
         "if not present then create new names as needed."
+        "Respond ONLY in JSON with this schema:"
+        f"{scene_parser.get_format_instructions()}"
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
@@ -92,15 +138,12 @@ class Ingestor:
 
         Worlds:
         {worlds.keys()}
-
-        Respond ONLY in JSON with this schema:
-        {scene_parser.get_format_instructions()}
         """
         
         #print("INGEST SCENE HUMAN PROMPT: ", human_prompt)
 
         for attempt in range(1, max_retries + 1):
-            resp = await gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -120,7 +163,8 @@ class Ingestor:
                     "latest_chapter_id": state.current_chapter_id, 
                     "continue_scene_id": state.scene_id + 1, 
                     "word_count": state.word_count, 
-                    "story_title": state.story_title
+                    "story_title": state.story_title,
+                    "tone_temp": llm_temp
                 })
                 del system_prompt, human_prompt
                 return result
@@ -144,7 +188,8 @@ class Ingestor:
                         "latest_chapter_id": state.current_chapter_id, 
                         "continue_scene_id": state.scene_id + 1, 
                         "word_count": state.word_count, 
-                        "story_title": state.story_title
+                        "story_title": state.story_title,
+                        "tone_temp": llm_temp
                     })
                     del system_prompt, human_prompt, scene_text
                     return result
@@ -167,7 +212,7 @@ class Ingestor:
         
         del system_prompt, human_prompt
 
-    async def ingest_chapter(self, state: StoryState, current_chap_summary, max_retries: int = 3) -> Dict[str, Any]:
+    async def ingest_chapter(self, state: StoryState, current_chap_summary, llm_temp: float, max_retries: int = 3) -> Dict[str, Any]:
         """Summarize and extract structured details about a full chapter.
         Retries with LLM if parse_obj + parse + json_fixer all fail.
         """
@@ -176,19 +221,20 @@ class Ingestor:
         #chapter_content = self.memory.get_current_chapter()
         world_details = await self.memory.get_long_term_worlds()
         char_details = await self.memory.get_long_term_characters()
-        
-        # self.memory.add_story_chapter(
-        #     text=chapter_content,
-        #     metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
-        # )
 
-        system_prompt = (
-            "You are the Chapter Breakdown Agent. Extract structured info from the "
-            "chapter content and character details and world details. "
-            "The character and world names should be exactly as the keys presented to you under Character and World Details, "
-            "separated by Character and Worlds respectively. "
-            "Always include chapter id in character and world details, in order to keep track later."
-        )
+        system_prompt = f"""
+        You are the Chapter Breakdown Agent. Your task is to analyze the full chapter content, 
+        along with detailed character and world information, and produce a structured breakdown.
+
+        Follow these steps:
+        1. Write a detailed textual summary of the chapter under 'summary'.
+        2. For each character listed under "Character Details", produce a structured object with fields mentioned below:
+        3. For each world element listed under "World Details", produce a structured object with fields mentioned below:
+        4. Always use exact character and world names as given in the input.
+
+        Return output strictly as a JSON object matching this structure:
+        {chapter_parser.get_format_instructions()}
+        """
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}
@@ -200,13 +246,10 @@ class Ingestor:
 
         World Details:
         {world_details}
-
-        Respond ONLY in JSON with this schema:
-        {chapter_parser.get_format_instructions()}
         """
 
         for attempt in range(1, max_retries + 1):
-            resp = await gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             #print(f"[Attempt {attempt}] RAW INGEST CHAPTER RESPONSE:", clean_resp)
@@ -223,7 +266,7 @@ class Ingestor:
                 await self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                 state.current_chapter_id += 1
                 state.scene_id = 1
-                await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count, "tone_temp": llm_temp})
                 #self.memory.close()
                 print("Chapter Complete!")
                 result.update({
@@ -326,141 +369,126 @@ class DirectorGraph:
 
         self.compiled = self.graph.compile()
         self.current_chap_summary = ""
-        
-
-    def _get_latest_director_message(self, state: StoryState) -> str:
-        """Extract the latest director instructions from state messages"""
-        for msg in reversed(state.messages):
-            if isinstance(msg, AIMessage):
-                return msg.content
-        return ""
+        self.llm_temp = 0.7  # default temperature
 
     async def generate_and_ingest_node(self, state: StoryState):
-        """Generates a new scene using shared scene planner and ingests it"""
+        """Generates all scenes using shared scene planner and ingests each sequentially."""
         print("Called Generate and Ingest Node!")
-        
-        # Get the latest director instructions
-        #director_instructions = self._get_latest_director_message(state)
-        
+
         if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
-            print("❌ ERROR: CLASSIC_SCENE_PLANNER_SERVICE is None!")
-            raise
-        
-        director_instructions = self._get_latest_director_message(state)
+            raise RuntimeError("❌ CLASSIC_SCENE_PLANNER_SERVICE is None!")
 
-        # Create user-specific context for this scene generation
-        user_context = UserSceneContext.create_for_user(
-            user_id=self.memory.user_id,
-            story_id=self.memory.story_id,
-            director_instructions=director_instructions,
-            scene_chunk_callback=self.scene_chunk_callback
-        )
-        
-        print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
-            user_context=user_context, 
-            stop_event=self.stop_event
-        )
+        if not state.chapter_plan or not state.chapter_plan.scenes:
+            print("⚠️ No valid chapter plan or scenes found.")
+            return
 
-        del user_context
-        gc.collect()
-
-        from setup.shared_redis_pool import get_redis_client
+        redis_client = None
         try:
-            # Try to find the user/session-level structures
+            from setup.shared_redis_pool import get_redis_client
             redis_client = await get_redis_client()
-            queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
-
-            # Build callback payload
-            resume_payload = {
-                "type": "save"
-            }
-            try:
-                self.scene_chunk_callback(resume_payload)
-            except Exception as e:
-                print(f"❌ ERROR: scene_chunk_callback raised: {e}")
-                import traceback; traceback.print_exc()
-
-            # Wait for user input from Redis List
-            try:
-                user_choice = False
-                for _ in range(5000):
-                    choice = await redis_client.lpop(queue_key)
-                    if choice == b'1' or choice == 1 or choice == '1':  # ✅ Check both byte and int
-                        user_choice = True
-                        print("✅ User chose to save continue")
-                        break
-                    elif choice is not None:  # ✅ Got a response but not "1"
-                        break
-                    await asyncio.sleep(1.0)
-                
-                # ✅ FIX: Return dict with flag instead of END
-                if user_choice == False:
-                    print("🛑 User chose not to continue")
-                    return {
-                        "scene_id": state.scene_id,
-                        "current_chapter_id": state.current_chapter_id,
-                        "word_count": state.word_count,
-                        "next_action": "END",  # Signal to stop via state
-                    }
-            except Exception as e:
-                print(f"❌ ERROR in Redis queue handling: {e}")
-                import traceback; traceback.print_exc()
-                # Return state with END action on error
-                return {
-                    "scene_id": state.scene_id,
-                    "current_chapter_id": state.current_chapter_id,
-                    "word_count": state.word_count,
-                    "next_action": "END",
-                }
         except Exception as e:
-            print(f"❌ ERROR in user input handling: {e}")
-            import traceback; traceback.print_exc()
-            # Return state with END action on error
-            return {
-                "scene_id": state.scene_id,
-                "current_chapter_id": state.current_chapter_id,
-                "word_count": state.word_count,
-                "next_action": "END",
-            }
+            print(f"⚠️ Could not initialize Redis client early: {e}")
 
-        # Save Story    
-        # Create Ingestor only for this ingestion
-        ingestor = Ingestor(self.memory)
-        scene_bundle = await ingestor.ingest_scene(state, scene_text)
-        del ingestor
-        gc.collect()
-        
-        await self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
-            "chapter_id": state.current_chapter_id, 
-            "story_title": state.story_title, 
-            "scene_id": state.scene_id, 
-            "word_count": state.word_count
-        })
-        
-        await self.memory.add_post_scene_bundle(
-            scene_bundle=scene_bundle,
-            metadata={
-                "scene_id": state.scene_id,
-                "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title
-            }
-        )
-        
-        del scene_bundle, scene_cluster, scene_text
-        gc.collect()
+        for scene in state.chapter_plan.scenes:
+            # 🧱 Prepare scene input
+            director_instructions = json.dumps(scene.model_dump(), indent=2)
+            state.scene_id = scene.scene_id
+            print(f"\n🎞️ Running Scene {scene.scene_id} | Goal: {scene.scene_goal}")
 
-        # ✅ Return state WITHOUT next_action or with empty string
-        # This allows the conditional edge to route back to director_node
+            # 🎯 Create scene context
+            user_context = UserSceneContext.create_for_user(
+                user_id=self.memory.user_id,
+                story_id=self.memory.story_id,
+                director_instructions=director_instructions,
+                scene_chunk_callback=self.scene_chunk_callback
+            )
+
+            # ⚡ Async call — never use asyncio.run() inside an async def
+            print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
+            scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
+                user_context=user_context, 
+                stop_event=self.stop_event,
+                llm_temp=self.llm_temp
+            )
+
+            del user_context
+            gc.collect()
+
+            # 🧠 Handle post-scene user choice
+            if redis_client:
+                try:
+                    queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+                    resume_payload = {"type": "save"}
+                    try:
+                        self.scene_chunk_callback(resume_payload)
+                    except Exception as e:
+                        print(f"⚠️ scene_chunk_callback raised: {e}")
+
+                    user_choice = False
+                    for _ in range(5000):
+                        choice = await redis_client.lpop(queue_key)
+                        if choice in (b"1", "1", 1):
+                            user_choice = True
+                            print("✅ User chose to continue")
+                            break
+                        elif choice is not None:
+                            print(f"🛑 User chose not to continue ({choice})")
+                            break
+                        await asyncio.sleep(1.0)
+
+                    if not user_choice:
+                        print("🛑 Ending story after this scene per user choice")
+                        return {
+                            "scene_id": state.scene_id,
+                            "current_chapter_id": state.current_chapter_id,
+                            "word_count": state.word_count,
+                            "next_action": "END",
+                        }
+
+                except Exception as e:
+                    print(f"⚠️ Redis handling error: {e}")
+
+            # 📚 Ingest the scene into memory
+            ingestor = Ingestor(self.memory)
+            scene_bundle = await ingestor.ingest_scene(state, scene_text, self.llm_temp)
+            del ingestor
+            gc.collect()
+
+            await self.memory.add_story_scene_cluster(
+                text=scene_cluster,
+                metadata={
+                    "chapter_id": state.current_chapter_id,
+                    "story_title": state.story_title,
+                    "scene_id": state.scene_id,
+                    "word_count": state.word_count,
+                }
+            )
+
+            await self.memory.add_post_scene_bundle(
+                scene_bundle=scene_bundle,
+                metadata={
+                    "scene_id": state.scene_id,
+                    "chapter_id": state.current_chapter_id,
+                    "story_title": state.story_title,
+                }
+            )
+
+            del scene_bundle, scene_cluster, scene_text
+            gc.collect()
+
+        # ✅ After all scenes are done, return updated state
         return {
             "scene_id": state.scene_id + 1,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
+            "next_action": "",  # let graph edge decide next step
         }
+
     
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
-        result = await ingestor.ingest_chapter(state, self.current_chap_summary)
+        result = await ingestor.ingest_chapter(state=state, current_chap_summary=self.current_chap_summary, llm_temp=self.llm_temp)
+         # reset current chapter summary after ingesting
         self.current_chap_summary = ""
         del ingestor
         gc.collect()
@@ -468,102 +496,118 @@ class DirectorGraph:
 
     async def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
-        system_prompt = (
-            "You are the Director Agent for a text-based story. "
-            "You must create exhaustive, prescriptive instructions for the Scene Writer agent. "
-            "The Scene Writer will write ONLY what you specify — it has no memory of past scenes and no freedom to improvise. "
-            "Therefore, you must make EVERY creative decision. "
-            "Do not use vague descriptions, do not leave placeholders, and do not rely on the Scene Writer to 'fill in the gaps.' "
-            "All beats, dialogue, character reactions, and world details must be fully defined by you. "
-            "If something is unclear, you must decide it yourself. "
-            "The Scene Writer should NEVER invent characters, settings, dialogue, or events. "
-            "Prohibit generic phrasing such as 'mundane small talk,' 'subtle hints,' or 'something happens.' Always give exact lines or examples. "
-            "Your output must be in the given JSON format. "
-            "The 'instructions' value must be 200-500 words string, not a dictionary and contain the following sections:\n\n"
-            "1. **Recap** - A concise summary of the story so far. Be concrete, include all key facts the Scene Writer needs. \n"
-            "2. **Characters** - List all relevant characters with names, ages, traits, and current state of mind. If a side character appears, provide their exact role and tone. \n"
-            "3. **Detailed Scene Blueprint** - A numbered, step-by-step breakdown of the scene's beats in strict order. Each beat must describe: location, action, at least one visual detail, at least one sound detail, suggest general dialogue idea. "
-            "Do not allow ambiguity. Do not say 'the writer should show this.' You must say 'this happens, in this way.' \n"
-            "4. **Screenplay Notes** - A strict checklist of required elements (e.g., 'Include one description of neon reflection on glass,' 'Include two internal monologue lines showing anxiety'). "
-            "These are mandatory, not suggestions. \n"
-            "5. **Chapter/Scene ID** - Exact chapter and scene number. \n\n"
-            "Always be concrete, exhaustive, and prescriptive. "
-            "Never leave the Scene Writer to guess or invent. "
-            "Call END if you think the chapter should end now. "
-            "Make sure the output JSON is valid and contains no extra text."
-        )
+        system_prompt = f"""
+You are the **Director Agent**, responsible for orchestrating each chapter of the story.
+
+You receive the **Story Bible** created by the Story Author Agent, which defines the world, characters, tone, and story structure.  
+You also receive context from the memory system describing **previous chapters**, character developments, and world state.
+
+Your task is to **plan the next chapter** by:
+- Determining what happens next according to the story bible and previous events.
+- Outlining a set of coherent **scenes** that can be handed to the Scene Writer.
+- Keeping tone, POV, and prose consistent with the Story Author's style guide.
+- Maintaining continuity and character arcs.
+
+---
+
+### 🧠 You must:
+- Respect established story logic and tone.
+- Reflect ongoing character and world evolution.
+- Progress the narrative toward its final resolution.
+- Avoid rewriting scenes that already exist.
+- Signal when the current chapter should end.
+
+---
+### 🎯 Follow this structure exactly and respond ONLY in JSON::
+{director_parser.get_format_instructions()}
+---
+
+Do NOT write narrative prose — only scene instructions and narrative planning.
+"""
 
         # Gather story context
-        self.current_chap_summary = await self.memory.search_episodic_story_summary(chapter_number=state.current_chapter_id)
+        self.current_chap_summary = await self.memory.search_episodic_scene_summary(chapter_number=state.current_chapter_id, summary_type="scene summary")
         director_context = await self.memory.get_director_context(
             current_chapter_number=state.current_chapter_id,
             query=self.current_chap_summary if self.current_chap_summary else "",
             k=5
         )
         context = (
-            f"Story Premise: {await self.memory.get_long_term_document('story_premise')}\n"
+            f"Story Bible: {await self.memory.get_long_term_document(metadata={"type":"story_premise", "story_title": state.story_title})}\n"
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
-            f"Scene Number: {state.scene_id}\n"
-            f"Summary of Current Chapter So Far: {self.current_chap_summary}\n"
+            #f"Scene Number: {state.scene_id}\n"
+            #f"Summary of Current Chapter So Far: {self.current_chap_summary}\n"
         )
         
         print("CONTEXT TO DIRECTOR:", context)
-        human_prompt = f"""
-        {context}
-
-        {director_parser.get_format_instructions()}
-        """
+        human_prompt = context
+        
         max_retries = 3
         scenario, action = None, None
-
-        for attempt in range(1, max_retries + 1):
-            resp = await groq_client(system_prompt=system_prompt, human_prompt=human_prompt)
-            raw_text = StoryHelpers._extract_content(resp)
-            clean_resp = StoryHelpers._strip_code_fences(raw_text)
-            del raw_text, resp
-            gc.collect()
-            if isinstance(clean_resp, dict):
-                clean_resp = json.dumps(clean_resp)
-
-            # Try validate/parse and get dict back
-            success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, DirectorOutput, director_parser)
-            if success:
-                scenario = result.get("instructions")
-                action = result.get("action")
-                break
-
-            print(f"[Attempt {attempt}] First-pass validation failed:", exc)
-
-            # json_fixer attempt
-            try:
-                fixed_resp = await StoryHelpers._json_fixer(clean_resp)
-                fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
-                if isinstance(fixed_clean, dict):
-                    fixed_clean = json.dumps(fixed_clean)
-
-                success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, DirectorOutput, director_parser)
-                del fixed_clean, fixed_resp
+        if state.scene_id == 1:
+            for attempt in range(1, max_retries + 1):
+                resp = await groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp)
+                raw_text = StoryHelpers._extract_content(resp)
+                clean_resp = StoryHelpers._strip_code_fences(raw_text)
+                del raw_text, resp
                 gc.collect()
+                if isinstance(clean_resp, dict):
+                    clean_resp = json.dumps(clean_resp)
+
+                # Try validate/parse and get dict back
+                success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, DirectorOutput, director_parser)
                 if success:
-                    scenario = result.get("instructions")
-                    action = result.get("action")
+                    # 'result' is already a dict because of StoryHelpers
+                    scenario = {
+                        "chapter_plan": result.get("chapter_plan", None)
+                    }
+                    action = result.get("action", "END")
                     break
 
-                print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
-            except Exception as inner_e:
-                print(f"[Attempt {attempt}] json_fixer raised an exception:", inner_e)
-                del clean_resp
-                gc.collect()
 
-            if attempt < max_retries:
-                print(f"Retrying director_node... (attempt {attempt+1})")
-                continue
-            else:
-                print("All retries exhausted for director_node; falling back to raw response and END.")
-                scenario = clean_resp if 'clean_resp' in locals() else "Error generating instructions"
-                action = "END"
-        
+                print(f"[Attempt {attempt}] First-pass validation failed:", exc)
+
+                # json_fixer attempt
+                try:
+                    fixed_resp = await StoryHelpers._json_fixer(clean_resp)
+                    fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
+                    if isinstance(fixed_clean, dict):
+                        fixed_clean = json.dumps(fixed_clean)
+
+                    success, result, exc = StoryHelpers._try_validate_with_model_then_parser(
+                        fixed_clean, DirectorOutput, director_parser
+                    )
+                    del fixed_clean, fixed_resp
+                    gc.collect()
+                    if success:
+                        scenario = {
+                            "chapter_plan": result.get("chapter_plan", None)
+                        }
+                        action = result.get("action", "END")
+                        break
+
+
+                    print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
+                except Exception as inner_e:
+                    print(f"[Attempt {attempt}] json_fixer raised an exception:", inner_e)
+                    del clean_resp
+                    gc.collect()
+
+                if attempt < max_retries:
+                    print(f"Retrying director_node... (attempt {attempt+1})")
+                    continue
+                else:
+                    print("All retries exhausted for director_node; falling back to raw response and END.")
+                    scenario = clean_resp if 'clean_resp' in locals() else "Error generating instructions"
+                    action = "END"
+            
+            await self.memory.add_long_term_document(text=scenario, metadata={"chapter_id": state.current_chapter_id ,"type":"chapter_plan", "story_title": state.story_title})
+
+        else:
+            action = "generate_and_ingest"
+            scenario = await self.memory.get_long_term_document(metadata={"type":'chapter_plan', "chapter_id":state.current_chapter_id, "story_title": state.story_title})
+
         # Clean up variables
         if 'clean_resp' in locals():
             del clean_resp
@@ -574,16 +618,18 @@ class DirectorGraph:
          #   action = "DEBUG"  # DEBUGGING Code
 
         # finalize and return
-        messages = state.messages or []
-        messages.append(AIMessage(content=scenario))
+        # messages = state.messages or []
+        # messages.append(AIMessage(content=scenario))
 
         return {
-            "messages": messages,
+            #"messages": messages,
             "scene_id": state.scene_id,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
-            "next_action": "generate_and_ingest" if action == "generate_and_ingest" else "END",
+            "chapter_plan": scenario.get("chapter_plan") if isinstance(scenario, dict) else None,
+            "next_action": action if action == "generate_and_ingest" else "END",
         }
+
 
     # inside DirectorGraph class
     async def run(self, scene_chunk_callback, stop_event: asyncio.Event | None = None):
@@ -594,7 +640,7 @@ class DirectorGraph:
         try:
             # Load story progress
             story_progress = await self.memory.get_story_progress()
-
+            self.llm_temp = story_progress.get("tone_temp", 0.7) if story_progress else 0.7
             if story_progress:
                 initialized_state = StoryState(
                     current_chapter_id=story_progress.get("latest_chapter_id", 1),

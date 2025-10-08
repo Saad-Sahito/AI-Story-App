@@ -42,21 +42,21 @@ class StoryMemorySystem:
                 )
             return self._long_term_story
 
-    async def long_term_characters(self):
+    async def long_term_characters_raw(self):
         async with self._lock:
             if self._long_term_characters is None:
                 self._long_term_characters = await get_sqlite_store(
-                    table="characters",
+                    table="characters_raw",
                     user_id=self.user_id,
                     story_id=self.story_id,
                 )
             return self._long_term_characters
 
-    async def long_term_worlds(self):
+    async def long_term_worlds_raw(self):
         async with self._lock:
             if self._long_term_worlds is None:
                 self._long_term_worlds = await get_sqlite_store(
-                    table="world_elements",
+                    table="world_elements_raw",
                     user_id=self.user_id,
                     story_id=self.story_id,
                 )
@@ -153,31 +153,46 @@ class StoryMemorySystem:
     async def add_story_summary(self, summary: str, metadata: dict = None):
         await self.episodic_story.put(summary, metadata=metadata or {})
 
-    async def add_character_summary(self, summary: Dict[str, str], metadata: dict[str, int] = None):
+    async def add_character_summary(self, summary: Dict[str, dict], metadata: dict[str, Any] = None):
         await self.episodic_characters.put_dict_replace_character(
             data=summary, metadata=metadata or {}
         )
 
-    async def add_world_summary(self, summary: Dict[str, str], metadata: dict[str, int] = None):
+    async def add_world_summary(self, summary: Dict[str, dict], metadata: dict[str, Any] = None):
         await self.episodic_worlds.put_dict_replace_world(data=summary, metadata=metadata or {})
-
-    async def search_episodic(self, query: str, metadata: dict = None, k: int = 5):
+    
+    # ---------- Episodic search methods ----------
+    async def search_episodic_scene(self, query: str, metadata: dict = None, k: int = 5):
         return {
-            "story": await self.episodic_story.search(query, metadata=metadata, k=k),
+            #"story": await self.episodic_story.search(query, metadata=metadata, k=k),
             "characters": await self.episodic_characters.search(query, metadata=metadata, k=k),
-            "world": await self.episodic_worlds.search(query, metadata=metadata, k=k),
+            "worlds": await self.episodic_worlds.search(query, metadata=metadata, k=k),
         }
-
-    async def search_episodic_story_summary(self, chapter_number):
-        hits = await self.episodic_story.get_chapter_content(chapter_number=chapter_number)
+    
+    async def search_episodic_chapter(self, query: str, metadata: dict = None, k: int = 5):
+        hits = await self.episodic_story.search(query, metadata=metadata, k=k)
         return "\n".join(hits)
 
-    async def get_context_for_scene(self, current_chapter_number, query: str, k: int = 10):
-        episodic_raw = await self.search_episodic(
+    async def search_episodic_scene_summary(self, chapter_number, summary_type = "scene summary"):
+        hits = await self.episodic_story.get_chapter_content(metadata={"chapter_number":chapter_number, "type": summary_type})
+        return "\n".join(hits)
+
+    async def get_char_world_context_for_scene(self, current_chapter_number, query: str, k: int = 10):
+        episodic_raw = await self.search_episodic_scene(
             query, metadata={"chapter_id": current_chapter_number}, k=k
         )
         return episodic_raw
 
+    async def get_director_context(self, current_chapter_number, query: str, k: int = 5):
+        char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, k)
+        chapters_context = await self.search_episodic_chapter(
+            query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
+        )
+        return {
+            "characters": char_world_context.get("characters", []),
+            "worlds": char_world_context.get("worlds", []),
+            "chapters": chapters_context}
+    
     # ---------- Long-Term (SQLite) operations ----------
     async def add_story_scene_cluster(self, text: list, metadata: dict[str, Any] = None):
         store = await self.long_term_story()
@@ -185,11 +200,11 @@ class StoryMemorySystem:
             await store.put_text(entry, metadata=metadata or {})
 
     async def add_character_detail(self, scene_bundle, metadata):
-        store = await self.long_term_characters()
+        store = await self.long_term_characters_raw()
         await store.put_characters_or_world(details_dict=scene_bundle, metadata=metadata or {})
 
     async def add_world_detail(self, scene_bundle, metadata):
-        store = await self.long_term_worlds()
+        store = await self.long_term_worlds_raw()
         await store.put_characters_or_world(details_dict=scene_bundle, metadata=metadata or {})
 
     async def get_story_cluster(self, chapter_id):
@@ -197,28 +212,46 @@ class StoryMemorySystem:
         return await store.get_text(chapter_id)
 
     async def get_long_term_characters(self):
-        store = await self.long_term_characters()
+        store = await self.long_term_characters_raw()
         return await store.get_all_characters_or_worlds()
 
     async def get_long_term_worlds(self):
-        store = await self.long_term_worlds()
+        store = await self.long_term_worlds_raw()
         return await store.get_all_characters_or_worlds()
 
     # ---------- Director Docs (Long-Term) ----------
-    async def add_long_term_document(self, text: str, metadata: dict = None):
+    async def add_long_term_document(self, text: Any, metadata: dict = None):
+        """
+        Saves a long-term document (e.g. director note, outline, or chapter plan)
+        into the long-term memory store.
+        """
         store = await self.long_term_docs()
-        # For director notes, we'll store text directly as an entry
-        await store.put_text({"content": text}, metadata=metadata or {})
+        
+        # For director notes, the entry can be a string or dict
+        await store.put_to_director_notes(entry=text, metadata=metadata or {})
 
-    async def get_long_term_document(self, name: str) -> str:
+    async def get_long_term_document(self, metadata: dict):
+        """
+        Retrieves a long-term document from the store, filtered by metadata fields
+        (e.g., chapter_id, type, story_title).
+        Returns either the stored text (string) or the last item if multiple.
+        """
         store = await self.long_term_docs()
-        docs = await store.get_text(name)  # Use name as chapter_id
-        if docs:
-            # Assuming it's stored as [{"content": "..."}], return the last one's content
-            last_doc = docs[-1] if isinstance(docs, list) else docs
-            if isinstance(last_doc, dict):
-                return last_doc.get("content", "")
-        return ""
+        docs = await store.get_from_director_notes(metadata)
+
+        if not docs:
+            return ""
+
+        # If stored as a list of dicts
+        if isinstance(docs, list):
+            return docs
+
+        # If it's a single dict
+        if isinstance(docs, dict):
+            return docs.get("content") or docs.get("text") or str(docs)
+
+        # If it's just raw text
+        return str(docs)
 
     # ----------- Story Progress (Long-Term) ----------
     async def update_story_progress(self, metadata: dict = None):
@@ -238,15 +271,15 @@ class StoryMemorySystem:
         if scene_bundle.get("world_details"):
             await self.add_world_detail(scene_bundle["world_details"], metadata)
 
-    async def add_post_chapter_bundle(self, parts: Dict[str, Dict], metadata: Dict[str, int]):
+    async def add_post_chapter_bundle(self, parts: Dict[str, Dict], metadata: Dict[str, Any]):
+        if parts.get("summary"):
+            await self.add_story_summary(parts["summary"], metadata={metadata.get("chapter_id", "None"): metadata.get("chapter_id", 0), "type": "chapter summary"})
         if parts.get("character_summary"):
             await self.add_character_summary(parts["character_summary"], metadata)
         if parts.get("world_summary"):
             await self.add_world_summary(parts["world_summary"], metadata)
 
-    async def get_director_context(self, current_chapter_number, query: str, k: int = 5):
-        return await self.get_context_for_scene(current_chapter_number, query, k)
-
+    # ---------- Cleanup ----------
     async def close(self):
         """Close all storage connections."""
         for attr in [

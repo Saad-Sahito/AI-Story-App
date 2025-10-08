@@ -57,7 +57,7 @@ class StoryHelpers:
         return str(resp)
 
     @staticmethod
-    def _coerce_character_world_field(val: Any) -> Dict[str, str]:
+    def _coerce_character_world_field(val: Any) -> Dict[str, Any]:
         """
         Convert a variety of shapes into Dict[str,str]:
         - dict with non-str values => stringify values
