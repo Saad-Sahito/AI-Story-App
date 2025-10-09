@@ -153,11 +153,17 @@ class SharedScenePlannerService:
         print(f"🔍 DEBUG: ScenePlanner node for user_context_id={state.user_context_id}")
         scene_memory: SceneMemory = state.scene_memory
         system_prompt = (
-            "You are the Scene Planner Agent. Your job is to review the scene so far and determine "
-            "if all events in the Director's Instructions have been covered. "
-            "Return JSON with a single field 'action' set to 'Complete' if all events are covered, "
-            "or 'Not Complete' otherwise."
+            "You are the Scene Planner Agent. Your job is to evaluate the current scene text "
+            "against the Director's Scene Plan and determine if all required scene events and emotional beats "
+            "have been addressed.\n\n"
+            "You are checking *only* this specific scene — do not consider the overall chapter closure condition "
+            "or story-wide goals.\n\n"
+            "Return a JSON object with a single field 'action':\n"
+            "- 'Complete' if all events and emotional beats from the Scene Plan have been sufficiently covered in the scene text.\n"
+            "- 'Not Complete' if any required events or beats are missing or incomplete.\n\n"
+            "Do not include any explanations or extra fields in your response — just the JSON."
         )
+
 
         human_prompt = (
             f"Director's Instructions: {scene_memory.DirectorInstructions}\n"
@@ -214,13 +220,21 @@ class SharedScenePlannerService:
         user_context_id = state.user_context_id
         
         system_prompt = (
-            "You are the Scene Writer Agent. Write one paragraph continuing the scene based on the Director's Instructions. "
-            #"The scene blueprint that you need to follow strictly for this scene. "
-            "You do not know anything beyond what the Director tells you, so be sure to include all relevant context in your writing. "
-            #"Write in a vivid, engaging style, with rich descriptions and immersive details. "
-            "Do not make up any new characters or worlds that the Director has not mentioned. "
-            "Do not repeat the entire scene so far, only continue it with one new paragraph. "
+            "You are the Scene Writer Agent. Your job is to write a single, coherent paragraph of story text "
+            "that realizes the provided Scene Plan exactly as written. The Scene Plan already contains all context "
+            "you need: its goal, tone, emotional beats, thematic notes, location, time context, and chapter purpose. "
+            "\n\n"
+            "⚙️ RULES:\n"
+            "- Treat the Scene Plan as the complete truth. Do not invent new events, characters, or locations beyond it.\n"
+            "- Stay consistent with the listed emotional and thematic intentions.\n"
+            "- Write naturally and vividly, but do not contradict or exceed the blueprint.\n"
+            "- If the Scene Plan contains a chapter closure condition, ensure the writing naturally builds toward it without resolving it early.\n"
+            "- Never summarize or restate the plan—write story prose only.\n"
+            "- Write ONE paragraph only. Do not continue beyond that.\n"
+            "- Keep it appropriate for all ages.\n\n"
+            "The goal is to bring the Scene Plan to life faithfully and clearly, as though you are animating its blueprint with vivid storytelling."
         )
+
 
         max_scene_length = 2500  # Reduced for memory efficiency
         truncated_scene = scene_memory.scene_so_far[-max_scene_length:] if len(scene_memory.scene_so_far) > max_scene_length else scene_memory.scene_so_far

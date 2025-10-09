@@ -135,8 +135,8 @@ class SQLiteStore:
             # Create indexes for better performance
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_user_tag ON users(user_tag)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_texts_user_story ON story_texts(user_id, story_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_story ON characters(user_id, story_id)")
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_world_elements_user_story ON world_elements(user_id, story_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_story ON characters_raw(user_id, story_id)")
+            await conn.execute("CREATE INDEX IF NOT EXISTS idx_world_elements_user_story ON world_elements_raw(user_id, story_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_director_notes_user_story ON director_notes(user_id, story_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_progress_user_story ON story_progress(user_id, story_id)")
             
@@ -422,43 +422,78 @@ class SQLiteStore:
 
                 await conn.commit()
 
-
     async def put_progress(self, metadata: Optional[Dict[str, Any]] = None):
-        """Insert or update story progress."""
+        """Insert or update story progress while preserving existing metadata values."""
         metadata = metadata or {}
         chapter_id = metadata.get("latest_chapter_id")
         scene_id = metadata.get("continue_scene_id")
         word_count = metadata.get("word_count", 0)
-        story_title = metadata.get("story_title", None)
-        tone_temp = metadata.get("tone_temp", None)
-        
-        clean_meta = {
-            "chapter_id": chapter_id,
-            "scene_id": scene_id,
-            "word_count": word_count,
-            "story_title": story_title,
-            "tone_temp": tone_temp
-        }
-        
+        story_title = metadata.get("story_title")
+        tone_temp = metadata.get("tone_temp")
+
         async with self._get_connection() as conn:
-            await conn.execute("""
-                INSERT INTO story_progress (user_id, story_id, latest_chapter_id, continue_scene_id, word_count, metadata)
-                VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(user_id, story_id) DO UPDATE SET
-                latest_chapter_id = excluded.latest_chapter_id,
-                continue_scene_id = excluded.continue_scene_id,
-                word_count = excluded.word_count,
-                metadata = excluded.metadata,
-                updated_at = CURRENT_TIMESTAMP
-            """, (
-                self.user_id,
-                self.story_id,
-                int(chapter_id) if chapter_id is not None else None,
-                int(scene_id) if scene_id is not None else None,
-                word_count,
-                json.dumps(clean_meta)
-            ))
+            cursor = await conn.execute("""
+                SELECT metadata, latest_chapter_id, continue_scene_id, word_count
+                FROM story_progress
+                WHERE user_id = ? AND story_id = ?
+            """, (self.user_id, self.story_id))
+
+            existing_row = await cursor.fetchone()
+
+            if existing_row:
+                existing_meta = json.loads(existing_row[0] or "{}")
+
+                # Merge old metadata with new (only overwrite if new value is not None)
+                merged_meta = {
+                    "chapter_id": chapter_id if chapter_id is not None else existing_meta.get("chapter_id"),
+                    "scene_id": scene_id if scene_id is not None else existing_meta.get("scene_id"),
+                    "word_count": word_count if word_count != 0 else existing_meta.get("word_count", 0),
+                    "story_title": story_title if story_title is not None else existing_meta.get("story_title"),
+                    "tone_temp": tone_temp if tone_temp is not None else existing_meta.get("tone_temp"),
+                }
+
+                await conn.execute("""
+                    UPDATE story_progress
+                    SET latest_chapter_id = ?,
+                        continue_scene_id = ?,
+                        word_count = ?,
+                        metadata = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND story_id = ?
+                """, (
+                    merged_meta["chapter_id"],
+                    merged_meta["scene_id"],
+                    merged_meta["word_count"],
+                    json.dumps(merged_meta),
+                    self.user_id,
+                    self.story_id
+                ))
+
+            else:
+                # No existing record — insert new
+                clean_meta = {
+                    "chapter_id": chapter_id,
+                    "scene_id": scene_id,
+                    "word_count": word_count,
+                    "story_title": story_title,
+                    "tone_temp": tone_temp
+                }
+
+                await conn.execute("""
+                    INSERT INTO story_progress (
+                        user_id, story_id, latest_chapter_id, continue_scene_id, word_count, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?)
+                """, (
+                    self.user_id,
+                    self.story_id,
+                    chapter_id,
+                    scene_id,
+                    word_count,
+                    json.dumps(clean_meta)
+                ))
+
             await conn.commit()
+
 
 
     async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):

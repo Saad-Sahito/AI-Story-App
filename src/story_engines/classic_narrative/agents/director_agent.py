@@ -29,39 +29,37 @@ class StoryState:
 
 class ScenePlan(BaseModel):
     scene_id: str = Field(..., description="Unique identifier for the scene")
-    scene_goal: str = Field(..., description="Immediate purpose of the scene (e.g., introduce antagonist)")
-    main_characters: List[str] = Field(..., description="List of characters involved in the scene")
-    location: str = Field(..., description="Where the scene takes place")
-    time_context: str = Field(..., description="When or under what condition the scene occurs (e.g., night, dream)")
-    key_events: List[str] = Field(..., description="Bullet points describing key narrative events")
-    emotional_beats: List[str] = Field(..., description="Target emotional moods (e.g., fear, doubt, resolve)")
-    thematic_notes: List[str] = Field(..., description="How the scene ties into the story's core themes")
-
-class ChapterPlan(BaseModel):
     chapter_number: int = Field(..., description="Sequential chapter index")
-    chapter_title: str = Field(..., description="Title or label of the chapter")
+    chapter_title: str = Field(..., description="Title or label of the chapter this scene belongs to")
     narrative_purpose: str = Field(
         ...,
-        description="Summary of what this chapter accomplishes (e.g., 'Hero begins questioning his loyalty.')"
+        description="What this chapter is meant to accomplish in the overall story (e.g., 'Hero begins questioning loyalty.')"
     )
     emotional_arc: str = Field(
         ...,
-        description="Description of emotional tone progression (e.g., 'tense → sorrowful → hopeful')"
+        description="The emotional tone progression of this chapter (e.g., 'tense → sorrowful → hopeful')"
     )
-    scenes: List[ScenePlan] = Field(..., description="List of perfectly planned scenes in this chapter, each scene should be so detailed " \
-    "that a scene writer can plan the scene text directly from it. The scene writer will not have any other context except the particular scene plan given to it.")
     chapter_closure_condition: str = Field(
         ...,
-        description="Criteria for considering the chapter complete (e.g., 'Protagonist achieves escape.')"
+        description="Condition for chapter resolution (e.g., 'Protagonist escapes the city.')"
     )
 
+    # Scene-specific
+    scene_goal: str = Field(..., description="Immediate purpose of the scene (e.g., introduce antagonist)")
+    main_characters: List[str] = Field(..., description="List of main characters appearing in this scene")
+    location: str = Field(..., description="Where the scene takes place")
+    time_context: str = Field(..., description="When or under what condition the scene occurs (e.g., night, dream sequence)")
+    key_events: List[str] = Field(..., description="List of key narrative events that must occur in this scene")
+    emotional_beats: List[str] = Field(..., description="Target emotional moods or beats (e.g., fear, doubt, resolve)")
+    thematic_notes: List[str] = Field(..., description="How this scene reinforces the story's themes")
+
 class DirectorOutput(BaseModel):
-    chapter_plan: Optional[ChapterPlan] = Field(
-        None,
-        description="Structured chapter plan describing scenes, arcs, and emotional flow. Required for chapter planning stages."
+    scenes: List[ScenePlan] = Field(
+        ...,
+        description="List of detailed scene plans, each containing full contextual information for the scene writer."
     )
     action: Literal["generate_and_ingest", "END"] = Field(
-        description="Action to take after instructions. 'generate_and_ingest' continues to scene generation; 'END' stops the story."
+        description="Action to take after generating all scenes for the current chapter."
     )
 
 director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
@@ -223,18 +221,46 @@ class Ingestor:
         char_details = await self.memory.get_long_term_characters()
 
         system_prompt = f"""
-        You are the Chapter Breakdown Agent. Your task is to analyze the full chapter content, 
-        along with detailed character and world information, and produce a structured breakdown.
+You are the **Chapter Breakdown Agent**.
 
-        Follow these steps:
-        1. Write a detailed textual summary of the chapter under 'summary'.
-        2. For each character listed under "Character Details", produce a structured object with fields mentioned below:
-        3. For each world element listed under "World Details", produce a structured object with fields mentioned below:
-        4. Always use exact character and world names as given in the input.
+Your job:
+Analyze the *entire chapter text* and generate a structured breakdown summarizing story events,
+character developments, and world details.
 
-        Return output strictly as a JSON object matching this structure:
-        {chapter_parser.get_format_instructions()}
-        """
+---
+
+### 🔧 Instructions
+1. Produce a detailed **chapter summary** under the field `"summary"`.
+2. For each **character** listed in "Character Details", output a structured object using **exactly** the following fields:
+   - name
+   - chapter_id
+   - summary
+   - traits
+   - relationships
+   - emotional_state
+   - goals
+   - status_changes
+3. For each **world element** listed in "World Details", output a structured object using **exactly** the following fields:
+   - name
+   - chapter_id
+   - summary
+   - atmosphere
+   - culture
+   - events
+   - connections
+4. Always preserve **exact names** and **only use information provided in the input**.
+5. Do **not** add commentary, markdown, explanations, or text outside the JSON.
+
+---
+
+### ⚙️ Output Format
+Return output **strictly as a JSON object** that conforms exactly to this schema:
+
+{chapter_parser.get_format_instructions()}
+
+The output **must be valid JSON**, not inside code fences, with no trailing commas or text before/after.
+"""
+
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}
@@ -391,6 +417,9 @@ class DirectorGraph:
 
         for scene in state.chapter_plan.scenes:
             # 🧱 Prepare scene input
+            if scene.scene_id != state.scene_id:
+                print(f"Skipping scene {scene.scene_id}, already completed.")
+                continue  # skip already completed scenes
             director_instructions = json.dumps(scene.model_dump(), indent=2)
             state.scene_id = scene.scene_id
             print(f"\n🎞️ Running Scene {scene.scene_id} | Goal: {scene.scene_goal}")
@@ -502,7 +531,7 @@ You are the **Director Agent**, responsible for orchestrating each chapter of th
 You receive the **Story Bible** created by the Story Author Agent, which defines the world, characters, tone, and story structure.  
 You also receive context from the memory system describing **previous chapters**, character developments, and world state.
 
-Your task is to **plan the next chapter** by:
+Your task is to **plan this chapter** by:
 - Determining what happens next according to the story bible and previous events.
 - Outlining a set of coherent **scenes** that can be handed to the Scene Writer.
 - Keeping tone, POV, and prose consistent with the Story Author's style guide.
@@ -533,19 +562,20 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
             k=5
         )
         context = (
-            f"Story Bible: {await self.memory.get_long_term_document(metadata={"type":"story_premise", "story_title": state.story_title})}\n"
+            f"Story Bible: {await self.memory.get_long_term_document(metadata={'type': 'story_premise', 'story_title': state.story_title})}\n"
             f"Relevant Chapter Context: {director_context}\n"
             f"Chapter Number: {state.current_chapter_id}\n"
-            #f"Scene Number: {state.scene_id}\n"
-            #f"Summary of Current Chapter So Far: {self.current_chap_summary}\n"
         )
+
         
         print("CONTEXT TO DIRECTOR:", context)
         human_prompt = context
         
         max_retries = 3
-        scenario, action = None, None
-        if state.scene_id == 1:
+        action = None
+        scenario = await self.memory.get_long_term_document(metadata={"type":'chapter_plan', "chapter_id":state.current_chapter_id, "story_title": state.story_title})
+
+        if scenario == "":
             for attempt in range(1, max_retries + 1):
                 resp = await groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp)
                 raw_text = StoryHelpers._extract_content(resp)
@@ -602,25 +632,18 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
                     scenario = clean_resp if 'clean_resp' in locals() else "Error generating instructions"
                     action = "END"
             
-            await self.memory.add_long_term_document(text=scenario, metadata={"chapter_id": state.current_chapter_id ,"type":"chapter_plan", "story_title": state.story_title})
-
+            await self.memory.add_long_term_document(text=scenario, metadata={"chapter_id": state.current_chapter_id ,"type": "chapter_plan", "story_title": state.story_title})
         else:
             action = "generate_and_ingest"
-            scenario = await self.memory.get_long_term_document(metadata={"type":'chapter_plan', "chapter_id":state.current_chapter_id, "story_title": state.story_title})
 
         # Clean up variables
         if 'clean_resp' in locals():
             del clean_resp
-        del system_prompt, human_prompt
+        del system_prompt, human_prompt, scenario
         gc.collect()
         
         #if state.scene_id == 2:  # DEBUGGING Code
          #   action = "DEBUG"  # DEBUGGING Code
-
-        # finalize and return
-        # messages = state.messages or []
-        # messages.append(AIMessage(content=scenario))
-
         return {
             #"messages": messages,
             "scene_id": state.scene_id,

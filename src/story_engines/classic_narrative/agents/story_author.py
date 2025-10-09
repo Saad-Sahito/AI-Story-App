@@ -10,8 +10,8 @@ class StoryAuthor:
 
     async def set_story_premise(self, user_context: str, story_title: str) -> str:
         print("Setting story Premise...")
-        if not await self.memory.get_long_term_document(name="story_user_context"):
-            await self.memory.add_long_term_document(text=user_context, metadata={"chapter_id":"story_user_context"})
+        if not await self.memory.get_long_term_document(metadata={"type":"story_user_context", "story_title": story_title}):
+            await self.memory.add_long_term_document(text=user_context, metadata={"type":"story_user_context", "story_title": story_title})
             detailed_premise = await groq_client(system_prompt = """
 You are the **Story Author Agent**, a master worldbuilder and narrative architect.
 
@@ -107,7 +107,7 @@ Now begin creating the story bible given the user’s context.
             detailed_premise = detailed_premise.content.strip()
             await self.memory.add_long_term_document(text=detailed_premise, metadata={"type":"story_premise", "story_title": story_title})
         else:
-            detailed_premise = await self.memory.get_long_term_document(name="story_premise")
+            detailed_premise = await self.memory.get_long_term_document(metadata={"type":"story_premise", "story_title": story_title})
             #detailed_premise = detailed_premise["text"]
 
         try:
