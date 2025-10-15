@@ -3,7 +3,7 @@
 import json
 import asyncio
 import gc
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from langgraph.graph import StateGraph, END
 #from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
@@ -24,11 +24,11 @@ class StoryState:
     story_title: str = "None"
     word_count: int = 0
     #messages: List[Any] = field(default_factory=list)
-    chapter_plan: Optional[List[Dict[str, Any]]] = field(default_factory=list)
+    chapter_plan: Optional[Dict[str, Any]] = field(default_factory=dict)
     next_action: str = ""
 
 class ScenePlan(BaseModel):
-    scene_id: str = Field(..., description="Unique identifier for the scene")
+    scene_id: int = Field(..., description="Unique identifier for the scene, it should be labeled sequentially starting from 1")
     chapter_number: int = Field(..., description="Sequential chapter index")
     chapter_title: str = Field(..., description="Title or label of the chapter this scene belongs to")
     narrative_purpose: str = Field(
@@ -52,6 +52,8 @@ class ScenePlan(BaseModel):
     key_events: List[str] = Field(..., description="List of key narrative events that must occur in this scene")
     emotional_beats: List[str] = Field(..., description="Target emotional moods or beats (e.g., fear, doubt, resolve)")
     thematic_notes: List[str] = Field(..., description="How this scene reinforces the story's themes")
+    word_count: str = Field(..., description="Approximate word count target for the scene")
+
 
 class DirectorOutput(BaseModel):
     scenes: List[ScenePlan] = Field(
@@ -94,7 +96,7 @@ class WorldElementMemory(BaseModel):
     atmosphere: Optional[str] = Field(None, description="Mood or tone of this location or environment.")
     culture: Optional[str] = Field(None, description="Cultural or societal information revealed upto this chapter.")
     events: Optional[str] = Field(None, description="Notable events or changes affecting this location.")
-    connections: Dict[str, str] = Field(default_factory=dict, description="Links or relations to other world elements or characters.")
+    connections: Union[Dict[str, str], str] = Field(default_factory=dict, description="Links or relations to other world elements or characters.")
 
 class ChapterBundle(BaseModel):
     summary: str = Field(description="Detailed summary of the entire chapter.")
@@ -116,13 +118,16 @@ class Ingestor:
         """Ingest scene text and extract structured JSON using schema + parser."""
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
-        system_prompt = "You are the Scene Breakdown Agent. Extract structured info from the scene. " \
-        "Always include chapter and scene id in character and world details, in order to keep track later. " \
-        "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, " \
-        "if any need to be changed then create new entry for that entity mentioning previous name in the new entry, " \
-        "if not present then create new names as needed."
-        "Respond ONLY in JSON with this schema:"
-        f"{scene_parser.get_format_instructions()}"
+        system_prompt = f"""
+You are the Scene Breakdown Agent. Extract structured info from the scene.
+Always include chapter and scene id inside individual character and world details within the details, in order to keep track later.
+Make sure the character and world names are exactly as the keys presented to you under Character and World Names.
+If any need to be changed, create a new entry mentioning the previous name in the new entry.
+If not present, create new names as needed.
+
+Respond ONLY in JSON with this schema:
+{scene_parser.get_format_instructions()}
+"""
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
@@ -404,7 +409,14 @@ class DirectorGraph:
         if scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
             raise RuntimeError("❌ CLASSIC_SCENE_PLANNER_SERVICE is None!")
 
-        if not state.chapter_plan or not state.chapter_plan.scenes:
+        # ✅ FIX: Check if chapter_plan is a list or dict, handle both cases
+        scenes_list = []
+        if isinstance(state.chapter_plan, list):
+            scenes_list = state.chapter_plan
+        elif isinstance(state.chapter_plan, dict):
+            scenes_list = state.chapter_plan.get("scenes", [])
+        
+        if not scenes_list:
             print("⚠️ No valid chapter plan or scenes found.")
             return
 
@@ -415,7 +427,13 @@ class DirectorGraph:
         except Exception as e:
             print(f"⚠️ Could not initialize Redis client early: {e}")
 
-        for scene in state.chapter_plan.scenes:
+        for scene_dict in scenes_list:
+            # ✅ FIX: Convert dict to ScenePlan object if needed
+            if isinstance(scene_dict, dict):
+                scene = ScenePlan(**scene_dict)
+            else:
+                scene = scene_dict
+                
             # 🧱 Prepare scene input
             if scene.scene_id != state.scene_id:
                 print(f"Skipping scene {scene.scene_id}, already completed.")
@@ -434,85 +452,115 @@ class DirectorGraph:
 
             # ⚡ Async call — never use asyncio.run() inside an async def
             print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-            scene_text, scene_cluster = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
-                user_context=user_context, 
+            scene_text, scene_cluster, status = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
+                user_context=user_context,
                 stop_event=self.stop_event,
                 llm_temp=self.llm_temp
             )
 
-            del user_context
-            gc.collect()
+            if status == "CANCELLED":
+                # 🛑 Scene generation was cancelled by user or system
+                # Add your cleanup or UI update logic here
+                pass
 
-            # 🧠 Handle post-scene user choice
-            if redis_client:
+            elif status.startswith("FATAL:"):
+                status_payload = { "type": "status", "FATAL": status }
                 try:
-                    queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
-                    resume_payload = {"type": "save"}
-                    try:
-                        self.scene_chunk_callback(resume_payload)
-                    except Exception as e:
-                        print(f"⚠️ scene_chunk_callback raised: {e}")
-
-                    user_choice = False
-                    for _ in range(5000):
-                        choice = await redis_client.lpop(queue_key)
-                        if choice in (b"1", "1", 1):
-                            user_choice = True
-                            print("✅ User chose to continue")
-                            break
-                        elif choice is not None:
-                            print(f"🛑 User chose not to continue ({choice})")
-                            break
-                        await asyncio.sleep(1.0)
-
-                    if not user_choice:
-                        print("🛑 Ending story after this scene per user choice")
-                        return {
-                            "scene_id": state.scene_id,
-                            "current_chapter_id": state.current_chapter_id,
-                            "word_count": state.word_count,
-                            "next_action": "END",
-                        }
-
+                    self.scene_chunk_callback(status_payload)
                 except Exception as e:
-                    print(f"⚠️ Redis handling error: {e}")
+                    print(f"⚠️ scene_chunk_callback raised: {e}")
+                continue
 
-            # 📚 Ingest the scene into memory
-            ingestor = Ingestor(self.memory)
-            scene_bundle = await ingestor.ingest_scene(state, scene_text, self.llm_temp)
-            del ingestor
-            gc.collect()
+            elif status.startswith("EXCEPTION:"):
+                status_payload = { "type": "status", "EXCEPTION": status }
+                try:
+                    self.scene_chunk_callback(status_payload)
+                except Exception as e:
+                    print(f"⚠️ scene_chunk_callback raised: {e}")
+                continue  # repeat scene
 
-            await self.memory.add_story_scene_cluster(
-                text=scene_cluster,
-                metadata={
-                    "chapter_id": state.current_chapter_id,
-                    "story_title": state.story_title,
-                    "scene_id": state.scene_id,
+            elif status == "SUCCESS":
+                del user_context
+                gc.collect()
+
+                # 🧠 Handle post-scene user choice
+                if redis_client:
+                    try:
+                        queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+                        resume_payload = {"type": "save"}
+                        try:
+                            self.scene_chunk_callback(resume_payload)
+                        except Exception as e:
+                            print(f"⚠️ scene_chunk_callback raised: {e}")
+
+                        user_choice = False
+                        for _ in range(5000):
+                            choice = await redis_client.lpop(queue_key)
+                            if choice in (b"1", "1", 1):
+                                user_choice = True
+                                print("✅ User chose to continue")
+                                break
+                            elif choice is not None:
+                                print(f"🛑 User chose not to continue ({choice})")
+                                break
+                            await asyncio.sleep(1.0)
+
+                        if not user_choice:
+                            print("🛑 Ending story after this scene per user choice")
+                            return {
+                                "scene_id": state.scene_id,
+                                "current_chapter_id": state.current_chapter_id,
+                                "word_count": state.word_count,
+                                "next_action": "END",
+                            }
+
+                    except Exception as e:
+                        print(f"⚠️ Redis handling error: {e}")
+
+                # 📚 Ingest the scene into memory
+                ingestor = Ingestor(self.memory)
+                scene_bundle = await ingestor.ingest_scene(state, scene_text, self.llm_temp)
+                del ingestor
+                gc.collect()
+
+                await self.memory.add_story_scene_cluster(
+                    text=scene_cluster,
+                    metadata={
+                        "chapter_id": state.current_chapter_id,
+                        "story_title": state.story_title,
+                        "scene_id": state.scene_id,
+                        "word_count": state.word_count,
+                    }
+                )
+
+                await self.memory.add_post_scene_bundle(
+                    scene_bundle=scene_bundle,
+                    metadata={
+                        "scene_id": state.scene_id,
+                        "chapter_id": state.current_chapter_id,
+                        "story_title": state.story_title,
+                    }
+                )
+
+                del scene_bundle, scene_cluster, scene_text
+                gc.collect()
+
+                # After all scenes are done, return updated state
+                return {
+                    "scene_id": state.scene_id + 1,
+                    "current_chapter_id": state.current_chapter_id,
                     "word_count": state.word_count,
+                    "next_action": "",
                 }
-            )
-
-            await self.memory.add_post_scene_bundle(
-                scene_bundle=scene_bundle,
-                metadata={
+        
+            else:
+                # ⚠️ Unknown status (fallback safeguard)
+                return {
                     "scene_id": state.scene_id,
-                    "chapter_id": state.current_chapter_id,
-                    "story_title": state.story_title,
+                    "current_chapter_id": state.current_chapter_id,
+                    "word_count": state.word_count,
+                    "next_action": "END",
                 }
-            )
-
-            del scene_bundle, scene_cluster, scene_text
-            gc.collect()
-
-        # ✅ After all scenes are done, return updated state
-        return {
-            "scene_id": state.scene_id + 1,
-            "current_chapter_id": state.current_chapter_id,
-            "word_count": state.word_count,
-            "next_action": "",  # let graph edge decide next step
-        }
-
     
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
@@ -568,14 +616,56 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
         )
 
         
-        print("CONTEXT TO DIRECTOR:", context)
+        #print("CONTEXT TO DIRECTOR:", context)
         human_prompt = context
         
         max_retries = 3
         action = None
         scenario = await self.memory.get_long_term_document(metadata={"type":'chapter_plan', "chapter_id":state.current_chapter_id, "story_title": state.story_title})
 
+            # ✅ FIX: Check if chapter plan exists AND if all scenes are complete
+        if scenario != "":
+            print(f"📋 Found existing chapter plan for chapter {state.current_chapter_id}")
+            
+            try:
+                # Parse the scenario
+                if isinstance(scenario, str):
+                    scenario_dict = json.loads(scenario)
+                else:
+                    scenario_dict = scenario
+                
+                chapter_plan_scenes = scenario_dict.get("chapter_plan", [])
+                
+                if chapter_plan_scenes and len(chapter_plan_scenes) > 0:
+                    # Find the highest scene_id in the plan
+                    max_scene_id = max(int(s.get("scene_id", 0)) for s in chapter_plan_scenes)
+                    
+                    print(f"🎬 Current scene_id: {state.scene_id}, Max scene in plan: {max_scene_id}")
+                    
+                    # ✅ If current scene_id is beyond the last scene in plan, chapter is done
+                    if state.scene_id > max_scene_id:
+                        print(f"✅ All scenes completed for chapter {state.current_chapter_id}. Moving to ingest_chapter.")
+                        action = "END"
+                        # Keep the scenario for returning in state
+                        scenario = scenario_dict
+                    else:
+                        print(f"▶️ Continuing with scene {state.scene_id}")
+                        action = "generate_and_ingest"
+                        scenario = scenario_dict
+                else:
+                    print("⚠️ Chapter plan exists but has no scenes. Regenerating...")
+                    scenario = ""
+                    
+            except Exception as e:
+                print(f"❌ Error parsing existing chapter plan: {e}")
+                import traceback
+                traceback.print_exc()
+                scenario = ""
+        
+        # Only generate new plan if scenario is empty
         if scenario == "":
+            print(f"🎭 Generating NEW chapter plan for chapter {state.current_chapter_id}")
+            
             for attempt in range(1, max_retries + 1):
                 resp = await groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp)
                 raw_text = StoryHelpers._extract_content(resp)
@@ -587,14 +677,15 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
 
                 # Try validate/parse and get dict back
                 success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, DirectorOutput, director_parser)
+                print(result)
                 if success:
-                    # 'result' is already a dict because of StoryHelpers
+                    # ✅ FIX: Use "scenes" field from DirectorOutput schema
                     scenario = {
-                        "chapter_plan": result.get("chapter_plan", None)
+                        "chapter_plan": result.get("scenes", [])
                     }
-                    action = result.get("action", "END")
+                    action = result.get("action", "generate_and_ingest")
+                    print(f"✅ Generated {len(scenario['chapter_plan'])} scenes for chapter {state.current_chapter_id}")
                     break
-
 
                 print(f"[Attempt {attempt}] First-pass validation failed:", exc)
 
@@ -612,11 +703,11 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
                     gc.collect()
                     if success:
                         scenario = {
-                            "chapter_plan": result.get("chapter_plan", None)
+                            "chapter_plan": result.get("scenes", [])
                         }
-                        action = result.get("action", "END")
+                        action = result.get("action", "generate_and_ingest")
+                        print(f"✅ Generated {len(scenario['chapter_plan'])} scenes for chapter {state.current_chapter_id}")
                         break
-
 
                     print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
                 except Exception as inner_e:
@@ -629,30 +720,32 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
                     continue
                 else:
                     print("All retries exhausted for director_node; falling back to raw response and END.")
-                    scenario = clean_resp if 'clean_resp' in locals() else "Error generating instructions"
+                    scenario = {"chapter_plan": []}
                     action = "END"
             
-            await self.memory.add_long_term_document(text=scenario, metadata={"chapter_id": state.current_chapter_id ,"type": "chapter_plan", "story_title": state.story_title})
-        else:
-            action = "generate_and_ingest"
+            # Save the newly generated plan
+            await self.memory.add_long_term_document(
+                text=json.dumps(scenario), 
+                metadata={
+                    "chapter_id": state.current_chapter_id,
+                    "type": "chapter_plan", 
+                    "story_title": state.story_title
+                }
+            )
 
         # Clean up variables
         if 'clean_resp' in locals():
             del clean_resp
-        del system_prompt, human_prompt, scenario
+        del system_prompt, human_prompt, context, director_context
         gc.collect()
         
-        #if state.scene_id == 2:  # DEBUGGING Code
-         #   action = "DEBUG"  # DEBUGGING Code
         return {
-            #"messages": messages,
             "scene_id": state.scene_id,
             "current_chapter_id": state.current_chapter_id,
             "word_count": state.word_count,
             "chapter_plan": scenario.get("chapter_plan") if isinstance(scenario, dict) else None,
-            "next_action": action if action == "generate_and_ingest" else "END",
+            "next_action": action,
         }
-
 
     # inside DirectorGraph class
     async def run(self, scene_chunk_callback, stop_event: asyncio.Event | None = None):
@@ -670,7 +763,6 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
                     scene_id=story_progress.get("continue_scene_id", 1),
                     story_title=story_progress.get("metadata", {}).get("story_title", "None"),
                     word_count=story_progress.get("word_count", 0),
-                    messages=[],
                     next_action=""
                 )
             else:

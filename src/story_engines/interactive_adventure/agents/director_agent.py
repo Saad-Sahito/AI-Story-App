@@ -2,12 +2,13 @@
 import asyncio
 import json
 import gc
-from typing import Any, Dict, List, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional, Union
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
+from streamlit import status
 
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
@@ -57,7 +58,7 @@ class WorldElementMemory(BaseModel):
     atmosphere: Optional[str] = Field(None, description="Mood or tone of this location or environment.")
     culture: Optional[str] = Field(None, description="Cultural or societal information revealed upto this chapter.")
     events: Optional[str] = Field(None, description="Notable events or changes affecting this location.")
-    connections: Dict[str, str] = Field(default_factory=dict, description="Links or relations to other world elements or characters.")
+    connections: Union[Dict[str, str], str] = Field(default_factory=dict, description="Links or relations to other world elements or characters.")
 
 class ChapterBundle(BaseModel):
     summary: str = Field(description="Detailed summary of the entire chapter.")
@@ -393,55 +394,85 @@ class DirectorGraph:
         )
         
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(
+        scene_text, scene_cluster, status = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(
             user_context=user_context, 
             stop_event=self.stop_event
         )
         print("✅ Scene generation complete.")
 
-        del user_context
-        gc.collect()
+        if status == "CANCELLED":
+            # 🛑 Scene generation was cancelled by user or system
+            # Add your cleanup or UI update logic here
+            pass
 
-        from setup.shared_redis_pool import get_redis_client
-        try:
-            # Try to find the user/session-level structures
-            redis_client = await get_redis_client()
-            queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
-
-            # Build callback payload
-            resume_payload = {
-                "type": "save"
-            }
+        elif status.startswith("FATAL:"):
+            status_payload = { "type": "status", "FATAL": status }
             try:
-                self.scene_chunk_callback(resume_payload)
+                self.scene_chunk_callback(status_payload)
             except Exception as e:
-                print(f"❌ ERROR: scene_chunk_callback raised: {e}")
-                import traceback; traceback.print_exc()
-
-            # Wait for user input from Redis List
+                print(f"⚠️ scene_chunk_callback raised: {e}")
+            
+        elif status.startswith("EXCEPTION:"):
+            status_payload = { "type": "status", "EXCEPTION": status }
             try:
-                user_choice = False
-                for _ in range(5000):
-                    choice = await redis_client.lpop(queue_key)
-                    if choice == b'1' or choice == 1 or choice == '1':  # ✅ Check both byte and int
-                        user_choice = True
-                        print("✅ User chose to save continue")
-                        break
-                    elif choice is not None:  # ✅ Got a response but not "1"
-                        break
-                    await asyncio.sleep(1.0)
-                
-                # ✅ FIX: Return dict with flag instead of END
-                if user_choice == False:
-                    print("🛑 User chose not to continue")
+                self.scene_chunk_callback(status_payload)
+            except Exception as e:
+                print(f"⚠️ scene_chunk_callback raised: {e}")
+            
+        elif status == "SUCCESS":
+            del user_context
+            gc.collect()
+
+            from setup.shared_redis_pool import get_redis_client
+            try:
+                # Try to find the user/session-level structures
+                redis_client = await get_redis_client()
+                queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+
+                # Build callback payload
+                resume_payload = {
+                    "type": "save"
+                }
+                try:
+                    self.scene_chunk_callback(resume_payload)
+                except Exception as e:
+                    print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+                    import traceback; traceback.print_exc()
+
+                # Wait for user input from Redis List
+                try:
+                    user_choice = False
+                    for _ in range(5000):
+                        choice = await redis_client.lpop(queue_key)
+                        if choice == b'1' or choice == 1 or choice == '1':  # ✅ Check both byte and int
+                            user_choice = True
+                            print("✅ User chose to save continue")
+                            break
+                        elif choice is not None:  # ✅ Got a response but not "1"
+                            break
+                        await asyncio.sleep(1.0)
+                    
+                    # ✅ FIX: Return dict with flag instead of END
+                    if user_choice == False:
+                        print("🛑 User chose not to continue")
+                        return {
+                            "scene_id": state.scene_id,
+                            "current_chapter_id": state.current_chapter_id,
+                            "word_count": state.word_count,
+                            "next_action": "END",  # Signal to stop via state
+                        }
+                except Exception as e:
+                    print(f"❌ ERROR in Redis queue handling: {e}")
+                    import traceback; traceback.print_exc()
+                    # Return state with END action on error
                     return {
                         "scene_id": state.scene_id,
                         "current_chapter_id": state.current_chapter_id,
                         "word_count": state.word_count,
-                        "next_action": "END",  # Signal to stop via state
+                        "next_action": "END",
                     }
             except Exception as e:
-                print(f"❌ ERROR in Redis queue handling: {e}")
+                print(f"❌ ERROR in user input handling: {e}")
                 import traceback; traceback.print_exc()
                 # Return state with END action on error
                 return {
@@ -450,51 +481,49 @@ class DirectorGraph:
                     "word_count": state.word_count,
                     "next_action": "END",
                 }
-        except Exception as e:
-            print(f"❌ ERROR in user input handling: {e}")
-            import traceback; traceback.print_exc()
-            # Return state with END action on error
+
+            # Save Story    
+            # Create Ingestor only for this ingestion
+            ingestor = Ingestor(self.memory)
+            scene_bundle = await ingestor.ingest_scene(state, scene_text, llm_temp=self.llm_temp)
+            del ingestor
+            gc.collect()
+            
+            await self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
+                "chapter_id": state.current_chapter_id, 
+                "story_title": state.story_title, 
+                "scene_id": state.scene_id, 
+                "word_count": state.word_count
+            })
+            
+            await self.memory.add_post_scene_bundle(
+                scene_bundle=scene_bundle,
+                metadata={
+                    "scene_id": state.scene_id,
+                    "chapter_id": state.current_chapter_id,
+                    "story_title": state.story_title,
+                    "type": "scene summary"
+                }
+            )
+            
+            del scene_bundle, scene_cluster, scene_text
+            gc.collect()
+
+            # ✅ Return state WITHOUT next_action or with empty string
+            # This allows the conditional edge to route back to director_node
+            return {
+                "scene_id": state.scene_id + 1,
+                "current_chapter_id": state.current_chapter_id,
+                "word_count": state.word_count,
+            }
+        else:
+            # ⚠️ Unknown status (fallback safeguard)
             return {
                 "scene_id": state.scene_id,
                 "current_chapter_id": state.current_chapter_id,
                 "word_count": state.word_count,
                 "next_action": "END",
             }
-
-        # Save Story    
-        # Create Ingestor only for this ingestion
-        ingestor = Ingestor(self.memory)
-        scene_bundle = await ingestor.ingest_scene(state, scene_text, llm_temp=self.llm_temp)
-        del ingestor
-        gc.collect()
-        
-        await self.memory.add_story_scene_cluster(text=scene_cluster, metadata={
-            "chapter_id": state.current_chapter_id, 
-            "story_title": state.story_title, 
-            "scene_id": state.scene_id, 
-            "word_count": state.word_count
-        })
-        
-        await self.memory.add_post_scene_bundle(
-            scene_bundle=scene_bundle,
-            metadata={
-                "scene_id": state.scene_id,
-                "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title,
-                "type": "scene summary"
-            }
-        )
-        
-        del scene_bundle, scene_cluster, scene_text
-        gc.collect()
-
-        # ✅ Return state WITHOUT next_action or with empty string
-        # This allows the conditional edge to route back to director_node
-        return {
-            "scene_id": state.scene_id + 1,
-            "current_chapter_id": state.current_chapter_id,
-            "word_count": state.word_count,
-        }
     
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
@@ -592,6 +621,7 @@ class DirectorGraph:
     "6. user_decision_points - 1-2 explicit decision moments (dialogue or actions) that the Scene Writer must present as choices.\n"
     "7. screenplay_notes - Strict creative constraints (e.g., 'include one metaphor about light and shadow').\n"
     "8. action - 'generate_and_ingest' to continue or 'END' if the chapter closure_condition is fulfilled.\n\n"
+    "All inside a single string field called 'instructions'.\n\n"
     
     "Do not go beyond the chapter's emotional arc or closure condition. "
     "Only end the chapter if the closure condition is clearly met."

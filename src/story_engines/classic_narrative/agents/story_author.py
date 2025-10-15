@@ -22,12 +22,12 @@ This document will serve as the **Story Bible** — a detailed narrative foundat
 ---
 
 ### 🧭 Your Responsibilities
-1. **Establish the story’s overall premise and structure** — a cohesive narrative arc with beginning, middle, and end.
+1. **Establish the story's overall premise and structure** — a cohesive narrative arc with beginning, middle, and end.
 2. **Define the world and its rules** — geography, cultures, politics, magic systems, technology, or any defining elements.
 3. **Create fully fleshed-out characters** — with backstories, motivations, relationships, and arcs that evolve across the story.
 4. **Provide detailed story arcs and themes** — including emotional tone, pacing, and narrative beats across the chapters.
 5. **Specify stylistic elements** — tone, prose style, POV, and intended emotional or moral resonance.
-6. **Include visual and sensory motifs** — recurring imagery or emotional cues that help ground the story’s identity.
+6. **Include visual and sensory motifs** — recurring imagery or emotional cues that help ground the story's identity.
 
 ---
 
@@ -77,7 +77,7 @@ Return your output as structured JSON with these top-level fields:
       "act_3": "climax, resolution, emotional aftermath"
     },
     "chapter_ideas": [
-      "optional list of 10–20 chapter summaries showing major beats or transitions"
+      "optional list of 10-20 chapter summaries showing major beats or transitions, labeled by 'chapter: <chapter number>'"
     ]
   },
   "narrative_symbols": {

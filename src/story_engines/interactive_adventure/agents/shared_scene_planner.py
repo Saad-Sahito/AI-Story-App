@@ -4,7 +4,7 @@ import json
 import re
 import gc
 import asyncio
-from typing import List, Optional, Callable
+from typing import List, Optional, Callable, Any, Tuple
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
 from src.llm_client.llm_client import groq_client, llm_for_scene_planner_groq_client
@@ -25,6 +25,8 @@ class SceneMemory(BaseModel):
     number_of_options: Optional[int] = Field(default=0, description="Number of options available at the decision point.")
     scene_cluster: List = Field(default=[], description="Combination of scene text, questions and user choices stored as dicts inside the list.")
     story_id: Optional[str] = Field(default="", description="The story ID associated with this scene.")
+    word_count: int = Field(..., description="Word count of the scene so far.")
+
 
 class SceneState(BaseModel):
     messages: List[BaseMessage] = []
@@ -34,16 +36,24 @@ class SceneState(BaseModel):
     iteration_count: int = 0  # Added for recursion limit
     scene_chunk_callback: Optional[Callable] = Field(default=None, description="Callback to send scene chunks to frontend")
 
+    # Error propagation fields
+    error_type: Optional[str] = None
+    error_message: Optional[str] = None
+    fatal: bool = False  # explicit boolean flag for fatal errors
+
     class Config:
         extra = "allow"
+
 
 class SceneWriterOutput(BaseModel):
     scene: str = Field(description="One paragraph of continuing narrative text. Do Not write the question here, only in the 'question' field.")
     question: str = Field(description="Decision prompt for the user if this is the marked decision point, otherwise empty string.")
     number_of_options: Optional[int] = Field(description="If there is a question, how many options are provided (0 if no question).")
 
+
 class ScenePlannerOutput(BaseModel):
     action: str = Field(description="Either 'Complete' if the scene has all scene blueprint events, or 'Not Complete' otherwise.")
+
 
 @dataclass
 class UserSceneContext:
@@ -59,7 +69,8 @@ class UserSceneContext:
         scene_memory = SceneMemory(
             DirectorInstructions=director_instructions.strip(),
             #scene_so_far="",
-            story_id=story_id
+            story_id=story_id,
+            word_count=0
         )
         
         scene_state = SceneState(
@@ -79,6 +90,7 @@ class UserSceneContext:
             scene_chunk_callback=scene_chunk_callback
         )
 
+
 class SharedScenePlannerService:
     def __init__(self):
         self.scene_writer_parser = PydanticOutputParser(pydantic_object=SceneWriterOutput)
@@ -93,41 +105,72 @@ class SharedScenePlannerService:
         self.graph.add_edge("Initializer", "SceneWriter")
         self.graph.add_edge("SceneWriter", "ScenePlanner")
         
+        # conditional edge returns must include possibility of fatal error
+        def planner_decider(state: SceneState):
+            # If a fatal error has been flagged by a node, propagate it.
+            if getattr(state, "fatal", False) or getattr(state, "next_node", None) == "FATAL_ERROR":
+                return "FATAL_ERROR"
+            # otherwise use the next_node from planner which should be "Not Complete" or "Complete"
+            return getattr(state, "next_node", "Complete")
+
         self.graph.add_conditional_edges(
             "ScenePlanner",
-            lambda state: "Not Complete" if state.next_node == "Not Complete" else "Complete",
+            planner_decider,
             {
                 "Not Complete": "SceneWriter",
                 "Complete": END,
+                "FATAL_ERROR": END,
             },
         )
         
         self.compiled = self.graph.compile()
-    
-    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7) -> tuple[str, list]:
-        """Process scene for a specific user using their context, cancellable via stop_event."""
-        print(f"🔍 DEBUG: Starting run_scene with user_id={user_context.user_id}, story_id={user_context.story_id}")
+
+    # -------------------------
+    # Helper: fatal error handling
+    # -------------------------
+    def _handle_fatal_error(self, state: SceneState, error: Exception, stage: str) -> SceneState:
+        """
+        Mark state as fatal, attach error metadata, and ensure graph sees FATAL_ERROR.
+        """
+        state.fatal = True
+        state.next_node = "FATAL_ERROR"
+        state.error_type = stage
+        # make message concise but informative
+        state.error_message = f"{type(error).__name__}: {str(error)}"
+        print(f"❌ [FATAL] {stage} failed — {state.error_message}")
+        import traceback
+        traceback.print_exc()
+        return state
+
+    # -------------------------
+    # Public: run_scene
+    # -------------------------
+    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7) -> Tuple[str, list, str]:
+        """
+        Process scene for a specific user using their context.
+        Returns (scene_text_so_far, scene_cluster, status).
+        status is one of:
+          - "SUCCESS"
+          - "CANCELLED"
+          - "FATAL: <error message>"
+          - "EXCEPTION: <error message>"
+        """
+        print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
         self.llm_temp = llm_temp
         try:
             user_context.scene_state.user_context_id = user_context.user_id
         except Exception as e:
-            print(f"❌ ERROR: Failed to set user_context_id: {e}")
+            print(f"❌ Failed to set user_context_id: {e}")
             import traceback
             traceback.print_exc()
-            return "", []
+            return "", [], f"EXCEPTION: {type(e).__name__}: {e}"
 
         try:
-            print(f"🔍 DEBUG: Invoking graph for {user_context.user_id}/{user_context.story_id}")
-
-            # ✅ Run LangGraph inside a cancellable task
+            # Run LangGraph in a cancellable task
             task = asyncio.create_task(
-                self.compiled.ainvoke(
-                    user_context.scene_state,
-                    {"recursion_limit": 25, "stop_event": stop_event}
-                )
+                self.compiled.ainvoke(user_context.scene_state, {"recursion_limit": 25, "stop_event": stop_event})
             )
 
-            # ✅ Monitor for cancellation
             while not task.done():
                 if stop_event and stop_event.is_set():
                     print("🛑 Stop event received — cancelling SceneGraph task...")
@@ -136,42 +179,87 @@ class SharedScenePlannerService:
                         await task
                     except asyncio.CancelledError:
                         print("✅ SceneGraph task cancelled cleanly")
-                    return "", []
+                    return "", [], "CANCELLED"
                 await asyncio.sleep(0.2)
 
-            # ✅ Get final result
-            result = await task
+            result = await task  # result is expected to be a mapping-like state snapshot
 
-            print(f"🔍 DEBUG: Graph result: {result}")
+            # result may be SceneState-like or dict; attempt safe extraction
+            next_node = None
+            error_message = None
+            scene_memory = None
+            try:
+                if isinstance(result, dict):
+                    next_node = result.get("next_node")
+                    error_message = result.get("error_message") or result.get("errorMessage")
+                    scene_memory = result.get("scene_memory")
+                else:
+                    # try attribute-style access
+                    next_node = getattr(result, "next_node", None)
+                    error_message = getattr(result, "error_message", None)
+                    scene_memory = getattr(result, "scene_memory", None)
+            except Exception:
+                # fallback - attempt to find scene_memory via key access
+                try:
+                    scene_memory = result["scene_memory"]
+                except Exception:
+                    scene_memory = None
 
-            scene_memory: SceneMemory = result["scene_memory"]
-            print(f"🔍 DEBUG: Scene memory: so_far={scene_memory.scene_so_far_for_scene_planner[:50]}..., cluster_len={len(scene_memory.scene_cluster)}")
+            # If a fatal error was flagged by a node, return it as FATAL
+            if getattr(result, "fatal", False) or next_node == "FATAL_ERROR" or getattr(result, "next_node", None) == "FATAL_ERROR":
+                fatal_msg = error_message or (getattr(result, "error_message", None) if hasattr(result, "error_message") else "Unknown fatal error")
+                print(f"❌ Scene aborted due to fatal error: {fatal_msg}")
+                return "", [], f"FATAL: {fatal_msg}"
 
-            if result.get("next_node") == "END":
-                print("✅ Scene reached END normally")
-                return scene_memory.scene_so_far_for_scene_planner, scene_memory.scene_cluster
+            # Normal completion path
+            if scene_memory is None:
+                # no scene memory returned — interpret as alarming, but not fatal
+                print("⚠️ Warning: LangGraph returned with no scene_memory. Returning empty results.")
+                return "", [], "EXCEPTION: No scene_memory returned"
+
+            # scene_memory might be a dict or model
+            if isinstance(scene_memory, dict):
+                scene_so_far = scene_memory.get("scene_so_far_for_scene_planner", "")
+                scene_cluster = scene_memory.get("scene_cluster", [])
+            else:
+                # assume it's a pydantic model
+                scene_so_far = getattr(scene_memory, "scene_so_far_for_scene_planner", "")
+                scene_cluster = getattr(scene_memory, "scene_cluster", [])
 
             print("✅ Scene completed normally")
-            return scene_memory.scene_so_far_for_scene_planner, scene_memory.scene_cluster
+            return scene_so_far, scene_cluster, "SUCCESS"
 
         except asyncio.CancelledError:
-            print("🛑 SceneGraph run_scene() cancelled cleanly (asyncio.CancelledError caught)")
-            return "", []
+            print("🛑 SceneGraph CancelledError caught")
+            return "", [], "CANCELLED"
         except Exception as e:
             print(f"❌ ERROR in run_scene: {e}")
             import traceback
             traceback.print_exc()
-            return "", []
+            return "", [], f"EXCEPTION: {type(e).__name__}: {e}"
+        finally:
+            print("🎭 SceneGraph stopped gracefully")
+            gc.collect()
 
-    
+    # -------------------------
+    # Node implementations
+    # -------------------------
     def _initializer(self, state: SceneState) -> SceneState:
         print(f"🔍 DEBUG: Initializer node for user_context_id={state.user_context_id}")
+        # short-circuit if fatal already flagged
+        if getattr(state, "fatal", False) or getattr(state, "next_node", None) == "FATAL_ERROR":
+            print("🛑 Initializer skipping because fatal flag is set.")
+            return state
         state.next_node = "SceneWriter"
         return state
-    
 
     async def _scene_planner_agent(self, state: SceneState) -> SceneState:
         print(f"🔍 DEBUG: ScenePlanner node for user_context_id={state.user_context_id}")
+        # short-circuit if fatal already flagged
+        if getattr(state, "fatal", False) or getattr(state, "next_node", None) == "FATAL_ERROR":
+            print("🛑 ScenePlanner skipping because fatal flag is set.")
+            return state
+
         scene_memory: SceneMemory = state.scene_memory
         system_prompt = (
     "You are the Scene Planner Agent. Your job is to analyze whether the Scene Writer’s latest output "
@@ -221,13 +309,14 @@ class SharedScenePlannerService:
                     print("⚠️ Forcing Complete to avoid infinite loop")
                     parsed.action = "Complete"
 
-        except asyncio.TimeoutError:
-            print(f"❌ TIMEOUT: LLM call in ScenePlanner timed out after 30 seconds")
-            state.next_node = "Complete"
+            state.next_node = parsed.action
+
+        except asyncio.TimeoutError as e:
+            # treat timeout as fatal for planner (so caller can decide to retry)
+            return self._handle_fatal_error(state, e, "ScenePlanner Timeout")
         except Exception as e:
-            print(f"❌ ERROR in ScenePlanner: {e}")
-            import traceback; traceback.print_exc()
-            state.next_node = "Complete"  # fallback
+            # network failures, APIConnectionError, parsing errors, etc.
+            return self._handle_fatal_error(state, e, "ScenePlanner")
         finally:
             gc.collect()
 
@@ -306,7 +395,6 @@ class SharedScenePlannerService:
             scene_memory.UserInput = ""
 
         # Persist updated scene memory back into state
-        state.next_node = parsed.action
         state.scene_memory = scene_memory
         gc.collect()
         return state
@@ -314,6 +402,11 @@ class SharedScenePlannerService:
         
     async def _scene_writer_agent(self, state: SceneState) -> SceneState:
         print(f"🔍 DEBUG: SceneWriter node for user_context_id={state.user_context_id}")
+        # short-circuit if fatal already flagged
+        if getattr(state, "fatal", False) or getattr(state, "next_node", None) == "FATAL_ERROR":
+            print("🛑 SceneWriter skipping because fatal flag is set.")
+            return state
+
         scene_memory: SceneMemory = state.scene_memory
         user_context_id = state.user_context_id
         
@@ -344,12 +437,11 @@ class SharedScenePlannerService:
 
         max_scene_length = 3500  # Reduced for memory efficiency
         truncated_scene = scene_memory.scene_so_far_for_scene_planner[-max_scene_length:] if len(scene_memory.scene_so_far_for_scene_planner) > max_scene_length else scene_memory.scene_so_far_for_scene_planner
-        human_prompt = f"""
-        Director's Instructions:
-        {scene_memory.DirectorInstructions}
+        human_prompt = f"""Director's Instructions:
+{scene_memory.DirectorInstructions}
 
-        {f"Scene so far (DO NOT rewrite this, only output text that continues from here): {truncated_scene}" if truncated_scene else ""}
-        """
+{f'Scene so far (DO NOT rewrite this, only output text that continues from here): {truncated_scene}' if truncated_scene else ''}
+{f'Current scene word count: {scene_memory.word_count}' if scene_memory.word_count else ''}"""
         print("SCENE WRITER CONTEXT: ", human_prompt)
         try:
             llm_response = await asyncio.wait_for(
@@ -406,6 +498,7 @@ class SharedScenePlannerService:
             if scene_memory.UserInput:
                 scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
 
+            scene_memory.word_count += StoryHelpers._count_words_split(scene_text)
             scene_memory.scene_cluster.append({
                 "type": "text",
                 "scene_text": scene_text
@@ -431,6 +524,10 @@ class SharedScenePlannerService:
                         "type": "text",
                         "scene_text": scene_text
                     })
+                    state.scene_chunk_callback({
+                        "type": "status",
+                        "word_count": StoryHelpers._count_words_split(scene_text)
+                    })
                 except Exception as e:
                     print(f"❌ ERROR: Failed to send scene text to frontend: {e}")
                     import traceback
@@ -438,9 +535,9 @@ class SharedScenePlannerService:
 
             gc.collect()
             return state
-        except Exception as e:
-            print(f"❌ ERROR in SceneWriter: {e}")
-            import traceback
-            traceback.print_exc()
-            return state
 
+        except asyncio.TimeoutError as e:
+            return self._handle_fatal_error(state, e, "SceneWriter Timeout")
+        except Exception as e:
+            # treat network/API errors as fatal so top-level run_scene can return FATAL
+            return self._handle_fatal_error(state, e, "SceneWriter")

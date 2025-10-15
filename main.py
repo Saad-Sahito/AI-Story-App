@@ -17,6 +17,7 @@ from setup.story_types.classic_setup import get_shared_classic_setup, close_shar
 from src.story_engines.interactive_adventure.agents import shared_scene_planner as interactive_scene_planner_module
 from src.story_engines.classic_narrative.agents import shared_scene_planner as classic_scene_planner_module
 from src.memory.sqlite_store import SQLiteStore
+from pydantic import BaseModel
 
 # Initialize api_backend BEFORE lifespan
 print("🟡 Initializing APIBackend...")
@@ -28,6 +29,11 @@ except Exception as e:
 
 # Background cleanup task
 cleanup_task = None
+
+from fastapi.middleware.cors import CORSMiddleware
+
+
+
 
 async def cleanup_sessions_periodically():
     """Background task to clean up inactive sessions every hour."""
@@ -145,6 +151,12 @@ app = FastAPI(
     description="AI Story Generation App",
     lifespan=lifespan
 )
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Async redis_lock (reused from interactive_setup.py)
 from contextlib import asynccontextmanager
@@ -195,9 +207,13 @@ async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: s
 async def api_initialize_story(user_id: str, story_type: str, story_title: str = "" ):
     return await mainsetup.initialize_story(user_id=user_id, story_title=story_title, story_type=story_type)
 
+class ContinueStoryRequest(BaseModel):
+    user_id: str
+    story_type: str
+
 @app.put("/stories/{story_id}")
-async def api_continue_story(user_id: str, story_id: str, story_type: str):
-    return await mainsetup.continue_story(user_id=user_id, story_id=story_id, story_type=story_type)
+async def api_continue_story(story_id: str, request: ContinueStoryRequest):
+    return await mainsetup.continue_story(user_id=request.user_id, story_id=story_id, story_type=request.story_type)
 
 @app.get("/stories/progress/{user_id}/{story_id}")
 async def api_get_story_progress(user_id: str, story_id: str, story_type: str):
@@ -284,9 +300,28 @@ async def api_get_active_users():
 
 
 # ---------------- User Data Management Routes ----------------
+
+
+class UserCreate(BaseModel):
+    nickname: str
+    user_tag: str
+    age: int
+    stories: list = []
+    user_id: str | None = None
+
 @app.post("/users")
-async def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], user_id: str = None):
-    return await add_user(nickname=nickname, user_tag=user_tag, age=age, user_id=user_id, stories=stories)
+async def api_add_user(user: UserCreate):
+    return await add_user(
+        nickname=user.nickname,
+        user_tag=user.user_tag,
+        age=user.age,
+        user_id=user.user_id,
+        stories=user.stories
+    )
+
+# @app.post("/users")
+# async def api_add_user(nickname: str, user_tag: str, age: int, stories: list = [], user_id: str = None):
+#     return await add_user(nickname=nickname, user_tag=user_tag, age=age, user_id=user_id, stories=stories)
 
 @app.patch("/users/{user_id}/stories/{story_title}")
 async def api_delete_story(user_id: str, story_title: str):

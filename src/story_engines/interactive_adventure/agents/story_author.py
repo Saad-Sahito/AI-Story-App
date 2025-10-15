@@ -20,7 +20,7 @@ class StoryAuthor:
 
     "Your outline should include:\n"
     "- A **story premise** (a few sentences introducing the main setup and potential conflict).\n"
-    "- A list of **key characters** (2–5), each with a short description of their role or motivation.\n"
+    "- A list of **key characters** (2-5), each with a short description of their role or motivation.\n"
     "- The **world and setting** (where and when the story takes place, including tone and atmosphere).\n"
     "- The **genre**, **tone**, and **point of view (POV)**.\n"
     "- The **initial story goals or tensions** (what might drive the first few scenes, without determining outcomes).\n"
