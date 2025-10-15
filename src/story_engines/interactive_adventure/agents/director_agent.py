@@ -8,7 +8,6 @@ from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
 from langchain.output_parsers import PydanticOutputParser
-from streamlit import status
 
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
