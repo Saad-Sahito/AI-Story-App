@@ -705,8 +705,8 @@ class DirectorGraph:
         del system_prompt, human_prompt
         gc.collect()
         
-        if state.scene_id == 2:  # DEBUGGING Code
-           action = "DEBUG"  # DEBUGGING Code
+        # if state.scene_id == 2:  # DEBUGGING Code
+        #    action = "DEBUG"  # DEBUGGING Code
 
         # finalize and return
         messages = state.messages or []

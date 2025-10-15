@@ -401,12 +401,12 @@ class InteractiveStorySetup:
             60: 0.7, 80: 0.65, 100: 0.75
         }
         length_dict = {
-            0: "Flash Fiction (1,000 - 2,500 words)",
-            20: "Short Story (2,500 - 7,500 words)",
-            40: "Novelette (7,500 - 20,000 words)",
-            60: "Novella (20,000 - 40,000 words)",
-            80: "Novel Chapter (40,000 - 70,000 words)",
-            100: "Epic / Series (70,000 - 100,000+ words)"
+0: "Short Long Story (7,500 - 15,000 words)",
+20: "Novelette (15,000 - 25,000 words)",
+40: "Novella (25,000 - 40,000 words)",
+60: "Novel Chapter (40,000 - 60,000 words)",
+80: "Full Novel (60,000 - 90,000 words)",
+100: "Epic / Series (90,000 - 150,000+ words)"
         }
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
