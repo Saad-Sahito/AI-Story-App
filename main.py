@@ -153,9 +153,15 @@ app = FastAPI(
 )
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["https://whimsera.com", "http://localhost:3000"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    allow_origins=[
+        "https://whimsera.com",
+        "https://www.whimsera.com",
+        "http://localhost:3000",  # for local development
+        "https://whimsera.netlify.app"  # your Netlify preview URL
+    ],
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
+    allow_headers=["*"],  # Allows all headers
 )
 
 # Async redis_lock (reused from interactive_setup.py)
