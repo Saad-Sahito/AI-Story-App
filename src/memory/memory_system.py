@@ -273,7 +273,7 @@ class StoryMemorySystem:
 
     async def add_post_chapter_bundle(self, parts: Dict[str, Dict], metadata: Dict[str, Any]):
         if parts.get("summary"):
-            await self.add_story_summary(parts["summary"], metadata={metadata.get("chapter_id", "None"): metadata.get("chapter_id", 0), "type": "chapter summary"})
+            await self.add_story_summary(parts["summary"], metadata={metadata.get("chapter_id", 0): metadata.get("chapter_id", 0), "type": "chapter summary"})
         if parts.get("character_summary"):
             await self.add_character_summary(parts["character_summary"], metadata)
         if parts.get("world_summary"):

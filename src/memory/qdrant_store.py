@@ -216,10 +216,14 @@ class QdrantStore:
                 "namespace": self.namespace,
             })
 
+            # ✅ Ensure all keys are strings to avoid Pydantic validation errors
+            payload = {str(k): v for k, v in payload.items()}
+
             await self.client.upsert(
                 collection_name=self.collection,
                 points=[models.PointStruct(id=str(uuid.uuid4()), vector=vec, payload=payload)],
             )
+
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put_dict_replace_character(self, data: Dict[str, dict], metadata: Dict[str, Any] = None):
