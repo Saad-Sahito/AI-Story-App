@@ -18,6 +18,16 @@ from src.story_engines.interactive_adventure.agents import shared_scene_planner 
 from src.story_engines.classic_narrative.agents import shared_scene_planner as classic_scene_planner_module
 from src.memory.sqlite_store import SQLiteStore
 from pydantic import BaseModel
+from contextlib import asynccontextmanager
+from fastapi import Request, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+from jose import jwt, JWTError, jwk
+import httpx
+import os
+from jose.utils import base64url_decode
+
+
+
 
 # Initialize api_backend BEFORE lifespan
 print("🟡 Initializing APIBackend...")
@@ -157,7 +167,6 @@ app.add_middleware(
         "https://whimsera.com",
         "https://www.whimsera.com",
         "http://localhost:3000",  # for local development
-        "https://whimsera.netlify.app"  # your Netlify preview URL
     ],
     allow_credentials=True,
     allow_methods=["*"],  # Allows all methods (GET, POST, OPTIONS, etc.)
@@ -165,7 +174,106 @@ app.add_middleware(
 )
 
 # Async redis_lock (reused from interactive_setup.py)
-from contextlib import asynccontextmanager
+
+
+
+SUPABASE_PROJECT_URL = os.getenv("SUPABASE_URL", "https://YOUR_PROJECT_ID.supabase.co")
+JWKS_URL = f"{SUPABASE_PROJECT_URL}/auth/v1/.well-known/jwks.json"
+jwks_cache = None
+SUPABASE_JWT_SECRET = os.getenv("SUPABASE_JWT_SECRET")
+if not SUPABASE_JWT_SECRET:
+    raise ValueError("SUPABASE_JWT_SECRET environment variable is required for HS256 verification")
+
+async def get_jwks():
+    global jwks_cache
+    if jwks_cache is None:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(JWKS_URL)
+            resp.raise_for_status()
+            jwks_cache = resp.json()
+    return jwks_cache
+
+async def verify_supabase_jwt(token: str):
+    """Verifies Supabase JWT using the project's JWT Secret (HS256 symmetric signing)."""
+    try:
+        print(f"Verifying JWT with HS256 (partial): {token[:10]}...")
+        
+        # Verify signature and claims, including audience
+        payload = jwt.decode(
+            token,
+            SUPABASE_JWT_SECRET,
+            algorithms=["HS256"],
+            audience="authenticated",  # Match the JWT's aud claim
+            options={
+                "verify_signature": True,
+                "verify_exp": True,
+                "verify_iat": True,
+                "verify_nbf": False,
+                "verify_aud": True  # Explicitly enable audience verification
+            }
+        )
+        
+        print(f"JWT payload: {payload}")
+        return payload
+        
+    except JWTError as e:
+        detail = str(e)
+        if "Signature" in detail:
+            detail = "Invalid token signature"
+        elif "exp" in detail.lower():
+            detail = "Token expired"
+        elif "audience" in detail.lower():
+            detail = "Invalid audience"
+        else:
+            detail = "Invalid token payload"
+        
+        print(f"JWT verification error: {detail}")
+        raise HTTPException(status_code=401, detail=detail)
+
+@app.middleware("http")
+async def supabase_auth_middleware(request: Request, call_next):
+    print(f"🔍 Middleware invoked for: {request.method} {request.url.path}")
+    if request.method == "OPTIONS":
+        print(f"✅ Skipping auth for OPTIONS request: {request.url.path}")
+        return await call_next(request)
+    whitelist = ["/users/active", "/storage", "/docs", "/openapi.json"]
+    if request.url.path == "/" or any(request.url.path.startswith(path) for path in whitelist):
+        print(f"✅ Skipping auth for whitelisted route: {request.url.path}")
+        return await call_next(request)
+    print(f"🔎 Processing non-whitelisted route: {request.url.path}")
+    auth_header = request.headers.get("Authorization")
+    print(f"🔎 Authorization header: {auth_header}")
+    if not auth_header or not auth_header.startswith("Bearer "):
+        print("❌ Missing or invalid Authorization header")
+        return JSONResponse(status_code=401, content={"detail": "Missing or invalid Authorization header"})
+    token = auth_header.split(" ")[1]
+    print(f"🔎 Extracted token: {token[:10]}...")
+    try:
+        payload = await verify_supabase_jwt(token)
+        print(f"✅ JWT verified, user: {payload.get('sub')}")
+    except Exception as e:
+        print(f"❌ JWT verification failed: {str(e)}")
+        return JSONResponse(status_code=401, content={"detail": str(e)})
+    supabase_user_id = payload.get("sub")
+    if not supabase_user_id:
+        print("❌ Invalid token payload: No 'sub' claim")
+        return JSONResponse(status_code=401, content={"detail": "Invalid token payload"})
+    try:
+        if request.method in ("POST", "PUT", "PATCH"):
+            body = await request.json()
+            user_id = body.get("user_id") or body.get("initial_story_data", {}).get("user_id")
+        else:
+            user_id = request.query_params.get("user_id") or request.path_params.get("user_id")
+    except Exception as e:
+        print(f"❌ Error reading request body or query: {str(e)}")
+        user_id = request.query_params.get("user_id") or request.path_params.get("user_id")
+    if user_id and user_id != supabase_user_id:
+        print(f"❌ User ID mismatch: {user_id} != {supabase_user_id}")
+        return JSONResponse(status_code=403, content={"detail": "User ID does not match authenticated user"})
+    print(f"✅ Authenticated Supabase user: {supabase_user_id}")
+    request.state.supabase_user = payload
+    return await call_next(request)
+
 
 @asynccontextmanager
 async def redis_lock(client, lock_key, timeout=10):
@@ -202,15 +310,44 @@ async def api_create_premise(initial_story_data: dict):
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str, story_type: str = Query(...)):
     try:
         print(f"🔵 Calling api_backend.handle_story_websocket...")
+        token = (
+            websocket.headers.get("Authorization", "").replace("Bearer ", "")
+            or websocket.query_params.get("token")
+        )
+        print(f"Received token: {token[:10]}...")  # Log partial token
+        if not token:
+            await websocket.close(code=4001)
+            print("❌ Missing Supabase token in WebSocket connection")
+            return
+        
+        payload = await verify_supabase_jwt(token)
+        supabase_user_id = payload.get("sub")
+        print(f"User ID from URL: {user_id}, Supabase user ID: {supabase_user_id}")
+        
+        if not supabase_user_id or supabase_user_id != user_id:
+            await websocket.close(code=4003)
+            print(f"❌ WebSocket auth failed: user_id mismatch ({user_id} != {supabase_user_id})")
+            return
+        
         await mainsetup.handle_story_websocket(websocket=websocket, user_id=user_id, story_id=story_id, story_type=story_type)
         print(f"🟢 api_backend.handle_story_websocket completed successfully")
+    except WebSocketDisconnect:
+        print(f"⚪ WebSocket disconnected: {user_id}")
     except Exception as e:
         print(f"🔴 Error in websocket_next_chapter: {e}")
         import traceback
         traceback.print_exc()
-
+        try:
+            await websocket.close(code=1011)
+        except Exception:
+            pass
+        
 @app.post("/stories/initialize_story")
-async def api_initialize_story(user_id: str, story_type: str, story_title: str = "" ):
+async def api_initialize_story(
+    user_id: str = Query(...),
+    story_type: str = Query(...),
+    story_title: str = Query("")
+):
     return await mainsetup.initialize_story(user_id=user_id, story_title=story_title, story_type=story_type)
 
 class ContinueStoryRequest(BaseModel):
@@ -239,70 +376,70 @@ async def api_logout(user_id: str):
     return await mainsetup.logout(user_id)
 
 # gets all active users in redis pool (for app manager use)
-@app.get("/users/active")
-async def api_get_active_users():
-    """Retrieve all session data for active users from Redis (classic + interactive)."""
-    try:
-        client = await get_redis_client()
-        users = {}
-        cursor = 0
-        patterns = ["classic_session:*", "interactive_session:*"]
+# @app.get("/users/active")
+# async def api_get_active_users():
+#     """Retrieve all session data for active users from Redis (classic + interactive)."""
+#     try:
+#         client = await get_redis_client()
+#         users = {}
+#         cursor = 0
+#         patterns = ["classic_session:*", "interactive_session:*"]
 
-        for pattern in patterns:
-            cursor = 0
-            while True:
-                cursor, keys = await client.scan(cursor, match=pattern, count=100)
-                for key in keys:
-                    try:
-                        parts = key.split(":", 2)  # e.g., classic_session:user_id[:story_id]
-                        if len(parts) < 2:
-                            continue
+#         for pattern in patterns:
+#             cursor = 0
+#             while True:
+#                 cursor, keys = await client.scan(cursor, match=pattern, count=100)
+#                 for key in keys:
+#                     try:
+#                         parts = key.split(":", 2)  # e.g., classic_session:user_id[:story_id]
+#                         if len(parts) < 2:
+#                             continue
 
-                        prefix = parts[0]  # "classic_session" or "interactive_session"
-                        user_id = parts[1]
+#                         prefix = parts[0]  # "classic_session" or "interactive_session"
+#                         user_id = parts[1]
 
-                        if user_id not in users:
-                            users[user_id] = {
-                                "classic_session": {"last_active": None, "stories": {}},
-                                "interactive_session": {"last_active": None, "stories": {}}
-                            }
+#                         if user_id not in users:
+#                             users[user_id] = {
+#                                 "classic_session": {"last_active": None, "stories": {}},
+#                                 "interactive_session": {"last_active": None, "stories": {}}
+#                             }
 
-                        data = await client.get(key)
-                        if not data:
-                            print(f"🔍 No data for key {key}")
-                            continue
+#                         data = await client.get(key)
+#                         if not data:
+#                             print(f"🔍 No data for key {key}")
+#                             continue
 
-                        session_data = json.loads(data)
+#                         session_data = json.loads(data)
 
-                        if len(parts) == 2:  # user-level key
-                            users[user_id][prefix]["last_active"] = session_data.get("last_active")
-                            users[user_id][prefix]["stories"] = session_data.get("stories", {})
-                        elif len(parts) == 3:  # story-specific key
-                            story_id = parts[2]
-                            users[user_id][prefix]["stories"][story_id] = session_data
+#                         if len(parts) == 2:  # user-level key
+#                             users[user_id][prefix]["last_active"] = session_data.get("last_active")
+#                             users[user_id][prefix]["stories"] = session_data.get("stories", {})
+#                         elif len(parts) == 3:  # story-specific key
+#                             story_id = parts[2]
+#                             users[user_id][prefix]["stories"][story_id] = session_data
 
-                    except json.JSONDecodeError as e:
-                        print(f"❌ Invalid JSON for key {key}: {e}")
-                        continue
-                    except Exception as e:
-                        print(f"❌ Error processing key {key}: {e}")
-                        continue
+#                     except json.JSONDecodeError as e:
+#                         print(f"❌ Invalid JSON for key {key}: {e}")
+#                         continue
+#                     except Exception as e:
+#                         print(f"❌ Error processing key {key}: {e}")
+#                         continue
 
-                if cursor == 0:
-                    break
+#                 if cursor == 0:
+#                     break
 
-        return {
-            "status": "success",
-            "users": users,
-            "count": len(users)
-        }
+#         return {
+#             "status": "success",
+#             "users": users,
+#             "count": len(users)
+#         }
 
-    except redis.RedisError as e:
-        print(f"❌ Redis error in api_get_active_users: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve active users")
-    finally:
-        import gc
-        gc.collect()
+#     except redis.RedisError as e:
+#         print(f"❌ Redis error in api_get_active_users: {e}")
+#         raise HTTPException(status_code=500, detail="Failed to retrieve active users")
+#     finally:
+#         import gc
+#         gc.collect()
 
 
 # ---------------- User Data Management Routes ----------------
@@ -342,9 +479,9 @@ async def api_get_user_profile_data_and_stories(user_id: str):
 
 #-----------------------------------------------------------------
 # CAUTION: Deletes entire app storage (admin only)
-@app.patch("/storage")
-async def api_del_storage():
-    sql_path = "/home/saadn/whimsera_app/data/story_memory.db"
-    val1 = delete_sqlite_db(sql_path)
-    val2 = await delete_all_qdrant_collections()
-    return val1, val2
+# @app.patch("/storage")
+# async def api_del_storage():
+#     sql_path = "/home/saadn/whimsera_app/data/story_memory.db"
+#     val1 = delete_sqlite_db(sql_path)
+#     val2 = await delete_all_qdrant_collections()
+#     return val1, val2

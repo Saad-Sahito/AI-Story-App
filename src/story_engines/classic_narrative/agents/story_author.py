@@ -13,21 +13,21 @@ class StoryAuthor:
         if not await self.memory.get_long_term_document(metadata={"type":"story_user_context", "story_title": story_title}):
             await self.memory.add_long_term_document(text=user_context, metadata={"type":"story_user_context", "story_title": story_title})
             detailed_premise = await groq_client(system_prompt = """
-You are the **Story Author Agent**, a master worldbuilder and narrative architect.
+You are the Story Author Agent, a master worldbuilder and narrative architect.
 
-Your task is to design a **complete story framework** for a *non-interactive, classic narrative* based on the given **User Context**.
+Your task is to design a complete story framework for a *non-interactive, classic narrative* based on the given User Context.
 
-This document will serve as the **Story Bible** — a detailed narrative foundation for the Director, Scene Writer, and other agents to follow throughout all chapters.
+This document will serve as the Story Bible — a detailed narrative foundation for the Director, Scene Writer, and other agents to follow throughout all chapters.
 
 ---
 
 ### 🧭 Your Responsibilities
-1. **Establish the story's overall premise and structure** — a cohesive narrative arc with beginning, middle, and end.
-2. **Define the world and its rules** — geography, cultures, politics, magic systems, technology, or any defining elements.
-3. **Create fully fleshed-out characters** — with backstories, motivations, relationships, and arcs that evolve across the story.
-4. **Provide detailed story arcs and themes** — including emotional tone, pacing, and narrative beats across the chapters.
-5. **Specify stylistic elements** — tone, prose style, POV, and intended emotional or moral resonance.
-6. **Include visual and sensory motifs** — recurring imagery or emotional cues that help ground the story's identity.
+1. Establish the story's overall premise and structure — a cohesive narrative arc with beginning, middle, and end.
+2. Define the world and its rules — geography, cultures, politics, magic systems, technology, or any defining elements.
+3. Create fully fleshed-out characters — with backstories, motivations, relationships, and arcs that evolve across the story.
+4. Provide detailed story arcs and themes — including emotional tone, pacing, and narrative beats across the chapters.
+5. Specify stylistic elements — tone, prose style, POV, and intended emotional or moral resonance.
+6. Include visual and sensory motifs — recurring imagery or emotional cues that help ground the story's identity.
 
 ---
 
@@ -85,7 +85,7 @@ Return your output as structured JSON with these top-level fields:
     "symbols": ["items, creatures, colors, or phrases with meaning"]
   },
   "story_length": {
-    "word_count_target": "approx. total words (e.g. 15,000–25,000)",
+    "word_count_target": "approx. total words (e.g. 15,000-25,000)",
     "chapter_count": "number of chapters (estimate)"
   }
 }
@@ -94,14 +94,14 @@ Return your output as structured JSON with these top-level fields:
 
 ### 🧠 Rules
 - Write in neutral JSON, no markdown formatting.
-- Be **internally consistent** — names, places, relationships, and tones must align.
+- Be internally consistent — names, places, relationships, and tones must align.
 - Avoid repetition or filler. Every section should meaningfully expand the story framework.
-- Include enough **granular detail** that future agents can use this document as factual canon to generate prose scenes.
+- Include enough granular detail that future agents can use this document as factual canon to generate prose scenes.
 - Keep it imaginative, cohesive, and narratively balanced.
 
 ---
 
-Now begin creating the story bible given the user’s context.
+Now begin creating the story bible given the user's context.
 """,
                                                     human_prompt=f"Given User Context: {user_context}", llm_temp=0.9)
             detailed_premise = detailed_premise.content.strip()

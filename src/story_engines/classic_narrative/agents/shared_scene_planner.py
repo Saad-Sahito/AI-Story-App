@@ -259,7 +259,7 @@ class SharedScenePlannerService:
             "You are the Scene Planner Agent. Your job is to evaluate the current scene text "
             "against the Director's Scene Plan and determine if all required scene events, emotional beats and target word count "
             "have been addressed.\n\n"
-            "You are checking *only* this specific scene — do not consider the overall chapter closure condition "
+            "You are checking only this specific scene — do not consider the overall chapter closure condition "
             "or story-wide goals.\n\n"
             "Return a JSON object with a single field 'action':\n"
             "- 'Complete' if all events and emotional beats from the Scene Plan have been sufficiently covered in the scene text.\n"

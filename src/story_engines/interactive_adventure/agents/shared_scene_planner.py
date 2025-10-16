@@ -262,13 +262,13 @@ class SharedScenePlannerService:
 
         scene_memory: SceneMemory = state.scene_memory
         system_prompt = (
-    "You are the Scene Planner Agent. Your job is to analyze whether the Scene Writer’s latest output "
+    "You are the Scene Planner Agent. Your job is to analyze whether the Scene Writer's latest output "
     "has covered all the events, beats, and decision points specified in the Director's Scene Blueprint.\n\n"
 
-    "You must only consider the **current scene**, not the entire chapter or story. "
+    "You must only consider the current scene, not the entire chapter or story. "
     "Do not confuse 'scene completion' with 'chapter completion' — those are handled separately.\n\n"
 
-    "Check if all required beats from the Director’s instructions (actions, emotions, locations, dialogue moments, "
+    "Check if all required beats from the Director's instructions (actions, emotions, locations, dialogue moments, "
     "and any specified user decision points) have been fulfilled.\n\n"
 
     "Return a valid JSON object in this format:\n"
@@ -415,20 +415,20 @@ class SharedScenePlannerService:
     "Your task is to write exactly one new paragraph that continues the scene "
     "according to the Director's detailed scene blueprint.\n\n"
 
-    "⚙️ **Rules:**\n"
+    "⚙️ Rules:\n"
     "1. You must follow the Director's Instructions precisely — do not invent, alter, or omit planned details.\n"
     "2. You only know what the Director tells you — you have no memory of past scenes.\n"
     "3. Write in vivid, immersive prose that captures tone, setting, emotions, and action.\n"
     "4. Do NOT summarize or repeat previous content. Continue naturally from the last provided paragraph.\n"
     "5. Include all required creative elements from the 'screenplay_notes' section (e.g., imagery, metaphors, pacing cues).\n\n"
 
-    "🎭 **When decision points are included:**\n"
+    "🎭 When decision points are included:\n"
     "- If the Director's instructions specify a user decision point, end your paragraph with that question.\n"
-    "- Offer **2–4** clearly distinct options labeled with letters (A, B, C, D), within the question.\n"
+    "- Offer 2-4 clearly distinct options labeled with letters (A, B, C, D), within the question.\n"
     "- Each option should represent a meaningful narrative branch.\n"
     "- Output the number of available options as an integer in the field `'number_of_options'`.\n\n"
 
-    "🧩 **Output JSON format:**\n"
+    "🧩 Output JSON format:\n"
     f"{self.scene_writer_parser.get_format_instructions()}"
 
     "Stay strictly within the Director's plan. Do not create new storylines, characters, or settings. "

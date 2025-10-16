@@ -87,13 +87,17 @@ class Ingestor:
         """Ingest scene text and extract structured JSON using schema + parser."""
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
-        system_prompt = "You are the Scene Breakdown Agent. Extract structured info from the scene. Including indicated references to user choices. " \
-        "Always include chapter and scene id in character and world details, in order to keep track later. " \
-        "Make sure the character and world names are exactly as the keys presented to you under Character and World Names, " \
-        "if any need to be changed then create new entry for that entity mentioning previous name in the new entry, " \
-        "if not present then create new names as needed."        
-        "Respond ONLY in JSON with this schema:"
-        f"{scene_parser.get_format_instructions()}"
+        system_prompt = (
+    "You are the Scene Breakdown Agent. Extract structured info from the scene, "
+    "including indicated references to user choices. "
+    "Always include chapter and scene id in character and world details, in order to keep track later. "
+    "Make sure the character and world names are exactly as the keys presented to you under Character and World Names. "
+    "If any need to be changed, create a new entry for that entity mentioning the previous name in the new entry. "
+    "If not present, then create new names as needed. "
+    "Respond ONLY in JSON with this schema: "
+    f"{scene_parser.get_format_instructions()}"
+)
+
 
         human_prompt = f"""
         Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
