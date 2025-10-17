@@ -1,5 +1,5 @@
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect, Depends
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
@@ -15,13 +15,13 @@ from setup.shared_redis_pool import REDIS_POOL, get_redis_client
 from setup.main_setup import MainSetup
 from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories
 from src.memory.shared_resources import SHARED_QDRANT
-from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
+#from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
 from setup.story_types.interactive_setup import get_shared_interactive_setup, close_shared_interactive_setup
 from setup.story_types.classic_setup import get_shared_classic_setup, close_shared_classic_setup
 from src.story_engines.interactive_adventure.agents import shared_scene_planner as interactive_scene_planner_module
 from src.story_engines.classic_narrative.agents import shared_scene_planner as classic_scene_planner_module
 from src.memory.sqlite_store import SQLiteStore
-
+import json
 # Initialize MainSetup
 #print("🟡 Initializing APIBackend...")
 try:
@@ -437,11 +437,11 @@ async def api_add_user(user: UserCreate, request: Request):
     return result
 
 @app.patch("/users/{user_id}/stories/{story_title}")
-async def api_delete_story(user_id: str, story_title: str):
+async def api_delete_story(user_id: str, story_title: str, story_type: str):
     story_title_normalized = story_title.lower().replace(" ", "_")
     story_id = f"{story_title_normalized}_{user_id}"
-    await mainsetup.logout_story(user_id, story_id)
-    return await delete_story(user_id, story_title)
+    await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
+    return await delete_story(user_id=user_id, story_title=story_title, story_id=story_id)
 
 @app.get("/users/{user_id}/profile")
 async def api_get_user_profile_data_and_stories(user_id: str):
@@ -839,71 +839,71 @@ async def api_get_user_profile_data_and_stories(user_id: str):
 # async def api_logout(user_id: str):
 #     return await mainsetup.logout(user_id)
 
-# # gets all active users in redis pool (for app manager use)
-# # @app.get("/users/active")
-# # async def api_get_active_users():
-# #     """Retrieve all session data for active users from Redis (classic + interactive)."""
-# #     try:
-# #         client = await get_redis_client()
-# #         users = {}
-# #         cursor = 0
-# #         patterns = ["classic_session:*", "interactive_session:*"]
+#gets all active users in redis pool (for app manager use)
+@app.get("/users/active")
+async def api_get_active_users():
+    """Retrieve all session data for active users from Redis (classic + interactive)."""
+    try:
+        client = await get_redis_client()
+        users = {}
+        cursor = 0
+        patterns = ["classic_session:*", "interactive_session:*"]
 
-# #         for pattern in patterns:
-# #             cursor = 0
-# #             while True:
-# #                 cursor, keys = await client.scan(cursor, match=pattern, count=100)
-# #                 for key in keys:
-# #                     try:
-# #                         parts = key.split(":", 2)  # e.g., classic_session:user_id[:story_id]
-# #                         if len(parts) < 2:
-# #                             continue
+        for pattern in patterns:
+            cursor = 0
+            while True:
+                cursor, keys = await client.scan(cursor, match=pattern, count=100)
+                for key in keys:
+                    try:
+                        parts = key.split(":", 2)  # e.g., classic_session:user_id[:story_id]
+                        if len(parts) < 2:
+                            continue
 
-# #                         prefix = parts[0]  # "classic_session" or "interactive_session"
-# #                         user_id = parts[1]
+                        prefix = parts[0]  # "classic_session" or "interactive_session"
+                        user_id = parts[1]
 
-# #                         if user_id not in users:
-# #                             users[user_id] = {
-# #                                 "classic_session": {"last_active": None, "stories": {}},
-# #                                 "interactive_session": {"last_active": None, "stories": {}}
-# #                             }
+                        if user_id not in users:
+                            users[user_id] = {
+                                "classic_session": {"last_active": None, "stories": {}},
+                                "interactive_session": {"last_active": None, "stories": {}}
+                            }
 
-# #                         data = await client.get(key)
-# #                         if not data:
-# #                             print(f"🔍 No data for key {key}")
-# #                             continue
+                        data = await client.get(key)
+                        if not data:
+                            print(f"🔍 No data for key {key}")
+                            continue
 
-# #                         session_data = json.loads(data)
+                        session_data = json.loads(data)
 
-# #                         if len(parts) == 2:  # user-level key
-# #                             users[user_id][prefix]["last_active"] = session_data.get("last_active")
-# #                             users[user_id][prefix]["stories"] = session_data.get("stories", {})
-# #                         elif len(parts) == 3:  # story-specific key
-# #                             story_id = parts[2]
-# #                             users[user_id][prefix]["stories"][story_id] = session_data
+                        if len(parts) == 2:  # user-level key
+                            users[user_id][prefix]["last_active"] = session_data.get("last_active")
+                            users[user_id][prefix]["stories"] = session_data.get("stories", {})
+                        elif len(parts) == 3:  # story-specific key
+                            story_id = parts[2]
+                            users[user_id][prefix]["stories"][story_id] = session_data
 
-# #                     except json.JSONDecodeError as e:
-# #                         print(f"❌ Invalid JSON for key {key}: {e}")
-# #                         continue
-# #                     except Exception as e:
-# #                         print(f"❌ Error processing key {key}: {e}")
-# #                         continue
+                    except json.JSONDecodeError as e:
+                        print(f"❌ Invalid JSON for key {key}: {e}")
+                        continue
+                    except Exception as e:
+                        print(f"❌ Error processing key {key}: {e}")
+                        continue
 
-# #                 if cursor == 0:
-# #                     break
+                if cursor == 0:
+                    break
 
-# #         return {
-# #             "status": "success",
-# #             "users": users,
-# #             "count": len(users)
-# #         }
+        return {
+            "status": "success",
+            "users": users,
+            "count": len(users)
+        }
 
-# #     except redis.RedisError as e:
-# #         print(f"❌ Redis error in api_get_active_users: {e}")
-# #         raise HTTPException(status_code=500, detail="Failed to retrieve active users")
-# #     finally:
-# #         import gc
-# #         gc.collect()
+    except redis.RedisError as e:
+        print(f"❌ Redis error in api_get_active_users: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve active users")
+    finally:
+        import gc
+        gc.collect()
 
 
 # # ---------------- User Data Management Routes ----------------

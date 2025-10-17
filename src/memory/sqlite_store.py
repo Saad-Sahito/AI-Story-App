@@ -258,8 +258,8 @@ class SQLiteStore:
 
                 # Delete related rows from all other tables
                 await conn.execute("DELETE FROM story_texts WHERE user_id = ? AND story_id = ?", (user_id, story_id))
-                await conn.execute("DELETE FROM characters WHERE user_id = ? AND story_id = ?", (user_id, story_id))
-                await conn.execute("DELETE FROM world_elements WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                await conn.execute("DELETE FROM characters_raw WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                await conn.execute("DELETE FROM world_elements_raw WHERE user_id = ? AND story_id = ?", (user_id, story_id))
                 await conn.execute("DELETE FROM director_notes WHERE user_id = ? AND story_id = ?", (user_id, story_id))
                 await conn.execute("DELETE FROM story_progress WHERE user_id = ? AND story_id = ?", (user_id, story_id))
 
