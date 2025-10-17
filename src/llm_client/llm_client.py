@@ -56,7 +56,7 @@ class LLMClient:
     async def _groq_client(self, system_prompt: str = "", human_prompt: str = "", llm_temp: int = 0.7) -> AIMessage:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
-        llm = ChatGroq(model="openai/gpt-oss-120b", temperature=llm_temp, groq_api_key=self.groq_api_key)
+        llm = ChatGroq(model="llama-3.3-70b-versatile", temperature=llm_temp, groq_api_key=self.groq_api_key)
         async with self.sem:
             response = llm.invoke([
                 SystemMessage(content=system_prompt),

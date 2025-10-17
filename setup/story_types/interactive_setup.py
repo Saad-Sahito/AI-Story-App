@@ -4,13 +4,12 @@ import time
 import redis.asyncio as redis
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
-from memory_profiler import profile
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from src.story_engines.interactive_adventure.agents.story_author import StoryAuthor
 from src.story_engines.interactive_adventure.agents.director_agent import DirectorGraph
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
-from asyncio import Lock, sleep
+from asyncio import Lock
 from typing import Optional
 from contextlib import asynccontextmanager
 
@@ -125,7 +124,7 @@ class InteractiveStorySetup:
                                 try:
                                     fresh_session = json.loads(fresh_data)
                                     if fresh_session.get("memory_system_initialized", False):
-                                        print(f"✅ Memory system already initialized by another request for {key}")
+                                        #print(f"✅ Memory system already initialized by another request for {key}")
                                         session_data = fresh_session
                                         # Recreate in-memory objects
                                         params = session_data['memory_system_params']
@@ -188,7 +187,7 @@ class InteractiveStorySetup:
                                 pipe.set(key, json.dumps(serializable_data))
                                 pipe.expire(key, SESSION_TTL)
                                 await pipe.execute()
-                            print(f"✅ Memory system initialized and saved for {key}")
+                            #print(f"✅ Memory system initialized and saved for {key}")
                     else:
                         # Already initialized, just recreate in-memory objects
                         params = session_data['memory_system_params']
@@ -322,7 +321,7 @@ class InteractiveStorySetup:
                     del serializable_data['director']
                 if 'user_input_queue' in serializable_data:
                     del serializable_data['user_input_queue']
-                print(f"🔍 Serializing data for key {key}: {serializable_data}")
+                #print(f"🔍 Serializing data for key {key}: {serializable_data}")
                 async with client.pipeline() as pipe:
                     pipe.set(key, json.dumps(serializable_data))
                     pipe.expire(key, SESSION_TTL)
@@ -381,7 +380,7 @@ class InteractiveStorySetup:
                 raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
         await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
         user_session = await self._get_session(user_id)  # Reload session
-        print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
+        #print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
         story_text = (
             await user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
@@ -482,7 +481,7 @@ class InteractiveStorySetup:
         disconnect_event = asyncio.Event()
 
         try:
-            print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
+            #print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
 
             # Lock + check for existing WS
             async with redis_lock(client, f"lock:{ws_key}", timeout=30, retries=10, retry_delay=1.0):
@@ -676,7 +675,7 @@ class InteractiveStorySetup:
                     await client.delete(director_key)
             finally:
                 await websocket.close(code=1000)
-                print(f"✅ WebSocket closed for {user_id}/{story_id}")
+                #print(f"✅ WebSocket closed for {user_id}/{story_id}")
 
         
     async def get_story_cluster(self, user_id: str, story_id: str, chapter_number: int):
@@ -791,7 +790,7 @@ class InteractiveStorySetup:
                 # Delete story key if exists
                 if await client.exists(story_key):
                     await client.delete(story_key)
-                    print(f"✅ Deleted story session for {story_key}")
+                    #print(f"✅ Deleted story session for {story_key}")
                 else:
                     print(f"🔍 No story session found for {story_key}")
                 # Update user session to remove story reference

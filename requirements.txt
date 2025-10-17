@@ -28,3 +28,4 @@ memory-profiler
 redis
 #websockets
 aiosqlite
+python-jose

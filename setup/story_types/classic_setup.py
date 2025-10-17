@@ -118,7 +118,7 @@ class ClassicStorySetup:
                                 try:
                                     fresh_session = json.loads(fresh_data)
                                     if fresh_session.get("memory_system_initialized", False):
-                                        print(f"✅ Memory system already initialized by another request for {key}")
+                                        #print(f"✅ Memory system already initialized by another request for {key}")
                                         session_data = fresh_session
                                         # Recreate in-memory objects
                                         params = session_data['memory_system_params']
@@ -154,7 +154,7 @@ class ClassicStorySetup:
                                 for attempt in range(max_retries):
                                     try:
                                         await session_data['memory_system'].qdrant_initialize()
-                                        print(f"✅ Qdrant initialized successfully for {key}")
+                                        #print(f"✅ Qdrant initialized successfully for {key}")
                                         break
                                     except Exception as e:
                                         if attempt < max_retries - 1:
@@ -376,7 +376,7 @@ class ClassicStorySetup:
                 raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
         await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
         user_session = await self._get_session(user_id)  # Reload session
-        print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
+        #print(f"🔍 continue_story user_session[stories][{story_id}]: {user_session['stories'][story_id]}")
         story_text = (
             await user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
             or "No story text for this chapter found."
@@ -476,7 +476,7 @@ class ClassicStorySetup:
         disconnect_event = asyncio.Event()
 
         try:
-            print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
+            #print(f"🔍 DEBUG: Connected WS for user_id={user_id}, story_id={story_id}")
 
             # Lock + check for existing WS
             async with redis_lock(client, f"lock:{ws_key}", timeout=30, retries=10, retry_delay=1.0):
@@ -669,7 +669,7 @@ class ClassicStorySetup:
                     await client.delete(director_key)
             finally:
                 await websocket.close(code=1000)
-                print(f"✅ WebSocket closed for {user_id}/{story_id}")
+                #print(f"✅ WebSocket closed for {user_id}/{story_id}")
 
 
 
@@ -724,9 +724,9 @@ class ClassicStorySetup:
                             await task
                         except asyncio.CancelledError:
                             pass
-                print("✅ Background tasks cancelled")
+                #print("✅ Background tasks cancelled")
 
-            print("✅ ClassicStorySetup closed successfully")
+            #print("✅ ClassicStorySetup closed successfully")
 
         except Exception as e:
             print(f"❌ Error while closing ClassicStorySetup: {e}")
@@ -759,7 +759,7 @@ class ClassicStorySetup:
                 keys_to_delete = story_keys + [user_key] if await client.exists(user_key) else story_keys
                 if keys_to_delete:
                     await client.delete(*keys_to_delete)
-                    print(f"✅ Deleted {len(keys_to_delete)} keys for user {user_id}")
+                    #print(f"✅ Deleted {len(keys_to_delete)} keys for user {user_id}")
                 else:
                     print(f"🔍 No sessions found for user {user_id}")
             import gc
@@ -785,7 +785,7 @@ class ClassicStorySetup:
                 # Delete story key if exists
                 if await client.exists(story_key):
                     await client.delete(story_key)
-                    print(f"✅ Deleted story session for {story_key}")
+                    #print(f"✅ Deleted story session for {story_key}")
                 else:
                     print(f"🔍 No story session found for {story_key}")
                 # Update user session to remove story reference

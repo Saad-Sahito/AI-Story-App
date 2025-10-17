@@ -418,7 +418,7 @@ class SharedScenePlannerService:
     "⚙️ Rules:\n"
     "1. You must follow the Director's Instructions precisely — do not invent, alter, or omit planned details.\n"
     "2. You only know what the Director tells you — you have no memory of past scenes.\n"
-    "3. Write in vivid, immersive prose that captures tone, setting, emotions, and action.\n"
+    "3. Write in natural, immersive prose that captures tone, setting, emotions, and action.\n"
     "4. Do NOT summarize or repeat previous content. Continue naturally from the last provided paragraph.\n"
     "5. Include all required creative elements from the 'screenplay_notes' section (e.g., imagery, metaphors, pacing cues).\n\n"
 

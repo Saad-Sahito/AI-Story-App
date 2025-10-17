@@ -263,7 +263,7 @@ class SharedScenePlannerService:
             "or story-wide goals.\n\n"
             "Return a JSON object with a single field 'action':\n"
             "- 'Complete' if all events and emotional beats from the Scene Plan have been sufficiently covered in the scene text.\n"
-            "- 'Not Complete' if any required events or beats are missing or incomplete.\n\n"
+            "- 'Not Complete' if any required events or beats are missing or incomplete or word count is significantly less than target.\n\n"
             "Do not include any explanations or extra fields in your response — just the JSON."
         )
 
@@ -331,13 +331,13 @@ class SharedScenePlannerService:
             "⚙️ RULES:\n"
             "- Treat the Scene Plan as the complete truth. Do not invent new events, characters, or locations beyond it.\n"
             "- Stay consistent with the listed emotional and thematic intentions.\n"
-            "- Write naturally and vividly, but do not contradict or exceed the blueprint.\n"
+            "- Write naturally but do not contradict or exceed the blueprint.\n"
             "- If the Scene Plan contains a chapter closure condition, ensure the writing naturally builds toward it without resolving it early.\n"
             "- Never summarize or restate the plan—write story prose only.\n"
             "- Write ONE paragraph only at a time. Not the whole scene at once, updated incrementally, word count will be provided to you as scene continues.\n"
             "- Combined scene word count should be around the indicated target.\n"
             "- Keep it appropriate for all ages.\n\n"
-            "The goal is to bring the Scene Plan to life faithfully and clearly, as though you are animating its blueprint with vivid storytelling."
+            "The goal is to bring the Scene Plan to life faithfully and clearly, as though you are animating its blueprint with natural storytelling."
         )
 
         max_scene_length = 2500  # Reduced for memory efficiency
