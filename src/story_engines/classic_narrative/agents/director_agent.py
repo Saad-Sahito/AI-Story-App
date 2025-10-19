@@ -8,13 +8,13 @@ from langgraph.graph import StateGraph, END
 #from langchain_core.messages import AIMessage
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
-from src.llm_client.llm_client import groq_client, ingestor_gemini_client
+from src.llm_client.llm_client import story_client, ingestor_gemini_client
 
 # Keep existing state and models unchanged
 @dataclass
@@ -114,7 +114,7 @@ class Ingestor:
         self.memory = memory_system
 
     # ---- Scene Ingestion (this is part of the Ingestor class, not DirectorGraph) ----
-    async def ingest_scene(self, state: StoryState, scene_text: str, llm_temp: float, max_retries: int = 3) -> Dict[str, str]:
+    async def ingest_scene(self, state: StoryState, scene_text: str, llm_temp: float, token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON using schema + parser."""
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
@@ -167,7 +167,8 @@ Respond ONLY in JSON with this schema:
                     "continue_scene_id": state.scene_id + 1, 
                     "word_count": state.word_count, 
                     "story_title": state.story_title,
-                    "tone_temp": llm_temp
+                    "tone_temp": llm_temp,
+                    "tokens_usage": token_usage
                 })
                 del system_prompt, human_prompt
                 return result
@@ -192,7 +193,8 @@ Respond ONLY in JSON with this schema:
                         "continue_scene_id": state.scene_id + 1, 
                         "word_count": state.word_count, 
                         "story_title": state.story_title,
-                        "tone_temp": llm_temp
+                        "tone_temp": llm_temp,
+                        "tokens_usage": token_usage
                     })
                     del system_prompt, human_prompt, scene_text
                     return result
@@ -215,7 +217,7 @@ Respond ONLY in JSON with this schema:
         
         del system_prompt, human_prompt
 
-    async def ingest_chapter(self, state: StoryState, current_chap_summary, llm_temp: float, max_retries: int = 3) -> Dict[str, Any]:
+    async def ingest_chapter(self, state: StoryState, current_chap_summary, llm_temp: float, token_usage: dict, max_retries: int = 3) -> Dict[str, Any]:
         """Summarize and extract structured details about a full chapter.
         Retries with LLM if parse_obj + parse + json_fixer all fail.
         """
@@ -297,7 +299,7 @@ The output **must be valid JSON**, not inside code fences, with no trailing comm
                 await self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                 state.current_chapter_id += 1
                 state.scene_id = 1
-                await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count, "tone_temp": llm_temp})
+                await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count, "tone_temp": llm_temp, "tokens_usage": token_usage})
                 #self.memory.close()
                 print("Chapter Complete!")
                 result.update({
@@ -325,7 +327,7 @@ The output **must be valid JSON**, not inside code fences, with no trailing comm
                     await self.memory.add_post_chapter_bundle(parts=result, metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title})
                     state.current_chapter_id += 1
                     state.scene_id = 1
-                    await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count})
+                    await self.memory.update_story_progress(metadata={"latest_chapter_id": state.current_chapter_id, "continue_scene_id": state.scene_id, "story_title": state.story_title, "word_count": state.word_count, "tokens_usage": token_usage})
                     #self.memory.close()
                     print("Chapter Complete!")
                     result.update({
@@ -452,11 +454,14 @@ class DirectorGraph:
 
             # ⚡ Async call — never use asyncio.run() inside an async def
             print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-            scene_text, scene_cluster, status = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
+            scene_text, scene_cluster, status, tokens = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
                 user_context=user_context,
                 stop_event=self.stop_event,
-                llm_temp=self.llm_temp
+                llm_temp=self.llm_temp,
+                model=self.model,
+                token_usage=self.token_usage
             )
+            
 
             if status == "CANCELLED":
                 # 🛑 Scene generation was cancelled by user or system
@@ -480,7 +485,8 @@ class DirectorGraph:
                 continue  # repeat scene
 
             elif status == "SUCCESS":
-                del user_context
+                self.token_usage = tokens
+                del user_context, tokens
                 gc.collect()
 
                 # 🧠 Handle post-scene user choice
@@ -494,7 +500,7 @@ class DirectorGraph:
                             print(f"⚠️ scene_chunk_callback raised: {e}")
 
                         user_choice = False
-                        for _ in range(5000):
+                        for _ in range(3600):
                             choice = await redis_client.lpop(queue_key)
                             if choice in (b"1", "1", 1):
                                 user_choice = True
@@ -519,7 +525,7 @@ class DirectorGraph:
 
                 # 📚 Ingest the scene into memory
                 ingestor = Ingestor(self.memory)
-                scene_bundle = await ingestor.ingest_scene(state, scene_text, self.llm_temp)
+                scene_bundle = await ingestor.ingest_scene(state=state, scene_text=scene_text, llm_temp=self.llm_temp, token_usage=self.token_usage)
                 del ingestor
                 gc.collect()
 
@@ -564,7 +570,7 @@ class DirectorGraph:
     
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
-        result = await ingestor.ingest_chapter(state=state, current_chap_summary=self.current_chap_summary, llm_temp=self.llm_temp)
+        result = await ingestor.ingest_chapter(state=state, current_chap_summary=self.current_chap_summary, llm_temp=self.llm_temp, token_usage=self.token_usage)
          # reset current chapter summary after ingesting
         self.current_chap_summary = ""
         del ingestor
@@ -667,10 +673,13 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
             print(f"🎭 Generating NEW chapter plan for chapter {state.current_chapter_id}")
             
             for attempt in range(1, max_retries + 1):
-                resp = await groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp)
+                resp, tokens = await story_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp, model=self.model)
                 raw_text = StoryHelpers._extract_content(resp)
                 clean_resp = StoryHelpers._strip_code_fences(raw_text)
-                del raw_text, resp
+                self.token_usage["prompt_tokens"] += tokens["prompt_tokens"]
+                self.token_usage["completion_tokens"] += tokens["completion_tokens"]
+                self.token_usage["total_tokens"] += tokens["total_tokens"]
+                del raw_text, resp, tokens
                 gc.collect()
                 if isinstance(clean_resp, dict):
                     clean_resp = json.dumps(clean_resp)
@@ -756,7 +765,9 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
         try:
             # Load story progress
             story_progress = await self.memory.get_story_progress()
-            self.llm_temp = story_progress.get("tone_temp", 0.7) if story_progress else 0.7
+            self.llm_temp = story_progress.get("metadata", {}).get("tone_temp", 0.7) if story_progress else 0.7
+            self.model = story_progress.get("metadata", {}).get("model","")
+            self.token_usage = story_progress.get("metadata", {}).get("token_usage", {})
             if story_progress:
                 initialized_state = StoryState(
                     current_chapter_id=story_progress.get("latest_chapter_id", 1),

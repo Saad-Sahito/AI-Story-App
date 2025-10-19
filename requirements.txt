@@ -1,31 +1,48 @@
+# === Core numerical and ML dependencies ===
+
 numpy==1.26.4
-openai
-langgraph>=0.3.27
-pinecone-client
-#streamlit
-requests
-langgraph-prebuilt
-torch==2.2.2
+torch==2.7.1
+torchvision==0.22.1
 transformers>=4.40,<4.46
 sentence-transformers>=2.2,<3.0
-fastapi[all]
-#nicegui
-#anthropic
+
+
+# === LangChain ecosystem (pinned and mutually compatible) ===
+langchain==0.3.27
+langchain-core==0.3.79
+langchain-community==0.3.31
+langchain-openai==0.2.10
+langchain-google-genai==2.0.10
+langchain-anthropic==0.2.3
+langchain-groq==0.3.7
+
+
+# === LLM orchestration and agent graph ===
+langgraph>=0.3.27
+langgraph-prebuilt
+
+# === Databases, vector stores, and caching ===
+pinecone-client
 qdrant-client
-#pymongo
-langchain-openai
-langchain-google-genai
-langchain-groq
-#langchain-ollama #for local deployment only not render
+redis
+aiosqlite
 supabase
+
+# === Web frameworks and APIs ===
+fastapi[all]
 uvicorn
+gunicorn
 websockets
 httpx
+requests
 python-dotenv
-langchain_community
-gunicorn
-memory-profiler
-redis
-#websockets
-aiosqlite
 python-jose
+
+# === Optional / debugging ===
+memory-profiler
+
+# === Commented out (enable if needed) ===
+# streamlit
+# nicegui
+# pymongo
+# langchain-ollama  # for local deployment only, not for Render

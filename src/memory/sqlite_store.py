@@ -1,13 +1,10 @@
-# src/memory/sqlite_store.py
 import aiosqlite
 import json
-#import sqlite3
 import asyncio
+import base64
 from typing import Dict, Any, Optional, List
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
-#from tenacity import retry, stop_after_attempt, wait_exponential
-
 
 class SQLiteStore:
     init_lock = asyncio.Lock()
@@ -18,8 +15,6 @@ class SQLiteStore:
         self.user_id = user_id
         self.story_id = story_id
         self.semaphore = Semaphore(10)  # Limit to 10 concurrent connections
-        #Path(db_path).parent.mkdir(parents=True, exist_ok=True)
-        #self._init_database()
 
     @asynccontextmanager
     async def _get_connection(self):
@@ -27,30 +22,29 @@ class SQLiteStore:
             conn = await aiosqlite.connect(self.db_path, timeout=5.0)
             conn.row_factory = aiosqlite.Row
             try:
-                yield conn   # ✅ yield, not return
+                yield conn
             finally:
                 await conn.close()
+                
     @staticmethod
     async def _init_database(db_path):
         """Initialize database with all required tables."""
-        #async with self.init_lock:
         async with aiosqlite.connect(db_path) as conn:
-        #conn = sqlite3.connect(db_path)
-        
             await conn.execute("PRAGMA journal_mode=WAL;")  # Enable WAL for concurrent reads
             await conn.execute("PRAGMA synchronous=NORMAL;")
             await conn.execute("PRAGMA foreign_keys = ON")
             
-            # Users table
+            # Users table (user_tag removed)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT NOT NULL,
                     nickname TEXT NOT NULL,
-                    user_tag TEXT NOT NULL,
                     age INTEGER,
+                    tier INTEGER,
+                    no_genre TEXT, -- array stored as text
+                    no_themes TEXT, -- array stored as text
                     stories TEXT DEFAULT '[]', -- JSON array stored as text
-                    PRIMARY KEY (user_id),
-                    UNIQUE(user_id, user_tag)
+                    PRIMARY KEY (user_id)
                 )
             """)
             
@@ -115,8 +109,7 @@ class SQLiteStore:
                 )
             """)
 
-            
-            # Story progress table
+            # Story progress table with image_data column
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS story_progress (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -125,15 +118,18 @@ class SQLiteStore:
                     latest_chapter_id INTEGER,
                     continue_scene_id INTEGER,
                     word_count INTEGER DEFAULT 0,
-                    metadata TEXT, -- JSON stored as text
+                    image_data BLOB,
+                    public BOOLEAN,
+                    complete BOOLEAN,
+                    metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(user_id, story_id)
+                    UNIQUE(user_id, story_id),
+                    FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
             
-            # Create indexes for better performance
-            await conn.execute("CREATE INDEX IF NOT EXISTS idx_users_user_tag ON users(user_tag)")
+            # Create indexes for better performance (idx_users_user_tag removed)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_texts_user_story ON story_texts(user_id, story_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_story ON characters_raw(user_id, story_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_world_elements_user_story ON world_elements_raw(user_id, story_id)")
@@ -141,16 +137,12 @@ class SQLiteStore:
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_progress_user_story ON story_progress(user_id, story_id)")
             
             await conn.commit()
-        # finally:
-        #     conn.close()
 
-    # ---------- User Management Methods ----------
-    async def add_user(self, nickname: str, user_tag: str, age: Optional[int], user_id: str, stories: List[Dict] = None):
+    async def add_user(self, nickname: str, age: Optional[int], user_id: str, tier: int, no_genre: List[str] = [], no_themes: List[str] = [], stories: List[Dict] = None):
         """Add a new user to the users table."""
         stories = stories or []
         try:
             async with self._get_connection() as conn:
-                # Check if user_id already exists
                 cursor = await conn.execute(
                     "SELECT user_id FROM users WHERE user_id = ?",
                     (user_id,)
@@ -158,28 +150,15 @@ class SQLiteStore:
                 if await cursor.fetchone():
                     return {"status": "error", "message": f"❌ user_id '{user_id}' already exists!"}
 
-                # Check if user_tag already exists
-                cursor = await conn.execute(
-                    "SELECT user_tag FROM users WHERE user_tag = ?",
-                    (user_tag,)
-                )
-                if await cursor.fetchone():
-                    return {"status": "error", "message": f"❌ user_tag '{user_tag}' already exists!"}
-
-                # Validate user_tag
-                if not user_tag.strip():
-                    return {"status": "error", "message": "❌ user_tag cannot be empty!"}
-
-                # Insert new user
                 await conn.execute(
                     """
-                    INSERT INTO users (user_id, nickname, user_tag, age, stories)
-                    VALUES (?, ?, ?, ?, ?)
+                    INSERT INTO users (user_id, nickname, age, tier, no_genre, no_themes, stories)
+                    VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (user_id, nickname, user_tag, age, json.dumps(stories))
+                    (user_id, nickname, age, tier, json.dumps(no_genre), json.dumps(no_themes), json.dumps(stories))
                 )
                 await conn.commit()
-                return {"status": "success", "user_id": user_id, "nickname": nickname, "user_tag": user_tag}
+                return {"status": "success", "user_id": user_id, "nickname": nickname}
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
@@ -197,14 +176,11 @@ class SQLiteStore:
 
                 current_stories = json.loads(row['stories']) if row['stories'] else []
                 
-                # Check if story already exists
                 if any(s["title"] == story_title for s in current_stories):
                     return {"status": "info", "message": f"Story '{story_title}' already exists"}
 
-                # Append new story
                 current_stories.append({"title": story_title, "story_id": story_id, "story_type": story_type})
 
-                # Update stories
                 await conn.execute(
                     """
                     UPDATE users
@@ -215,6 +191,45 @@ class SQLiteStore:
                 )
                 await conn.commit()
                 return {"status": "success", "message": f"Story '{story_title}' added", "stories": current_stories}
+        except aiosqlite.Error as e:
+            return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
+    async def update_user(self, user_id: str, updates: Dict[str, Any]):
+        """Update user row with provided values, leaving unspecified fields unchanged."""
+        try:
+            async with self._get_connection() as conn:
+                cursor = await conn.execute(
+                    "SELECT user_id FROM users WHERE user_id = ?",
+                    (user_id,)
+                )
+                row = await cursor.fetchone()
+                if not row:
+                    return {"status": "error", "message": f"❌ user_id '{user_id}' not found!"}
+
+                # Prepare fields to update
+                fields = []
+                values = []
+                for field in ["nickname", "age", "tier", "no_genre", "no_themes"]:
+                    if field in updates:
+                        if field in ["no_genre", "no_themes"]:
+                            values.append(json.dumps(updates[field]))
+                        else:
+                            values.append(updates[field])
+                        fields.append(f"{field} = ?")
+
+                if not fields:
+                    return {"status": "error", "message": "❌ No valid fields provided for update"}
+
+                query = f"""
+                    UPDATE users
+                    SET {', '.join(fields)}
+                    WHERE user_id = ?
+                """
+                values.append(user_id)
+
+                await conn.execute(query, values)
+                await conn.commit()
+                return {"status": "success", "message": f"User '{user_id}' updated successfully"}
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
@@ -232,7 +247,6 @@ class SQLiteStore:
 
                 current_stories = json.loads(row['stories']) if row['stories'] else []
 
-                # Check if story exists
                 story_exists = next(
                     (s for s in current_stories if s["title"] == story_title or s["story_id"] == story_id),
                     None
@@ -240,13 +254,11 @@ class SQLiteStore:
                 if not story_exists:
                     return {"status": "info", "message": f"Story '{story_title}' does not exist"}
 
-                # Remove story from JSON list
                 current_stories = [
                     s for s in current_stories
                     if s["title"] != story_title and s["story_id"] != story_id
                 ]
 
-                # Update users.stories
                 await conn.execute(
                     """
                     UPDATE users
@@ -256,7 +268,6 @@ class SQLiteStore:
                     (json.dumps(current_stories), user_id)
                 )
 
-                # Delete related rows from all other tables
                 await conn.execute("DELETE FROM story_texts WHERE user_id = ? AND story_id = ?", (user_id, story_id))
                 await conn.execute("DELETE FROM characters_raw WHERE user_id = ? AND story_id = ?", (user_id, story_id))
                 await conn.execute("DELETE FROM world_elements_raw WHERE user_id = ? AND story_id = ?", (user_id, story_id))
@@ -273,16 +284,13 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-
-
-    async def get_user_profile_with_stories(self, user_id: str):
-        """Fetch user profile and their stories with progress (hardened)."""
+    async def get_user_profile(self, user_id: str):
+        """Fetch user profile."""
         try:
             async with self._get_connection() as conn:
-                # Fetch user profile
                 cursor = await conn.execute(
                     """
-                    SELECT user_id, nickname, user_tag, age, stories
+                    SELECT user_id, nickname, age, tier, no_genre, no_themes
                     FROM users
                     WHERE user_id = ?
                     """,
@@ -295,11 +303,45 @@ class SQLiteStore:
                 user_data = {
                     "user_id": user_row["user_id"],
                     "nickname": user_row["nickname"],
-                    "user_tag": user_row["user_tag"],
                     "age": user_row["age"],
+                    "tier": user_row["tier"],
+                    "no_genre": user_row["no_genre"],
+                    "no_themes": user_row["no_themes"]
                 }
 
-                # Parse stories JSON safely
+                return {
+                    "status": "success",
+                    "profile": user_data,
+                }
+
+        except aiosqlite.Error as e:
+            return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
+    
+
+    async def get_user_profile_with_stories(self, user_id: str):
+        """Fetch user profile and their stories with progress (fixed image_data decoding)."""
+        try:
+            async with self._get_connection() as conn:
+                cursor = await conn.execute(
+                    """
+                    SELECT user_id, nickname, age, tier, stories
+                    FROM users
+                    WHERE user_id = ?
+                    """,
+                    (user_id,)
+                )
+                user_row = await cursor.fetchone()
+                if not user_row:
+                    return {"status": "error", "message": "❌ User not found"}
+
+                user_data = {
+                    "user_id": user_row["user_id"],
+                    "nickname": user_row["nickname"],
+                    "age": user_row["age"],
+                    "tier": user_row["tier"]
+                }
+
                 try:
                     story_dicts = json.loads(user_row["stories"] or "[]")
                     if not isinstance(story_dicts, list):
@@ -310,18 +352,17 @@ class SQLiteStore:
                 stories = []
                 for story in story_dicts:
                     if not isinstance(story, dict):
-                        continue  # skip malformed entries
+                        continue
 
                     title = story.get("title", "Untitled Story")
                     story_id = story.get("story_id")
                     story_type = story.get("story_type")
                     if not story_id:
-                        continue  # skip if story_id missing (invalid story record)
+                        continue
 
-                    # Fetch progress for this story
                     cursor = await conn.execute(
                         """
-                        SELECT latest_chapter_id, continue_scene_id, word_count, metadata
+                        SELECT latest_chapter_id, continue_scene_id, word_count, metadata, image_data, public, complete
                         FROM story_progress
                         WHERE user_id = ? AND story_id = ?
                         LIMIT 1
@@ -337,13 +378,35 @@ class SQLiteStore:
                         "latest_chapter_id": 0,
                         "continue_scene_id": 0,
                         "word_count": 0,
+                        "model": "",
+                        "blurb": "",
+                        "image_data": None,
+                        "public": False,
+                        "complete": False
                     }
 
                     if progress_row:
+                        metadata = json.loads(progress_row["metadata"] or "{}")
+
+                        # Handle image_data correctly
+                        raw_image = progress_row["image_data"]
+                        if raw_image:
+                            if isinstance(raw_image, bytes):
+                                image_b64 = base64.b64encode(raw_image).decode("utf-8")
+                            else:
+                                image_b64 = raw_image  # already base64 string
+                        else:
+                            image_b64 = None
+
                         story_data.update({
                             "latest_chapter_id": progress_row["latest_chapter_id"] or 0,
                             "continue_scene_id": progress_row["continue_scene_id"] or 0,
                             "word_count": progress_row["word_count"] or 0,
+                            "model": metadata.get("model", ""),
+                            "blurb": metadata.get("blurb", ""),
+                            "image_data": image_b64,
+                            "public": bool(progress_row["public"]),
+                            "complete": bool(progress_row["complete"])
                         })
 
                     stories.append(story_data)
@@ -357,13 +420,37 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
+    async def update_story_public_status(self, user_id: str, story_id: str, public: bool):
+        """Update the public status for a story in the story_progress table."""
+        try:
+            async with self._get_connection() as conn:
+                cursor = await conn.execute(
+                    """
+                    SELECT user_id, story_id FROM story_progress WHERE user_id = ? AND story_id = ?
+                    """,
+                    (user_id, story_id)
+                )
+                if not await cursor.fetchone():
+                    return {"status": "error", "message": f"❌ Story with user_id '{user_id}' and story_id '{story_id}' not found!"}
 
-    # ---------- PUT methods ----------
-    #@retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
+                await conn.execute(
+                    """
+                    UPDATE story_progress
+                    SET public = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND story_id = ?
+                    """,
+                    (public, user_id, story_id)
+                )
+                await conn.commit()
+                return {"status": "success", "message": f"Public status updated to {public} for story_id '{story_id}'"}
+        except aiosqlite.Error as e:
+            return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
     async def put_text(self, entry: dict, metadata: Optional[Dict[str, Any]] = None):
         chapter_id = (metadata or {}).get("chapter_id", "")
         async with self._get_connection() as conn:
-            async with conn.execute('BEGIN'):  # Start transaction
+            async with conn.execute('BEGIN'):
                 cursor = await conn.execute(
                     f"SELECT text FROM {self.table} WHERE user_id = ? AND story_id = ? AND chapter_id = ?",
                     (self.user_id, self.story_id, chapter_id)
@@ -386,20 +473,16 @@ class SQLiteStore:
                     json.dumps(new_text),
                     json.dumps(metadata or {})
                 ))
-                await conn.commit()  # Commit transaction
+                await conn.commit()
     
     async def put_to_director_notes(self, entry: Any, metadata: Optional[Dict[str, Any]] = None):
-        """
-        Insert or replace a director note entry for a given chapter_id, type, and story_title.
-        Does NOT append — overwrites any existing record for that combination.
-        """
         metadata = metadata or {}
         chapter_id = int(metadata.get("chapter_id", 0))
         type_ = metadata.get("type", "default")
         story_title = metadata.get("story_title", "Untitled")
 
         async with self._get_connection() as conn:
-            async with conn.execute('BEGIN'):  # Start transaction
+            async with conn.execute('BEGIN'):
                 await conn.execute(f"""
                     INSERT INTO {self.table} (
                         user_id, story_id, chapter_id, type, story_title, text, metadata
@@ -419,7 +502,6 @@ class SQLiteStore:
                     json.dumps(entry),
                     json.dumps(metadata)
                 ))
-
                 await conn.commit()
 
     async def put_progress(self, metadata: Optional[Dict[str, Any]] = None):
@@ -430,10 +512,16 @@ class SQLiteStore:
         word_count = metadata.get("word_count", 0)
         story_title = metadata.get("story_title")
         tone_temp = metadata.get("tone_temp")
+        model = metadata.get("model")
+        token_usage = metadata.get("token_usage")  # dict
+        blurb = metadata.get("blurb")
+        image_data = metadata.get("image_data")  # Bytes
+        public = metadata.get("public")
+        complete = metadata.get("complete")
 
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
-                SELECT metadata, latest_chapter_id, continue_scene_id, word_count
+                SELECT metadata, latest_chapter_id, continue_scene_id, word_count, image_data, public, complete
                 FROM story_progress
                 WHERE user_id = ? AND story_id = ?
             """, (self.user_id, self.story_id))
@@ -441,7 +529,7 @@ class SQLiteStore:
             existing_row = await cursor.fetchone()
 
             if existing_row:
-                existing_meta = json.loads(existing_row[0] or "{}")
+                existing_meta = json.loads(existing_row["metadata"] or "{}")
 
                 # Merge old metadata with new (only overwrite if new value is not None)
                 merged_meta = {
@@ -450,6 +538,9 @@ class SQLiteStore:
                     "word_count": word_count if word_count != 0 else existing_meta.get("word_count", 0),
                     "story_title": story_title if story_title is not None else existing_meta.get("story_title"),
                     "tone_temp": tone_temp if tone_temp is not None else existing_meta.get("tone_temp"),
+                    "model": model if model is not None else existing_meta.get("model"),
+                    "token_usage": token_usage if token_usage is not None else existing_meta.get("token_usage", {}),
+                    "blurb": blurb if blurb is not None else existing_meta.get("blurb")
                 }
 
                 await conn.execute("""
@@ -457,6 +548,9 @@ class SQLiteStore:
                     SET latest_chapter_id = ?,
                         continue_scene_id = ?,
                         word_count = ?,
+                        image_data = ?,
+                        public = ?,
+                        complete = ?,
                         metadata = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND story_id = ?
@@ -464,6 +558,9 @@ class SQLiteStore:
                     merged_meta["chapter_id"],
                     merged_meta["scene_id"],
                     merged_meta["word_count"],
+                    image_data if image_data is not None else existing_row["image_data"],
+                    public if public is not None else existing_row["public"],
+                    complete if complete is not None else existing_row["complete"],
                     json.dumps(merged_meta),
                     self.user_id,
                     self.story_id
@@ -476,31 +573,36 @@ class SQLiteStore:
                     "scene_id": scene_id,
                     "word_count": word_count,
                     "story_title": story_title,
-                    "tone_temp": tone_temp
+                    "tone_temp": tone_temp,
+                    "model": model,
+                    "token_usage": token_usage,
+                    "blurb": blurb,
+                    "public": public,
+                    "complete": complete
                 }
 
                 await conn.execute("""
                     INSERT INTO story_progress (
-                        user_id, story_id, latest_chapter_id, continue_scene_id, word_count, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        user_id, story_id, latest_chapter_id, continue_scene_id, word_count, image_data, public, complete, metadata
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     self.user_id,
                     self.story_id,
                     chapter_id,
                     scene_id,
                     word_count,
+                    image_data,
+                    public,
+                    complete,
                     json.dumps(clean_meta)
                 ))
 
             await conn.commit()
 
-
-
     async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):
         """Append new details to existing character/world details."""
         async with self._get_connection() as conn:
             for name, details in details_dict.items():
-                # Get existing details
                 cursor = await conn.execute(
                     f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
                     (self.user_id, self.story_id, name)
@@ -508,14 +610,11 @@ class SQLiteStore:
                 row = await cursor.fetchone()
                 old_details = row['details'] if row else ""
                 
-                # Flatten details if it's a dict
                 if isinstance(details, dict):
                     details = " ".join(f"{k}: {v}" for k, v in details.items())
                 
-
                 new_details = (old_details + " " + details).strip()
                 
-                # Upsert the record
                 await conn.execute(f"""
                     INSERT INTO {self.table} (user_id, story_id, name, details, metadata)
                     VALUES (?, ?, ?, ?, ?)
@@ -532,8 +631,6 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
-
-    # ---------- GET methods ----------
     async def get_text(self, chapter_id: str) -> List[dict]:
         """Get the full JSON array (list of dicts) for a chapter."""
         async with self._get_connection() as conn:
@@ -576,30 +673,32 @@ class SQLiteStore:
             text = row["text"]
 
             try:
-                # Decode JSON if it's stored as a list or dict
                 decoded = json.loads(text)
                 return decoded
             except json.JSONDecodeError:
-                # If it's a plain string, just return it as-is
                 return text
-
-
 
     async def get_progress(self) -> Optional[Dict[str, Any]]:
         """Get the latest story progress."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                "SELECT latest_chapter_id, continue_scene_id, word_count, metadata FROM story_progress WHERE user_id = ? AND story_id = ? LIMIT 1",
+                "SELECT latest_chapter_id, continue_scene_id, word_count, image_data, public, complete, metadata FROM story_progress WHERE user_id = ? AND story_id = ? LIMIT 1",
                 (self.user_id, self.story_id)
             )
             row = await cursor.fetchone()
             
             if row:
+                metadata = json.loads(row['metadata']) if row['metadata'] else {}
+                # Ensure token_usage is a dict
+                metadata['token_usage'] = metadata.get('token_usage', {}) if isinstance(metadata.get('token_usage'), (dict, list)) else {}
                 return {
                     'latest_chapter_id': row['latest_chapter_id'],
                     'continue_scene_id': row['continue_scene_id'],
                     'word_count': row['word_count'],
-                    'metadata': json.loads(row['metadata']) if row['metadata'] else {}
+                    'image_data': row['image_data'],
+                    'public': row['public'],
+                    'complete': row['complete'],
+                    'metadata': metadata
                 }
             return None
 
@@ -627,10 +726,9 @@ class SQLiteStore:
                 f"SELECT name, details FROM {self.table} WHERE user_id = ? AND story_id = ?",
                 (self.user_id, self.story_id)
             )
-            rows = await cursor.fetchall()   # ✅ must be awaited
+            rows = await cursor.fetchall()
             return {row['name']: row['details'] for row in rows}
 
     async def close(self):
         """Close database connection (SQLite handles this automatically)."""
-        pass  # SQLite connections are automatically closed when context exits
-
+        pass

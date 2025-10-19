@@ -3,17 +3,19 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
+from typing import Dict, Any, Optional, List
 import httpx
 import os
 from pathlib import Path
 from contextlib import asynccontextmanager
 import asyncio
 import time
+import json
 import redis.asyncio as redis
 from pydantic import BaseModel
 from setup.shared_redis_pool import REDIS_POOL, get_redis_client
 from setup.main_setup import MainSetup
-from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories
+from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories, get_user_profile, update_user_settings, update_user_story_public_status
 from src.memory.shared_resources import SHARED_QDRANT
 #from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
 from setup.story_types.interactive_setup import get_shared_interactive_setup, close_shared_interactive_setup
@@ -21,7 +23,9 @@ from setup.story_types.classic_setup import get_shared_classic_setup, close_shar
 from src.story_engines.interactive_adventure.agents import shared_scene_planner as interactive_scene_planner_module
 from src.story_engines.classic_narrative.agents import shared_scene_planner as classic_scene_planner_module
 from src.memory.sqlite_store import SQLiteStore
-import json
+from src.utilities.model_suggestor import user_context_extractor_model
+from src.utilities.story_title_generator import user_context_extractor_title
+
 # Initialize MainSetup
 #print("🟡 Initializing APIBackend...")
 try:
@@ -203,6 +207,7 @@ async def verify_supabase_jwt(token: str):
         #print(f"JWT verification error: {detail}")
         raise HTTPException(status_code=401, detail=detail)
 
+
 # Authentication Middleware
 @app.middleware("http")
 async def supabase_auth_middleware(request: Request, call_next):
@@ -223,7 +228,7 @@ async def supabase_auth_middleware(request: Request, call_next):
         )
 
     # Skip authentication for whitelisted routes
-    whitelist = ["/users/active", "/storage", "/docs", "/openapi.json"]
+    whitelist = ["/users/active", "/docs", "/openapi.json"]
     if request.url.path == "/" or any(request.url.path.startswith(path) for path in whitelist):
         #print(f"✅ Skipping auth for whitelisted route: {request.url.path}")
         response = await call_next(request)
@@ -282,31 +287,11 @@ async def supabase_auth_middleware(request: Request, call_next):
             }
         )
 
-    try:
-        if request.method in ("POST", "PUT", "PATCH"):
-            body = await request.json()
-            user_id = body.get("user_id") or body.get("initial_story_data", {}).get("user_id")
-        else:
-            user_id = request.query_params.get("user_id") or request.path_params.get("user_id")
-    except Exception as e:
-        print(f"❌ Error reading request body or query: {str(e)}")
-        user_id = request.query_params.get("user_id") or request.path_params.get("user_id")
-
-    if user_id and user_id != supabase_user_id:
-        print(f"❌ User ID mismatch: {user_id} != {supabase_user_id}")
-        return JSONResponse(
-            status_code=403,
-            content={"detail": "User ID does not match authenticated user"},
-            headers={
-                "Access-Control-Allow-Origin": request.headers.get("Origin", "http://127.0.0.1:3000"),
-                "Access-Control-Allow-Methods": "GET, POST, PUT, PATCH, DELETE, OPTIONS",
-                "Access-Control-Allow-Headers": "*",
-                "Access-Control-Allow-Credentials": "true",
-            }
-        )
-
-    #print(f"✅ Authenticated Supabase user: {supabase_user_id}")
+    # Store the authenticated user in request.state for use in endpoints
+    # Don't try to validate user_id here - let endpoints handle it
+    print(f"✅ Authenticated Supabase user: {supabase_user_id}")
     request.state.supabase_user = payload
+    
     response = await call_next(request)
     response.headers["Access-Control-Allow-Origin"] = request.headers.get("Origin", "http://127.0.0.1:3000")
     response.headers["Access-Control-Allow-Methods"] = "GET, POST, PUT, PATCH, DELETE, OPTIONS"
@@ -336,14 +321,24 @@ async def redis_lock(client, lock_key, timeout=10):
     else:
         raise HTTPException(status_code=503, detail="Could not acquire lock")
 
+#---------Health Check Call---------------
+
 @app.get("/")
 async def root():
     return {"message": "status ok"}
 
-# Story Management API Routes
+#--------------Story Management API Routes------------------
+class PremiseRequest(BaseModel):
+    initial_story_data: dict
+    model: str  # ← Add model to the request body
+
 @app.post("/premise")
-async def api_create_premise(initial_story_data: dict):
-    return await mainsetup.create_premise(initial_story_data=initial_story_data)
+async def api_create_premise(request: PremiseRequest):
+    print(request.initial_story_data)
+    return await mainsetup.create_premise(
+        initial_story_data=request.initial_story_data, 
+        model=request.model  # ← Get model from body
+    )
 
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
 async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: str, story_type: str = Query(...)):
@@ -406,31 +401,42 @@ async def api_logout_story(user_id: str, story_id: str, story_type: str):
 async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapter_number: int):
     return await mainsetup.get_story_cluster(user_id=user_id, story_id=story_id, story_type=story_type, chapter_number=chapter_number)
 
-# User Session Management Routes
+@app.post("/stories/progress/{user_id}/{story_id}/public")
+async def api_put_story_public(user_id: str, story_id: str, public: bool = True):
+    return await update_user_story_public_status(user_id=user_id, story_id=story_id, public=public)
+
+#-----------------User Session Management Routes--------------------------
 @app.patch("/users/{user_id}/session")
 async def api_logout(user_id: str):
     return await mainsetup.logout(user_id)
 
-# User Data Management Routes
+#-------------------User Data Management Routes---------------------------
 class UserCreate(BaseModel):
     nickname: str
-    user_tag: str
     age: int
+    tier: int = 1
+    no_genre: List[str]
+    no_themes: List[str]
     stories: list = []
     user_id: str | None = None
 
 @app.post("/users")
 async def api_add_user(user: UserCreate, request: Request):
+    print(f"📥 Received POST /users request")
+    print(f"Request headers: {request.headers}")
+    print(f"Request body: {user}")
     # Verify user_id matches authenticated user
     supabase_user_id = request.state.supabase_user.get("sub")
     if user.user_id and user.user_id != supabase_user_id:
         raise HTTPException(status_code=403, detail="User ID does not match authenticated user")
-    #print(f"Adding user: {user.dict()}")
+    print(f"Adding user: {user}")
     result = await add_user(
         nickname=user.nickname,
-        user_tag=user.user_tag,
         age=user.age,
+        tier=user.tier,
         user_id=supabase_user_id,
+        no_genre=user.no_genre,
+        no_themes=user.no_themes,
         stories=user.stories
     )
     print(f"User added: {result}")
@@ -443,13 +449,33 @@ async def api_delete_story(user_id: str, story_title: str, story_type: str):
     await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
     return await delete_story(user_id=user_id, story_title=story_title, story_id=story_id)
 
+@app.get("/users/{user_id}/profile/data")
+async def api_get_user_profile_data(user_id: str):
+    return await get_user_profile(user_id=user_id)
+
 @app.get("/users/{user_id}/profile")
 async def api_get_user_profile_data_and_stories(user_id: str):
     return await get_user_profile_with_stories(user_id=user_id)
 
+@app.post("/users/{user_id}/profile/setting")
+async def api_update_user_settings(user_id: str, user_data: Dict[str, Any]):
+    return await update_user_settings(user_id=user_id, user_data=user_data)
+
+#-----------------------Utility Calls----------------------
+class TitleGeneratorRequest(BaseModel):
+    initial_story_data: dict
+
+class ModelSuggestorRequest(BaseModel):
+    initial_story_data: dict
+
+@app.post("/utility/model_suggestor")
+async def api_model_suggestor(request: ModelSuggestorRequest, tier: int):
+    return await user_context_extractor_model(user_context=request.initial_story_data, tier=tier)
 
 
-
+@app.post("/utility/title_generator")
+async def api_title_generator(request: TitleGeneratorRequest):
+    return await user_context_extractor_title(user_context=request.initial_story_data)
 
 
 

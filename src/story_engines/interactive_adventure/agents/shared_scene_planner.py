@@ -7,11 +7,11 @@ import asyncio
 from typing import List, Optional, Callable, Any, Tuple
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
-from src.llm_client.llm_client import groq_client, llm_for_scene_planner_groq_client
+from src.llm_client.llm_client import story_client, llm_for_scene_planner_client
 from langgraph.graph import StateGraph, END
 from langchain_core.messages import AIMessage, BaseMessage
 from src.utilities.story_helpers import StoryHelpers
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 
 # Global shared instance
 INTERACTIVE_SCENE_PLANNER_SERVICE = None
@@ -145,7 +145,7 @@ class SharedScenePlannerService:
     # -------------------------
     # Public: run_scene
     # -------------------------
-    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7) -> Tuple[str, list, str]:
+    async def run_scene(self, user_context: UserSceneContext, token_usage: dict, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7, model: str = "None") -> Tuple[str, list, str]:
         """
         Process scene for a specific user using their context.
         Returns (scene_text_so_far, scene_cluster, status).
@@ -157,6 +157,9 @@ class SharedScenePlannerService:
         """
         print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
         self.llm_temp = llm_temp
+        self.model = model
+        self.token_usage = token_usage
+        del llm_temp, model, token_usage
         try:
             user_context.scene_state.user_context_id = user_context.user_id
         except Exception as e:
@@ -227,7 +230,7 @@ class SharedScenePlannerService:
                 scene_cluster = getattr(scene_memory, "scene_cluster", [])
 
             print("✅ Scene completed normally")
-            return scene_so_far, scene_cluster, "SUCCESS"
+            return scene_so_far, scene_cluster, "SUCCESS", self.token_usage
 
         except asyncio.CancelledError:
             print("🛑 SceneGraph CancelledError caught")
@@ -261,22 +264,25 @@ class SharedScenePlannerService:
             return state
 
         scene_memory: SceneMemory = state.scene_memory
-        system_prompt = (
-    "You are the Scene Planner Agent. Your job is to analyze whether the Scene Writer's latest output "
-    "has covered all the events, beats, and decision points specified in the Director's Scene Blueprint.\n\n"
+        system_prompt = f"""
+You are the Scene Planner Agent. Your job is to analyze whether the Scene Writer's output so far
+has covered all the events, beats, and decision points specified in the Director's Scene Blueprint.
 
-    "You must only consider the current scene, not the entire chapter or story. "
-    "Do not confuse 'scene completion' with 'chapter completion' — those are handled separately.\n\n"
+You must only consider the current scene, not the entire chapter or story.
+Do not confuse 'scene completion' with 'chapter completion' — those are handled separately.
 
-    "Check if all required beats from the Director's instructions (actions, emotions, locations, dialogue moments, "
-    "and any specified user decision points) have been fulfilled.\n\n"
+Check if all required beats from the Director's instructions (actions, emotions, locations, dialogue moments,
+and any specified user decision points) have been fulfilled.
 
-    "Return a valid JSON object in this format:\n"
-    f"{self.scene_planner_parser.get_format_instructions()}"
+If the last sentence expects a user decision then let the scene continue.
 
-    "If even one major event or decision point is missing, mark action as 'Not Complete'. "
-    "Only return 'Complete' when you are confident that the entire scene blueprint has been faithfully covered."
-)
+Return a valid JSON object in this format:
+{self.scene_planner_parser.get_format_instructions()}
+
+If even one major event or decision point is missing, mark action as 'Not Complete'.
+Only return 'Complete' when you are confident that the entire scene blueprint has been faithfully covered.
+"""
+
 
         human_prompt = (
             f"Director's Instructions: {scene_memory.DirectorInstructions}\n"
@@ -285,7 +291,7 @@ class SharedScenePlannerService:
 
         try:
             llm_response = await asyncio.wait_for(
-                llm_for_scene_planner_groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                llm_for_scene_planner_client(system_prompt=system_prompt, human_prompt=human_prompt),
                 timeout=30.0
             )
             raw_resp = llm_response.content.strip()
@@ -357,7 +363,7 @@ class SharedScenePlannerService:
                     try:
                         print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
                         user_choice = None
-                        for _ in range(5000):
+                        for _ in range(3600):
                             choice = await redis_client.lpop(queue_key)
                             if choice:
                                 user_choice = choice
@@ -410,30 +416,34 @@ class SharedScenePlannerService:
         scene_memory: SceneMemory = state.scene_memory
         user_context_id = state.user_context_id
         
-        system_prompt = (
-    "You are the Scene Writer Agent for an interactive text-based story. "
-    "Your task is to write exactly one new paragraph that continues the scene "
-    "according to the Director's detailed scene blueprint.\n\n"
+        system_prompt = f"""
+You are the Scene Writer Agent for an interactive text-based story.
+Your task is to write exactly one concise, coherent paragraph that continues the scene
+according to the Director's detailed scene blueprint.
 
-    "⚙️ Rules:\n"
-    "1. You must follow the Director's Instructions precisely — do not invent, alter, or omit planned details.\n"
-    "2. You only know what the Director tells you — you have no memory of past scenes.\n"
-    "3. Write in natural, immersive prose that captures tone, setting, emotions, and action.\n"
-    "4. Do NOT summarize or repeat previous content. Continue naturally from the last provided paragraph.\n"
-    "5. Include all required creative elements from the 'screenplay_notes' section (e.g., imagery, metaphors, pacing cues).\n\n"
+⚙️ Rules:
+1. Follow the Director's instructions precisely — do not invent, alter, or omit planned details.
+2. You only know what the Director tells you — you have no memory of past scenes.
+3. Write in a natural, vivid style that captures tone, setting, emotions, and action as described.
+4. Avoid long, overly descriptive sentences — keep pacing tight and focused on key beats.
+5. Do NOT summarize or repeat previous content; continue naturally from the last paragraph.
+6. Include all required creative elements from the 'screenplay_notes' section (e.g., imagery, metaphors, pacing cues).
+7. Keep the paragraph around 80–130 words for balanced pacing.
 
-    "🎭 When decision points are included:\n"
-    "- If the Director's instructions specify a user decision point, end your paragraph with that question.\n"
-    "- Offer 2-4 clearly distinct options labeled with letters (A, B, C, D), within the question.\n"
-    "- Each option should represent a meaningful narrative branch.\n"
-    "- Output the number of available options as an integer in the field `'number_of_options'`.\n\n"
+🎭 Decision Points:
+- If the Director's instructions specify a user decision point, end your paragraph with that question.
+- Offer 2–4 clearly distinct options labeled (A), (B), (C), (D) within the question.
+- Each option must represent a meaningful narrative branch.
+- Output the number of available options as an integer in the field 'number_of_options'.
 
-    "🧩 Output JSON format:\n"
-    f"{self.scene_writer_parser.get_format_instructions()}"
+🧩 Output JSON format:
+{self.scene_writer_parser.get_format_instructions()}
 
-    "Stay strictly within the Director's plan. Do not create new storylines, characters, or settings. "
-    "End naturally if the scene has no pending decision points."
-)
+Stay strictly within the Director's plan.
+Do not create new storylines, characters, or settings.
+End naturally if the scene has no pending decision points.
+"""
+
 
         max_scene_length = 3500  # Reduced for memory efficiency
         truncated_scene = scene_memory.scene_so_far_for_scene_planner[-max_scene_length:] if len(scene_memory.scene_so_far_for_scene_planner) > max_scene_length else scene_memory.scene_so_far_for_scene_planner
@@ -444,12 +454,15 @@ class SharedScenePlannerService:
 {f'Current scene word count: {scene_memory.word_count}' if scene_memory.word_count else ''}"""
         print("SCENE WRITER CONTEXT: ", human_prompt)
         try:
-            llm_response = await asyncio.wait_for(
-                groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp),
+            llm_response, tokens = await asyncio.wait_for(
+                story_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp, model=self.model),
                 timeout=30.0
             )
+            self.token_usage["prompt_tokens"] += tokens["prompt_tokens"]
+            self.token_usage["completion_tokens"] += tokens["completion_tokens"]
+            self.token_usage["total_tokens"] += tokens["total_tokens"]
             clean_resp = llm_response.content.strip()
-            del llm_response
+            del llm_response, tokens
 
             try:
                 parsed = self.scene_writer_parser.parse(clean_resp)
@@ -462,7 +475,7 @@ class SharedScenePlannerService:
                 retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
                 try:
                     retry_resp = await asyncio.wait_for(
-                        groq_client(system_prompt=system_prompt, human_prompt=retry_prompt, llm_temp=self.llm_temp),
+                        story_client(system_prompt=system_prompt, human_prompt=retry_prompt, llm_temp=self.llm_temp, model=self.model),
                         timeout=30.0
                     )
                     retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)

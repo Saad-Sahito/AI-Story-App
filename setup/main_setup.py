@@ -27,14 +27,14 @@ class MainSetup:
             setup = await get_shared_classic_setup()
             return await setup.continue_story(user_id=user_id, story_id=story_id)
 
-    async def create_premise(self, initial_story_data: dict):
+    async def create_premise(self, initial_story_data: dict, model: str):
         story_type = initial_story_data['story_type']
         if story_type == 'interactive':
             setup = await get_shared_interactive_setup()
-            return await setup.create_premise(initial_story_data=initial_story_data)
+            return await setup.create_premise(initial_story_data=initial_story_data, model=model)
         elif story_type == 'classic':
             setup = await get_shared_classic_setup()
-            return await setup.create_premise(initial_story_data=initial_story_data)
+            return await setup.create_premise(initial_story_data=initial_story_data, model=model)
 
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str, story_type: str):
         if story_type == 'interactive':

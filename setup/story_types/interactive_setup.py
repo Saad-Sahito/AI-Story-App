@@ -347,7 +347,7 @@ class InteractiveStorySetup:
 
     async def initialize_story(self, user_id: str, story_title: str = ""):
         """Initialize a new story and store session in Redis."""
-        story_title_normalized = story_title.lower().replace(" ", "_")
+        story_title_normalized = story_title.lower().replace(" ", "_").replace(":", "_")
         story_id = f"{story_title_normalized}_{user_id}"
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
         await memory_system.qdrant_initialize()
@@ -375,7 +375,7 @@ class InteractiveStorySetup:
         )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
 
-    async def create_premise(self, initial_story_data: dict):
+    async def create_premise(self, initial_story_data: dict, model: str):
         """Create story premise and update session in Redis."""
         client = await get_redis_client()
         tone_dict = {
@@ -422,9 +422,10 @@ class InteractiveStorySetup:
                 initial_story_data["Length"] = mapped_length
             filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id"]}
             form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
-            await story_author.set_story_premise(
+            tokens, blurb, image_data = await story_author.set_story_premise(
                 form_string,
                 initial_story_data.get("Title", ""),
+                model=model
             )
             del story_author
             await story_data["memory_system"].update_story_progress(
@@ -434,6 +435,10 @@ class InteractiveStorySetup:
                     "story_title": initial_story_data["Title"],
                     "word_count": 0,
                     "tone_temp": mapped_tone_temp,
+                    "model": model,
+                    "token_usage": tokens,
+                    "blurb": blurb,
+                    "image_data": image_data
                 }
             )
             serializable_story_data = {
@@ -445,7 +450,7 @@ class InteractiveStorySetup:
         await self._set_session(user_id, data=user_data)
         from src.memory.user_management import append_story
         await append_story(user_id=user_id, story_title=initial_story_data.get("Title", ""), story_id=story_id, story_type=initial_story_data.get("story_type", ""))
-        return {"status": "success", "premise": "Premise set."}
+        return {"status": "success", "blurb": blurb, "image_data": image_data}
 
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         await websocket.accept()

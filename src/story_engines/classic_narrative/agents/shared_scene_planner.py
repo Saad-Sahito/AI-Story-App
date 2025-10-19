@@ -8,10 +8,10 @@ import traceback
 from typing import List, Optional, Callable, Any, Tuple
 from pydantic import BaseModel, Field
 from dataclasses import dataclass
-from src.llm_client.llm_client import groq_client, llm_for_scene_planner_groq_client
+from src.llm_client.llm_client import story_client, llm_for_scene_planner_client
 from langgraph.graph import StateGraph, END
 from src.utilities.story_helpers import StoryHelpers
-from langchain.output_parsers import PydanticOutputParser
+from langchain_core.output_parsers import PydanticOutputParser
 
 # Global shared instance
 CLASSIC_SCENE_PLANNER_SERVICE = None
@@ -141,7 +141,7 @@ class SharedScenePlannerService:
     # -------------------------
     # Public: run_scene
     # -------------------------
-    async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7) -> Tuple[str, list, str]:
+    async def run_scene(self, user_context: UserSceneContext, token_usage: dict, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7, model: str = "None") -> Tuple[str, list, str]:
         """
         Process scene for a specific user using their context.
         Returns (scene_text_so_far, scene_cluster, status).
@@ -153,6 +153,9 @@ class SharedScenePlannerService:
         """
         print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
         self.llm_temp = llm_temp
+        self.model = model
+        self.token_usage = token_usage
+        del llm_temp, model, token_usage
         try:
             user_context.scene_state.user_context_id = user_context.user_id
         except Exception as e:
@@ -222,7 +225,7 @@ class SharedScenePlannerService:
                 scene_cluster = getattr(scene_memory, "scene_cluster", [])
 
             print("✅ Scene completed normally")
-            return scene_so_far, scene_cluster, "SUCCESS"
+            return scene_so_far, scene_cluster, "SUCCESS", self.token_usage
 
         except asyncio.CancelledError:
             print("🛑 SceneGraph CancelledError caught")
@@ -255,17 +258,21 @@ class SharedScenePlannerService:
             return state
 
         scene_memory: SceneMemory = state.scene_memory
-        system_prompt = (
-            "You are the Scene Planner Agent. Your job is to evaluate the current scene text "
-            "against the Director's Scene Plan and determine if all required scene events, emotional beats and target word count "
-            "have been addressed.\n\n"
-            "You are checking only this specific scene — do not consider the overall chapter closure condition "
-            "or story-wide goals.\n\n"
-            "Return a JSON object with a single field 'action':\n"
-            "- 'Complete' if all events and emotional beats from the Scene Plan have been sufficiently covered in the scene text.\n"
-            "- 'Not Complete' if any required events or beats are missing or incomplete or word count is significantly less than target.\n\n"
-            "Do not include any explanations or extra fields in your response — just the JSON."
-        )
+        system_prompt = """
+You are the Scene Planner Agent. Your job is to evaluate the current scene text
+against the Director's Scene Plan and determine if all required scene events, emotional beats,
+and target word count have been addressed.
+
+You are checking only this specific scene — do not consider the overall chapter closure condition
+or story-wide goals.
+
+Return a JSON object with a single field 'action':
+- 'Complete' if all events and emotional beats from the Scene Plan have been sufficiently covered in the scene text.
+- 'Not Complete' if any required events or beats are missing or incomplete, or if the word count is significantly less than the target.
+
+Do not include any explanations or extra fields in your response — just the JSON.
+"""
+
 
         human_prompt = f"""
             Director's Instructions: {scene_memory.DirectorInstructions}
@@ -276,7 +283,7 @@ class SharedScenePlannerService:
 
         try:
             llm_response = await asyncio.wait_for(
-                llm_for_scene_planner_groq_client(system_prompt=system_prompt, human_prompt=human_prompt),
+                llm_for_scene_planner_client(system_prompt=system_prompt, human_prompt=human_prompt),
                 timeout=30.0
             )
             raw_resp = getattr(llm_response, "content", str(llm_response)).strip()
@@ -323,22 +330,27 @@ class SharedScenePlannerService:
         scene_memory: SceneMemory = state.scene_memory
         user_context_id = state.user_context_id
 
-        system_prompt = (
-            "You are the Scene Writer Agent. Your job is to write a single, coherent paragraph of story text "
-            "that realizes the provided Scene Plan exactly as written. The Scene Plan already contains all context "
-            "you need: its goal, tone, emotional beats, thematic notes, location, time context, and chapter purpose. "
-            "\n\n"
-            "⚙️ RULES:\n"
-            "- Treat the Scene Plan as the complete truth. Do not invent new events, characters, or locations beyond it.\n"
-            "- Stay consistent with the listed emotional and thematic intentions.\n"
-            "- Write naturally but do not contradict or exceed the blueprint.\n"
-            "- If the Scene Plan contains a chapter closure condition, ensure the writing naturally builds toward it without resolving it early.\n"
-            "- Never summarize or restate the plan—write story prose only.\n"
-            "- Write ONE paragraph only at a time. Not the whole scene at once, updated incrementally, word count will be provided to you as scene continues.\n"
-            "- Combined scene word count should be around the indicated target.\n"
-            "- Keep it appropriate for all ages.\n\n"
-            "The goal is to bring the Scene Plan to life faithfully and clearly, as though you are animating its blueprint with natural storytelling."
-        )
+        system_prompt = """
+        You are the Scene Writer Agent. Your job is to write a single, coherent paragraph of story text 
+        that realizes the provided Scene Plan exactly as written. The Scene Plan already contains all context 
+        you need: its goal, tone, emotional beats, thematic notes, location, time context, and chapter purpose.
+
+        ⚙️ RULES:
+        - Treat the Scene Plan as the complete truth. Do not invent new events, characters, or locations beyond it.
+        - Stay consistent with the listed emotional and thematic intentions.
+        - Write naturally but do not contradict or exceed the blueprint.
+        - Focus on clarity and emotional impact — avoid long, flowery, or overly descriptive sentences.
+        - Keep pacing tight: describe only what matters to the current beat.
+        - If the Scene Plan contains a chapter closure condition, build toward it naturally but do not resolve it early.
+        - Never summarize or restate the plan — write story prose only.
+        - Write ONE paragraph only per turn (not the full scene).
+        - Keep the paragraph concise (around 70–120 words).
+        - Combined scene word count should roughly match the indicated target.
+        - Keep content appropriate for all ages.
+
+        Your goal is to bring the Scene Plan to life faithfully and vividly, as if you are animating its blueprint with focused, natural storytelling.
+        """
+
 
         max_scene_length = 2500  # Reduced for memory efficiency
         truncated_scene = scene_memory.scene_so_far[-max_scene_length:] if len(scene_memory.scene_so_far) > max_scene_length else scene_memory.scene_so_far
@@ -353,10 +365,13 @@ class SharedScenePlannerService:
         """
         print("SCENE WRITER CONTEXT: ", human_prompt)
         try:
-            llm_response = await asyncio.wait_for(
-                groq_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp),
+            llm_response, tokens = await asyncio.wait_for(
+                story_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp, model=self.model),
                 timeout=30.0
             )
+            self.token_usage["prompt_tokens"] += tokens["prompt_tokens"]
+            self.token_usage["completion_tokens"] += tokens["completion_tokens"]
+            self.token_usage["total_tokens"] += tokens["total_tokens"]
             clean_resp = getattr(llm_response, "content", str(llm_response)).strip()
             # try parse result
             try:
@@ -369,9 +384,10 @@ class SharedScenePlannerService:
                 retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
                 try:
                     retry_resp = await asyncio.wait_for(
-                        groq_client(system_prompt=system_prompt, human_prompt=retry_prompt),
+                        story_client(system_prompt=system_prompt, human_prompt=retry_prompt, llm_temp=self.llm_temp, model=self.model),
                         timeout=30.0
                     )
+
                     retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
                     parsed = self.scene_writer_parser.parse(retry_clean)
                     scene_text = parsed.scene
