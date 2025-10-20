@@ -128,6 +128,25 @@ class SQLiteStore:
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
+
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS feedback (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    usage_mode TEXT,
+                    model_used TEXT,
+                    story_quality INTEGER,
+                    story_like TEXT,
+                    story_improve TEXT,
+                    interactivity_naturalness INTEGER,
+                    story_pacing TEXT,
+                    ease_of_use INTEGER,
+                    buggy_or_confusing TEXT,
+                    additional_feedback TEXT,
+                    nps_score INTEGER,
+                    reuse_likelihood INTEGER,
+                    submitted_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            """)
             
             # Create indexes for better performance (idx_users_user_tag removed)
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_texts_user_story ON story_texts(user_id, story_id)")
@@ -783,6 +802,14 @@ class SQLiteStore:
                 results.append(record)
             return results
 
+    async def get_all_feedback(self):
+        """Fetch all rows from the feedback table."""
+        print("Getting feedback...")
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM feedback")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
     async def get_all_data(self):
         """
         Fetch all data from every table in a structured format.
@@ -794,6 +821,7 @@ class SQLiteStore:
         world_elements = await self.get_all_world_elements_raw()
         director_notes = await self.get_all_director_notes()
         story_progress = await self.get_all_story_progress()
+        feedback = await self.get_all_feedback()
 
         return {
             "users": users,
@@ -801,5 +829,31 @@ class SQLiteStore:
             "characters_raw": characters,
             "world_elements_raw": world_elements,
             "director_notes": director_notes,
-            "story_progress": story_progress
+            "story_progress": story_progress,
+            "feedback": feedback
         }
+
+    #--------------Feedback----------------------
+    async def insert_feedback(self, feedback: Dict[str, Any]):
+        """Insert one feedback record into the feedback table."""
+        try:
+            async with self._get_connection() as conn:
+                # Define columns (excluding id and submitted_at which auto-generate)
+                columns = [
+                    "usage_mode", "model_used", "story_quality", "story_like", "story_improve",
+                    "interactivity_naturalness", "story_pacing", "ease_of_use", 
+                    "buggy_or_confusing", "additional_feedback", "nps_score", "reuse_likelihood"
+                ]
+                
+                placeholders = ", ".join(["?"] * len(columns))
+                sql = f"INSERT INTO feedback ({', '.join(columns)}) VALUES ({placeholders})"
+                
+                values = [feedback.get(col, None) for col in columns]
+                
+                await conn.execute(sql, values)  # ✅ Async execute
+                await conn.commit()              # ✅ Async commit
+                
+                return {"status": "success", "message": "Feedback inserted successfully"}
+                
+        except aiosqlite.Error as e:
+            return {"status": "error", "message": f"❌ Database error: {str(e)}"}

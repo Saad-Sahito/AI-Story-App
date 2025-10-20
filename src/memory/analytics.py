@@ -63,3 +63,12 @@ async def get_all_data():
     result = await store.get_all_data()
     await store.close()
     return result
+
+async def get_all_feedback():
+    """
+    Append a story to the user's stories list.
+    """
+    store = await get_sqlite_store(table=None, user_id=None, story_id=None)
+    result = await store.get_all_feedback()
+    await store.close()
+    return result

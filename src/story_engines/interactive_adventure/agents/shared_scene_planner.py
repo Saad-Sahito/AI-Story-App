@@ -166,7 +166,7 @@ class SharedScenePlannerService:
             print(f"❌ Failed to set user_context_id: {e}")
             import traceback
             traceback.print_exc()
-            return "", [], f"EXCEPTION: {type(e).__name__}: {e}"
+            return "", [], f"EXCEPTION: {type(e).__name__}: {e}", {}
 
         try:
             # Run LangGraph in a cancellable task
@@ -182,7 +182,7 @@ class SharedScenePlannerService:
                         await task
                     except asyncio.CancelledError:
                         print("✅ SceneGraph task cancelled cleanly")
-                    return "", [], "CANCELLED"
+                    return "", [], "CANCELLED", {}
                 await asyncio.sleep(0.2)
 
             result = await task  # result is expected to be a mapping-like state snapshot
@@ -212,13 +212,13 @@ class SharedScenePlannerService:
             if getattr(result, "fatal", False) or next_node == "FATAL_ERROR" or getattr(result, "next_node", None) == "FATAL_ERROR":
                 fatal_msg = error_message or (getattr(result, "error_message", None) if hasattr(result, "error_message") else "Unknown fatal error")
                 print(f"❌ Scene aborted due to fatal error: {fatal_msg}")
-                return "", [], f"FATAL: {fatal_msg}"
+                return "", [], f"FATAL: {fatal_msg}", {}
 
             # Normal completion path
             if scene_memory is None:
                 # no scene memory returned — interpret as alarming, but not fatal
                 print("⚠️ Warning: LangGraph returned with no scene_memory. Returning empty results.")
-                return "", [], "EXCEPTION: No scene_memory returned"
+                return "", [], "EXCEPTION: No scene_memory returned", {}
 
             # scene_memory might be a dict or model
             if isinstance(scene_memory, dict):
@@ -234,12 +234,12 @@ class SharedScenePlannerService:
 
         except asyncio.CancelledError:
             print("🛑 SceneGraph CancelledError caught")
-            return "", [], "CANCELLED"
+            return "", [], "CANCELLED", {}
         except Exception as e:
             print(f"❌ ERROR in run_scene: {e}")
             import traceback
             traceback.print_exc()
-            return "", [], f"EXCEPTION: {type(e).__name__}: {e}"
+            return "", [], f"EXCEPTION: {type(e).__name__}: {e}", {}
         finally:
             print("🎭 SceneGraph stopped gracefully")
             gc.collect()
@@ -479,7 +479,7 @@ End naturally if the scene has no pending decision points.
                         timeout=30.0
                     )
                     retry_clean = StoryHelpers._strip_code_fences(retry_resp.content)
-                    del retry_resp
+                    
                     parsed = self.scene_writer_parser.parse(retry_clean)
                     scene_text = parsed.scene
                     question_text = parsed.question

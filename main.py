@@ -16,7 +16,8 @@ from pydantic import BaseModel
 from setup.shared_redis_pool import REDIS_POOL, get_redis_client
 from setup.main_setup import MainSetup
 from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories, get_user_profile, update_user_settings, update_user_story_public_status
-from src.memory.analytics import get_all_characters_raw, get_all_data, get_all_director_notes, get_all_story_progress, get_all_story_texts, get_all_users, get_all_world_elements_raw
+from src.memory.analytics import get_all_characters_raw, get_all_data, get_all_director_notes, get_all_story_progress, get_all_story_texts, get_all_users, get_all_world_elements_raw, get_all_feedback
+from src.memory.feedback import post_user_feedback
 from src.memory.shared_resources import SHARED_QDRANT
 #from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
 from setup.story_types.interactive_setup import get_shared_interactive_setup, close_shared_interactive_setup
@@ -508,7 +509,7 @@ async def api_get_all_users(_: dict = Depends(require_admin)):
 async def api_get_all_story_progress(_: dict = Depends(require_admin)):
     return await get_all_story_progress()
 
-@app.get("/analytics/director_notes")
+@app.get("/analytics/directors_notes")
 async def api_get_all_director_notes(_: dict = Depends(require_admin)):
     return await get_all_director_notes()
 
@@ -524,7 +525,41 @@ async def api_get_all_characters_raw(_: dict = Depends(require_admin)):
 async def api_get_all_world_elements_raw(_: dict = Depends(require_admin)):
     return await get_all_world_elements_raw()
 
+@app.get("/analytics/feedback")
+async def api_get_all_feedback(_: dict = Depends(require_admin)):
+    return await get_all_feedback()
 
+@app.get("/analytics/all")
+async def api_get_all_data(_: dict = Depends(require_admin)):
+    return await get_all_data()
+
+#---------------Feedback------------------
+@app.post("/feedback")
+async def api_post_feedback(
+    form: Dict[str, Any],
+    request: Request
+):
+    try:
+        # ✅ Get authenticated user from middleware
+        supabase_user = request.state.supabase_user
+        if not supabase_user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        user_id = supabase_user.get("sub")
+        
+        # ✅ Call the feedback function (add user_id if needed)
+        result = await post_user_feedback(form, user_id=user_id)
+        
+        if result["status"] == "success":
+            return {"message": "Feedback submitted successfully!", "status": "success"}
+        else:
+            raise HTTPException(status_code=400, detail=result["message"])
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Feedback error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 #gets all active users in redis pool (for app manager use)
