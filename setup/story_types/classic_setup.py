@@ -422,8 +422,11 @@ class ClassicStorySetup:
                 if mapped_length is None:
                     mapped_length = length_dict[min(length_dict.keys(), key=lambda k: abs(k - length_value))]
                 initial_story_data["Length"] = mapped_length
-            filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id"]}
+            if "age" in initial_story_data:
+                age = int(initial_story_data["age"])
+            filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id", "age"]}
             form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
+            form_string += f"\nThe target audience is {age} years old."
             tokens, blurb, image_data = await story_author.set_story_premise(
                 form_string,
                 initial_story_data.get("Title", ""),

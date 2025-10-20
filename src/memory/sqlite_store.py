@@ -732,3 +732,74 @@ class SQLiteStore:
     async def close(self):
         """Close database connection (SQLite handles this automatically)."""
         pass
+
+    #---------------Analytics Only------------------------
+    async def get_all_users(self):
+        """Fetch all rows from the users table."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM users")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_all_story_texts(self):
+        """Fetch all rows from the story_texts table."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM story_texts")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_all_characters_raw(self):
+        """Fetch all rows from the characters_raw table."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM characters_raw")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_all_world_elements_raw(self):
+        """Fetch all rows from the world_elements_raw table."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM world_elements_raw")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_all_director_notes(self):
+        """Fetch all rows from the director_notes table."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM director_notes")
+            rows = await cursor.fetchall()
+            return [dict(row) for row in rows]
+
+    async def get_all_story_progress(self):
+        """Fetch all rows from the story_progress table."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM story_progress")
+            rows = await cursor.fetchall()
+            # Decode binary image data to base64 for easy export
+            results = []
+            for row in rows:
+                record = dict(row)
+                # if record.get("image_data"):
+                #     record["image_data"] = base64.b64encode(record["image_data"]).decode("utf-8")
+                results.append(record)
+            return results
+
+    async def get_all_data(self):
+        """
+        Fetch all data from every table in a structured format.
+        Returns a dictionary for easy JSON serialization or analytics use.
+        """
+        users = await self.get_all_users()
+        story_texts = await self.get_all_story_texts()
+        characters = await self.get_all_characters_raw()
+        world_elements = await self.get_all_world_elements_raw()
+        director_notes = await self.get_all_director_notes()
+        story_progress = await self.get_all_story_progress()
+
+        return {
+            "users": users,
+            "story_texts": story_texts,
+            "characters_raw": characters,
+            "world_elements_raw": world_elements,
+            "director_notes": director_notes,
+            "story_progress": story_progress
+        }
