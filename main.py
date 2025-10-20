@@ -154,6 +154,8 @@ app.add_middleware(
         "https://www.whimsera.com",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
+        "http://localhost:4000",
+        "http://127.0.0.1:4000",
     ],
     allow_credentials=True,
     allow_methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
