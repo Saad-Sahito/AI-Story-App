@@ -420,7 +420,12 @@ class DirectorGraph:
         
         if not scenes_list:
             print("⚠️ No valid chapter plan or scenes found.")
-            return
+            return {
+                "scene_id": state.scene_id,
+                "current_chapter_id": state.current_chapter_id,
+                "word_count": state.word_count,
+                "next_action": "END",  # End immediately if no scenes
+            }
 
         redis_client = None
         try:
@@ -429,6 +434,7 @@ class DirectorGraph:
         except Exception as e:
             print(f"⚠️ Could not initialize Redis client early: {e}")
 
+        # 🚨 CRITICAL: Loop through scenes but BREAK IMMEDIATELY on non-SUCCESS
         for scene_dict in scenes_list:
             # ✅ FIX: Convert dict to ScenePlan object if needed
             if isinstance(scene_dict, dict):
@@ -440,6 +446,7 @@ class DirectorGraph:
             if scene.scene_id != state.scene_id:
                 print(f"Skipping scene {scene.scene_id}, already completed.")
                 continue  # skip already completed scenes
+
             director_instructions = json.dumps(scene.model_dump(), indent=2)
             state.scene_id = scene.scene_id
             print(f"\n🎞️ Running Scene {scene.scene_id} | Goal: {scene.scene_goal}")
@@ -462,112 +469,104 @@ class DirectorGraph:
                 token_usage=self.token_usage
             )
             
-
-            if status == "CANCELLED":
-                # 🛑 Scene generation was cancelled by user or system
-                # Add your cleanup or UI update logic here
-                pass
-
-            elif status.startswith("FATAL:"):
-                status_payload = { "type": "status", "FATAL": status }
+            # 🚨 IMMEDIATE EXIT ON ANY NON-SUCCESS STATUS
+            if status != "SUCCESS":
+                print(f"🛑 Scene {scene.scene_id} failed with status: {status}")
+                # Send status update to UI
+                status_payload = {"type": "status", "ERROR": f"Scene {scene.scene_id} failed: {status}"}
                 try:
                     self.scene_chunk_callback(status_payload)
                 except Exception as e:
                     print(f"⚠️ scene_chunk_callback raised: {e}")
-                continue
-
-            elif status.startswith("EXCEPTION:"):
-                status_payload = { "type": "status", "EXCEPTION": status }
-                try:
-                    self.scene_chunk_callback(status_payload)
-                except Exception as e:
-                    print(f"⚠️ scene_chunk_callback raised: {e}")
-                continue  # repeat scene
-
-            elif status == "SUCCESS":
-                self.token_usage = tokens
-                del user_context, tokens
-                gc.collect()
-
-                # 🧠 Handle post-scene user choice
-                if redis_client:
-                    try:
-                        queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
-                        resume_payload = {"type": "save"}
-                        try:
-                            self.scene_chunk_callback(resume_payload)
-                        except Exception as e:
-                            print(f"⚠️ scene_chunk_callback raised: {e}")
-
-                        user_choice = False
-                        for _ in range(3600):
-                            choice = await redis_client.lpop(queue_key)
-                            if choice in (b"1", "1", 1):
-                                user_choice = True
-                                print("✅ User chose to continue")
-                                break
-                            elif choice is not None:
-                                print(f"🛑 User chose not to continue ({choice})")
-                                break
-                            await asyncio.sleep(1.0)
-
-                        if not user_choice:
-                            print("🛑 Ending story after this scene per user choice")
-                            return {
-                                "scene_id": state.scene_id,
-                                "current_chapter_id": state.current_chapter_id,
-                                "word_count": state.word_count,
-                                "next_action": "END",
-                            }
-
-                    except Exception as e:
-                        print(f"⚠️ Redis handling error: {e}")
-
-                # 📚 Ingest the scene into memory
-                ingestor = Ingestor(self.memory)
-                scene_bundle = await ingestor.ingest_scene(state=state, scene_text=scene_text, llm_temp=self.llm_temp, token_usage=self.token_usage)
-                del ingestor
-                gc.collect()
-
-                await self.memory.add_story_scene_cluster(
-                    text=scene_cluster,
-                    metadata={
-                        "chapter_id": state.current_chapter_id,
-                        "story_title": state.story_title,
-                        "scene_id": state.scene_id,
-                        "word_count": state.word_count,
-                    }
-                )
-
-                await self.memory.add_post_scene_bundle(
-                    scene_bundle=scene_bundle,
-                    metadata={
-                        "scene_id": state.scene_id,
-                        "chapter_id": state.current_chapter_id,
-                        "story_title": state.story_title,
-                    }
-                )
-
-                del scene_bundle, scene_cluster, scene_text
-                gc.collect()
-
-                # After all scenes are done, return updated state
-                return {
-                    "scene_id": state.scene_id + 1,
-                    "current_chapter_id": state.current_chapter_id,
-                    "word_count": state.word_count,
-                    "next_action": "",
-                }
-        
-            else:
-                # ⚠️ Unknown status (fallback safeguard)
+                
+                # IMMEDIATELY END THE ENTIRE DIRECTOR GRAPH
                 return {
                     "scene_id": state.scene_id,
                     "current_chapter_id": state.current_chapter_id,
                     "word_count": state.word_count,
                     "next_action": "END",
                 }
-    
+
+            # ✅ SUCCESS: Continue with normal processing
+            print(f"✅ Scene {scene.scene_id} completed successfully")
+            self.token_usage = tokens
+            del user_context, tokens
+            gc.collect()
+
+            # 🧠 Handle post-scene user choice
+            if redis_client:
+                try:
+                    queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
+                    resume_payload = {"type": "save"}
+                    try:
+                        self.scene_chunk_callback(resume_payload)
+                    except Exception as e:
+                        print(f"⚠️ scene_chunk_callback raised: {e}")
+
+                    user_choice = False
+                    for _ in range(3600):
+                        choice = await redis_client.lpop(queue_key)
+                        if choice in (b"1", "1", 1):
+                            user_choice = True
+                            print("✅ User chose to continue")
+                            break
+                        elif choice is not None:
+                            print(f"🛑 User chose not to continue ({choice})")
+                            break
+                        await asyncio.sleep(1.0)
+
+                    if not user_choice:
+                        print("🛑 Ending story after this scene per user choice")
+                        return {
+                            "scene_id": state.scene_id,
+                            "current_chapter_id": state.current_chapter_id,
+                            "word_count": state.word_count,
+                            "next_action": "END",
+                        }
+
+                except Exception as e:
+                    print(f"⚠️ Redis handling error: {e}")
+
+            # 📚 Ingest the scene into memory
+            ingestor = Ingestor(self.memory)
+            scene_bundle = await ingestor.ingest_scene(state=state, scene_text=scene_text, llm_temp=self.llm_temp, token_usage=self.token_usage)
+            del ingestor
+            gc.collect()
+
+            await self.memory.add_story_scene_cluster(
+                text=scene_cluster,
+                metadata={
+                    "chapter_id": state.current_chapter_id,
+                    "story_title": state.story_title,
+                    "scene_id": state.scene_id,
+                    "word_count": state.word_count,
+                }
+            )
+
+            await self.memory.add_post_scene_bundle(
+                scene_bundle=scene_bundle,
+                metadata={
+                    "scene_id": state.scene_id,
+                    "chapter_id": state.current_chapter_id,
+                    "story_title": state.story_title,
+                }
+            )
+
+            del scene_bundle, scene_cluster, scene_text
+            gc.collect()
+
+            # Move to next scene
+            state.scene_id += 1
+
+        # ✅ All scenes completed successfully
+        print(f"✅ All scenes for chapter {state.current_chapter_id} completed!")
+        return {
+            "scene_id": state.scene_id,
+            "current_chapter_id": state.current_chapter_id,
+            "word_count": state.word_count,
+            "next_action": "END",  # End after all scenes to trigger chapter ingestion
+        }
+        
     async def ingest_chapter(self, state: StoryState):
         ingestor = Ingestor(self.memory)
         result = await ingestor.ingest_chapter(state=state, current_chap_summary=self.current_chap_summary, llm_temp=self.llm_temp, token_usage=self.token_usage)

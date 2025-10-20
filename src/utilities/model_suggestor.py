@@ -9,9 +9,7 @@ tier_1 = {
     "gpt-5-nano-2025-08-07": "Lightweight yet capable for compact narratives (500-3,000 words) in genres like mystery, romance, or slice-of-life. " \
     "Shines in first-person POV with intimate settings (e.g., small towns, personal journeys). Ideal for classic stories with emotional " \
     "or reflective tones. Handles prose styles like \"lyrical\" or \"introspective\" well, especially for themes like personal growth or loss.",
-    "gemini-2.5-flash-lite": "Multimodal support enhances stories with vivid settings (e.g., alien planets, historical eras) in genres like sci-fi, " \
-    "historical fiction, or fantasy. Great for short to medium stories (1,000-5,000 words) in third-person or omniscient POV. Suits interactive stories " \
-    "with dynamic tones. Excels in descriptive prose (\"cinematic,\" \"immersive\") and themes like exploration or cultural identity.",
+    
     "openai/gpt-oss-120b": "Versatile for medium-length stories (2,000-7,000 words) in genres like thriller, epic fantasy, or horror. " \
     "Strong in third-person POV with complex settings (e.g., sprawling cities, haunted forests). Supports classic stories with darker " \
     "or suspenseful tones. Fits prose styles like \"dark\" or \"evocative\" and themes like betrayal or survival.",
@@ -19,7 +17,9 @@ tier_1 = {
     "Excels in omniscient POV with richly detailed worlds (e.g., fantasy realms, ancient civilizations). Ideal for classic stories with grand " \
     "or dramatic tones. Handles elaborate prose styles (\"cinematic,\" \"epic\") and themes like heroism or destiny."
 }
-
+# "gemini-2.5-flash-lite": "Multimodal support enhances stories with vivid settings (e.g., alien planets, historical eras) in genres like sci-fi, " \
+#     "historical fiction, or fantasy. Great for short to medium stories (1,000-5,000 words) in third-person or omniscient POV. Suits interactive stories " \
+#     "with dynamic tones. Excels in descriptive prose (\"cinematic,\" \"immersive\") and themes like exploration or cultural identity.",
 tier_2 = {
     "gpt-5-mini-2025-08-07": "Enhanced for mid-length narratives (2,000-8,000 words) in genres like mystery, fantasy, or psychological thriller. " \
     "Strong in first-person POV with intricate settings (e.g., detective agencies, magical realms). Fits interactive stories with shifting tones. " \
