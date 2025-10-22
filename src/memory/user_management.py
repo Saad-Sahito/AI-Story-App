@@ -57,3 +57,9 @@ async def update_user_story_public_status(user_id: str, story_id: str, public: b
     result = await store.update_story_public_status(user_id=user_id, story_id=story_id, public=public)
     await store.close()
     return result
+
+async def update_user_monthly_word_count(user_id: str, words_added: int):
+    store = await get_sqlite_store(table="users", user_id=user_id, story_id=None)
+    result = await store.increment_word_count(user_id=user_id, words_added=words_added)
+    await store.close()
+    return result

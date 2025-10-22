@@ -6,6 +6,7 @@ import asyncio
 from fastapi import HTTPException
 from .qdrant_store import QdrantStore
 from .shared_resources import SHARED_QDRANT, get_sqlite_store
+from src.memory.user_management import update_user_monthly_word_count
 
 
 
@@ -278,6 +279,10 @@ class StoryMemorySystem:
             await self.add_character_summary(parts["character_summary"], metadata)
         if parts.get("world_summary"):
             await self.add_world_summary(parts["world_summary"], metadata)
+
+    #---------------User Management------------------
+    async def _update_user_monthly_word_count(self, word_count):
+        return await update_user_monthly_word_count(user_id=self.user_id, words_added=word_count)
 
     # ---------- Cleanup ----------
     async def close(self):

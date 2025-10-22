@@ -2,6 +2,7 @@ import aiosqlite
 import json
 import asyncio
 import base64
+from datetime import datetime, timedelta, UTC
 from typing import Dict, Any, Optional, List
 from asyncio import Semaphore
 from contextlib import asynccontextmanager
@@ -37,16 +38,26 @@ class SQLiteStore:
             # Users table (user_tag removed)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
-                    user_id TEXT NOT NULL,
+                    user_id TEXT NOT NULL PRIMARY KEY,
                     nickname TEXT NOT NULL,
                     age INTEGER,
                     tier INTEGER,
-                    no_genre TEXT, -- array stored as text
-                    no_themes TEXT, -- array stored as text
-                    stories TEXT DEFAULT '[]', -- JSON array stored as text
-                    PRIMARY KEY (user_id)
+                    monthly_word_count INTEGER DEFAULT 0,
+                    no_genre TEXT,
+                    no_themes TEXT,
+                    stories TEXT DEFAULT '[]',
+                    signup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    last_reset_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+
+                    -- Subscription-related fields
+                    lqs_customer_id TEXT,
+                    lqs_subscription_id TEXT,
+                    lqs_variant_id TEXT,
+                    subscription_status TEXT DEFAULT 'inactive',  -- active, trialing, canceled, expired
+                    subscription_renewal_date TIMESTAMP,
+                    cancel_at_period_end BOOLEAN DEFAULT 0
                 )
-            """)
+                """)
             
             # Story texts table
             await conn.execute("""
@@ -157,30 +168,47 @@ class SQLiteStore:
             
             await conn.commit()
 
-    async def add_user(self, nickname: str, age: Optional[int], user_id: str, tier: int, no_genre: List[str] = [], no_themes: List[str] = [], stories: List[Dict] = None):
+
+    # ----------------------------------------
+    # 👤 USER HELPERS
+    # ----------------------------------------
+    async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+            row = await cursor.fetchone()
+            return dict(row) if row else None
+
+    async def create_user(self, user_id: str, nickname: str, age: int = None):
+        async with self._get_connection() as conn:
+            await conn.execute("""
+                INSERT OR IGNORE INTO users (user_id, nickname, age)
+                VALUES (?, ?, ?)
+            """, (user_id, nickname, age))
+            await conn.commit()
+            return {"status": "success", "message": f"✅ User {nickname} created."}
+
+    async def add_user(self, nickname: str, age: Optional[int], user_id: str, tier: int,
+                       no_genre: List[str] = [], no_themes: List[str] = [], stories: List[Dict] = None):
         """Add a new user to the users table."""
         stories = stories or []
         try:
             async with self._get_connection() as conn:
-                cursor = await conn.execute(
-                    "SELECT user_id FROM users WHERE user_id = ?",
-                    (user_id,)
-                )
+                cursor = await conn.execute("SELECT user_id FROM users WHERE user_id = ?", (user_id,))
                 if await cursor.fetchone():
                     return {"status": "error", "message": f"❌ user_id '{user_id}' already exists!"}
 
-                await conn.execute(
-                    """
+                now = asyncio.get_running_loop().time()  # we don’t actually need this, keeping defaults is fine
+                await conn.execute("""
                     INSERT INTO users (user_id, nickname, age, tier, no_genre, no_themes, stories)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (user_id, nickname, age, tier, json.dumps(no_genre), json.dumps(no_themes), json.dumps(stories))
-                )
+                """, (user_id, nickname, age, tier,
+                      json.dumps(no_genre), json.dumps(no_themes), json.dumps(stories)))
                 await conn.commit()
                 return {"status": "success", "user_id": user_id, "nickname": nickname}
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
+    # For backend use
     async def append_story(self, user_id: str, story_title: str, story_id: str, story_type: str):
         """Append a story to the user's stories list."""
         try:
@@ -304,39 +332,205 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
     async def get_user_profile(self, user_id: str):
-        """Fetch user profile."""
+        """Fetch full user profile."""
+        # Ensure the 30-day check happens before returning data
+        await self.ensure_word_count_fresh(user_id)
         try:
             async with self._get_connection() as conn:
-                cursor = await conn.execute(
-                    """
-                    SELECT user_id, nickname, age, tier, no_genre, no_themes
+                cursor = await conn.execute("""
+                    SELECT *
                     FROM users
                     WHERE user_id = ?
-                    """,
-                    (user_id,)
-                )
-                user_row = await cursor.fetchone()
-                if not user_row:
+                """, (user_id,))
+                row = await cursor.fetchone()
+                if not row:
                     return {"status": "error", "message": "❌ User not found"}
 
-                user_data = {
-                    "user_id": user_row["user_id"],
-                    "nickname": user_row["nickname"],
-                    "age": user_row["age"],
-                    "tier": user_row["tier"],
-                    "no_genre": user_row["no_genre"],
-                    "no_themes": user_row["no_themes"]
-                }
+                # Convert JSON fields back into lists for app use
+                user_data = dict(row)
+                user_data["no_genre"] = json.loads(user_data["no_genre"]) if user_data["no_genre"] else []
+                user_data["no_themes"] = json.loads(user_data["no_themes"]) if user_data["no_themes"] else []
+                user_data["stories"] = json.loads(user_data["stories"]) if user_data["stories"] else []
+
+                return {"status": "success", "profile": user_data}
+
+        except aiosqlite.Error as e:
+            return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
+
+
+
+    # For backend use
+    async def increment_word_count(self, user_id: str, words_added: int):
+        """Increment user's word count by a given number."""
+        if not isinstance(words_added, int) or words_added < 0:
+            return {"status": "error", "message": "❌ words_added must be a non-negative integer"}
+
+        try:
+            async with self._get_connection() as conn:
+                # Ensure user exists
+                cursor = await conn.execute("""
+                    SELECT monthly_word_count FROM users WHERE user_id = ?
+                """, (user_id,))
+                row = await cursor.fetchone()
+                if not row:
+                    return {"status": "error", "message": "❌ User not found"}
+
+                new_value = row["monthly_word_count"] + words_added
+                await conn.execute("""
+                    UPDATE users SET monthly_word_count = ? WHERE user_id = ?
+                """, (new_value, user_id))
+                await conn.commit()
 
                 return {
                     "status": "success",
-                    "profile": user_data,
+                    "message": f"✅ Added {words_added} words (new total: {new_value})",
+                    "new_word_count": new_value
                 }
 
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    
+    # For Backend Use
+    async def get_word_count(self, user_id: str):
+        """Get the user's current monthly word count and last reset date."""
+        try:
+            async with self._get_connection() as conn:
+                cursor = await conn.execute("""
+                    SELECT monthly_word_count, last_reset_date
+                    FROM users
+                    WHERE user_id = ?
+                """, (user_id,))
+                row = await cursor.fetchone()
+                if not row:
+                    return {"status": "error", "message": "❌ User not found"}
+
+                return {
+                    "status": "success",
+                    "word_count": row["monthly_word_count"],
+                    "last_reset_date": row["last_reset_date"]
+                }
+
+        except aiosqlite.Error as e:
+            return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+
+
+    # ----------------------------------------
+    # 🧾 SUBSCRIPTION MANAGEMENT
+    # ----------------------------------------
+    async def update_subscription(self, user_id: str, data: Dict[str, Any]):
+        """
+        Update user's Lemon Squeezy subscription info (triggered by webhook events).
+        """
+        try:
+            async with self._get_connection() as conn:
+                await conn.execute("""
+                    UPDATE users
+                    SET lqs_customer_id = ?,
+                        lqs_subscription_id = ?,
+                        lqs_variant_id = ?,
+                        subscription_status = ?,
+                        subscription_renewal_date = ?,
+                        cancel_at_period_end = ?
+                    WHERE user_id = ?
+                """, (
+                    data.get("customer_id"),
+                    data.get("subscription_id"),
+                    data.get("variant_id"),
+                    data.get("status"),
+                    data.get("renewal_date"),
+                    int(data.get("cancel_at_period_end", False)),
+                    user_id
+                ))
+                await conn.commit()
+                return {"status": "success", "message": f"✅ Subscription updated for {user_id}"}
+        except Exception as e:
+            return {"status": "error", "message": f"❌ Error updating subscription: {str(e)}"}
+
+    async def is_subscription_active(self, user_id: str) -> bool:
+        """
+        Return True if the user's subscription is active or trialing.
+        """
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT subscription_status FROM users WHERE user_id = ?
+            """, (user_id,))
+            row = await cursor.fetchone()
+            return bool(row and row["subscription_status"] in ["active", "trialing"])
+
+    # ----------------------------------------
+    # 🔄 MONTHLY RESET SYSTEM
+    # ----------------------------------------
+    async def ensure_word_count_fresh(self, user_id: str):
+        """
+        Resets word count if:
+        - 30 days have passed since last reset, OR
+        - subscription renewal date has arrived
+        """
+        try:
+            async with self._get_connection() as conn:
+                cursor = await conn.execute("""
+                    SELECT last_reset_date, subscription_renewal_date
+                    FROM users
+                    WHERE user_id = ?
+                """, (user_id,))
+                row = await cursor.fetchone()
+                if not row:
+                    return {"status": "error", "message": "❌ User not found"}
+
+                now = datetime.now(UTC)
+                last_reset = datetime.fromisoformat(row["last_reset_date"])
+
+                renewal_date = (
+                    datetime.fromisoformat(row["subscription_renewal_date"])
+                    if row["subscription_renewal_date"]
+                    else None
+                )
+
+                should_reset = (
+                    (renewal_date and now >= renewal_date) or
+                    ((now - last_reset) >= timedelta(days=30))
+                )
+
+                if should_reset:
+                    await self._reset_word_count(conn, user_id)
+                    return {"status": "success", "message": "✅ Word count reset (renewal or 30 days passed)"}
+
+                return {"status": "ok", "message": "No reset needed"}
+
+        except Exception as e:
+            return {"status": "error", "message": f"❌ Error checking reset: {str(e)}"}
+
+    async def _reset_word_count(self, conn, user_id: str, new_value: Optional[int] = None):
+        """
+        Reset or set new monthly word count for user.
+        """
+        new_value = new_value or 0
+        now = datetime.now(UTC).isoformat()
+        await conn.execute("""
+            UPDATE users
+            SET monthly_word_count = ?,
+                last_reset_date = ?
+            WHERE user_id = ?
+        """, (new_value, now, user_id))
+        await conn.commit()
+
+    # async def set_word_count(self, user_id: str, new_value: int):
+    #     """
+    #     Manually update the user's word count to a specific new value.
+    #     """
+    #     try:
+    #         async with self._get_connection() as conn:
+    #             await self._reset_word_count(conn, user_id, new_value)
+    #             return {"status": "success", "message": f"✅ Word count set to {new_value}"}
+    #     except Exception as e:
+    #         return {"status": "error", "message": f"❌ Error updating word count: {str(e)}"}
+
+
+
+
+
+
 
     async def get_user_profile_with_stories(self, user_id: str):
         """Fetch user profile and their stories with progress (fixed image_data decoding)."""
@@ -466,6 +660,7 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
+    # For backend use
     async def put_text(self, entry: dict, metadata: Optional[Dict[str, Any]] = None):
         chapter_id = (metadata or {}).get("chapter_id", "")
         async with self._get_connection() as conn:
@@ -494,6 +689,7 @@ class SQLiteStore:
                 ))
                 await conn.commit()
     
+    # For backend use
     async def put_to_director_notes(self, entry: Any, metadata: Optional[Dict[str, Any]] = None):
         metadata = metadata or {}
         chapter_id = int(metadata.get("chapter_id", 0))
@@ -523,6 +719,7 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
+    # For backend use
     async def put_progress(self, metadata: Optional[Dict[str, Any]] = None):
         """Insert or update story progress while preserving existing metadata values."""
         metadata = metadata or {}
@@ -618,6 +815,7 @@ class SQLiteStore:
 
             await conn.commit()
 
+    # For backend use
     async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):
         """Append new details to existing character/world details."""
         async with self._get_connection() as conn:
@@ -650,6 +848,7 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
+    # For backend use
     async def get_text(self, chapter_id: str) -> List[dict]:
         """Get the full JSON array (list of dicts) for a chapter."""
         async with self._get_connection() as conn:
@@ -662,7 +861,8 @@ class SQLiteStore:
             if row and row['text']:
                 return json.loads(row['text'])
             return []
-        
+    
+    # For backend use
     async def get_from_director_notes(self, metadata: dict):
         """
         Retrieve text entry by chapter_id, type, and story_title.
@@ -721,6 +921,7 @@ class SQLiteStore:
                 }
             return None
 
+    # For backend use
     async def get_character_or_world(self, name: str) -> Optional[Dict[str, Any]]:
         """Get specific character or world element."""
         async with self._get_connection() as conn:
@@ -738,6 +939,7 @@ class SQLiteStore:
                 }
             return None
 
+    # For backend use
     async def get_all_characters_or_worlds(self) -> Dict[str, Any]:
         """Get all characters or world elements."""
         async with self._get_connection() as conn:

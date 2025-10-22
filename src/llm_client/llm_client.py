@@ -115,7 +115,11 @@ class LLMClient:
                 token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
                 usage_key = "token_usage"
             elif model in GPT_MODELS:
-                llm = ChatOpenAI(model=model, temperature=llm_temp, openai_api_key=self.openai_api_key)
+                if model == "gpt-5-nano-2025-08-07":
+                    llm = ChatOpenAI(model=model, temperature=1, openai_api_key=self.openai_api_key)
+                else:
+                    llm = ChatOpenAI(model=model, temperature=llm_temp, openai_api_key=self.openai_api_key)
+
                 token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
                 usage_key = "token_usage"
             elif model in CLAUDE_MODELS:
@@ -161,7 +165,7 @@ class LLMClient:
                     print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
 
             # --- Delay for rate limiting safety ---
-            await asyncio.sleep(4)
+            await asyncio.sleep(2)
 
             return response, token_usage
 
@@ -172,7 +176,8 @@ class LLMClient:
     async def _llm_for_scene_planner_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
-        llm_for_scene_planner = ChatOpenAI(model="gpt-4o-mini", temperature="0.1", openai_api_key=self.openai_api_key)
+        #llm_for_scene_planner = ChatOpenAI(model="gpt-4o-mini", temperature="0.1", openai_api_key=self.openai_api_key)
+        llm_for_scene_planner = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1, groq_api_key=self.groq_api_key)
         async with self.sem:
             response = await llm_for_scene_planner.ainvoke([
                 SystemMessage(content=system_prompt),
@@ -180,19 +185,19 @@ class LLMClient:
             ])
         
         # Access the token usage from the response's metadata
-        token_usage = response.response_metadata.get('token_usage', {})
+        #token_usage = response.response_metadata.get('token_usage', {})
 
         # Extract the prompt and completion token counts
-        prompt_tokens = token_usage.get('prompt_tokens', 0)
-        completion_tokens = token_usage.get('completion_tokens', 0)
-        total_tokens = token_usage.get('total_tokens', 0)
+        # prompt_tokens = token_usage.get('prompt_tokens', 0)
+        # completion_tokens = token_usage.get('completion_tokens', 0)
+        # total_tokens = token_usage.get('total_tokens', 0)
         
         # print("--- Token Usage ---")
         # print(f"Prompt Tokens (Input): {prompt_tokens}")
         # print(f"Completion Tokens (Output): {completion_tokens}")
         # print(f"Total Tokens: {total_tokens}")
         # print("-------------------")
-        time.sleep(4)  # delay to avoid rate limits
+        #time.sleep(4)  # delay to avoid rate limits
         return response
     
     # async def _openai_client(self, system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7) -> AIMessage:

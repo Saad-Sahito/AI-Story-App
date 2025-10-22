@@ -44,7 +44,7 @@ async def cleanup_sessions_periodically():
     while True:
         try:
             await asyncio.sleep(3600)  # 1 hour
-            cleaned_count = mainsetup.cleanup_inactive_sessions(max_age_seconds=3600)
+            cleaned_count = mainsetup.cleanup_inactive_sessions()
             if cleaned_count > 0:
                 print(f"✅ Cleaned up {cleaned_count} inactive sessions")
         except asyncio.CancelledError:

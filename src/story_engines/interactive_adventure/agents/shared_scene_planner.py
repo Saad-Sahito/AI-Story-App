@@ -266,15 +266,15 @@ class SharedScenePlannerService:
         scene_memory: SceneMemory = state.scene_memory
         system_prompt = f"""
 You are the Scene Planner Agent. Your job is to analyze whether the Scene Writer's output so far
-has covered all the events, beats, and decision points specified in the Director's Scene Blueprint.
+has covered all the events, beats, word count and decision points specified in the Director's Scene Blueprint.
 
 You must only consider the current scene, not the entire chapter or story.
 Do not confuse 'scene completion' with 'chapter completion' — those are handled separately.
 
 Check if all required beats from the Director's instructions (actions, emotions, locations, dialogue moments,
-and any specified user decision points) have been fulfilled.
+ any specified user decision points, and target word count) have been fulfilled.
 
-If the last sentence expects a user decision then let the scene continue.
+If the last sentence of the scene expects a user decision then let the scene continue, if not then decide, disregarding the ai question.
 
 Return a valid JSON object in this format:
 {self.scene_planner_parser.get_format_instructions()}
@@ -282,7 +282,6 @@ Return a valid JSON object in this format:
 If even one major event or decision point is missing, mark action as 'Not Complete'.
 Only return 'Complete' when you are confident that the entire scene blueprint has been faithfully covered.
 """
-
 
         human_prompt = (
             f"Director's Instructions: {scene_memory.DirectorInstructions}\n"
@@ -363,15 +362,14 @@ Only return 'Complete' when you are confident that the entire scene blueprint ha
                     try:
                         print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
                         user_choice = None
-                        for _ in range(3600):
+                        for _ in range(600):  # Reduced from 3600 to 10 minutes
                             choice = await redis_client.lpop(queue_key)
                             if choice:
                                 user_choice = choice
                                 break
                             await asyncio.sleep(1.0)
                         if user_choice:
-                            print(f"✅ DEBUG: Received user choice: {user_choice} from Redis queue {queue_key}")
-                            # Append decision entry to scene_cluster and update memory
+                            #print(f"✅ DEBUG: Received user choice: {user_choice} from Redis queue {queue_key}")
                             scene_memory.scene_cluster.append({
                                 "type": "decision",
                                 "question": scene_memory.ai_question.strip(),
@@ -381,12 +379,18 @@ Only return 'Complete' when you are confident that the entire scene blueprint ha
                             scene_memory.UserInput = user_choice
                             scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {user_choice})\n"
                         else:
-                            print(f"❌ TIMEOUT: No user input received within 5000 seconds for {user_context_id}/{scene_memory.story_id}")
+                            print(f"❌ TIMEOUT: No user input received within 600 seconds for {user_context_id}/{scene_memory.story_id}")
                             scene_memory.UserInput = ""
+                            scene_memory.ai_question = ""
+                            scene_memory.number_of_options = 0
+                            state.next_node = "Complete"  # Force scene completion on timeout
                     except Exception as e:
                         print(f"❌ ERROR in Redis queue handling: {e}")
                         import traceback; traceback.print_exc()
                         scene_memory.UserInput = ""
+                        scene_memory.ai_question = ""
+                        scene_memory.number_of_options = 0
+                        state.next_node = "Complete"  # Force scene completion on error
                 except Exception as e:
                     print(f"❌ ERROR in user input handling: {e}")
                     import traceback; traceback.print_exc()
@@ -422,37 +426,37 @@ Your task is to write exactly one concise, coherent paragraph that continues the
 according to the Director's detailed scene blueprint.
 
 ⚙️ Rules:
-1. Follow the Director's instructions precisely — do not invent, alter, or omit planned details.
-2. You only know what the Director tells you — you have no memory of past scenes.
-3. Write in a natural, vivid style that captures tone, setting, emotions, and action as described.
-4. Avoid long, overly descriptive sentences — keep pacing tight and focused on key beats.
-5. Do NOT summarize or repeat previous content; continue naturally from the last paragraph.
-6. Include all required creative elements from the 'screenplay_notes' section (e.g., imagery, metaphors, pacing cues).
-7. Keep the paragraph around 80–130 words for balanced pacing.
+- Follow the Director's instructions precisely — do not invent, alter, or omit planned details.
+- You only know what the Director tells you — you have no memory of past scenes.
+- Write in a natural style that captures tone, setting, emotions, and action as described.
+- Avoid long, overly descriptive sentences — keep pacing tight and focused on key beats.
+- Do NOT summarize or repeat previous content; continue naturally from the last paragraph.
+- Include all required creative elements from the 'screenplay_notes' section (e.g., imagery, metaphors, pacing cues).
+- Keep the paragraph around 80-130 words for balanced pacing.
+- Output ONLY valid JSON matching the schema below. Do NOT include text, markdown, or code fences before/after the JSON.
+- Ensure 'number_of_options' is an integer (e.g., 2, 3, or 4) when a question is provided, or 0 if no question.
+- Write while keeping in mind the target word count. Target the word count of the whole scene STRICTLY.
 
 🎭 Decision Points:
-- If the Director's instructions specify a user decision point, end your paragraph with that question.
-- Offer 2–4 clearly distinct options labeled (A), (B), (C), (D) within the question.
+- If the Director's instructions specify a user decision point, end your paragraph with that question, leave question field empty otherwise.
+- Offer 2-4 clearly distinct options labeled (A), (B), (C), (D) within the question.
 - Each option must represent a meaningful narrative branch.
 - Output the number of available options as an integer in the field 'number_of_options'.
+- DO NOT produce more decision points than instructed.
 
 🧩 Output JSON format:
 {self.scene_writer_parser.get_format_instructions()}
-
-Stay strictly within the Director's plan.
-Do not create new storylines, characters, or settings.
-End naturally if the scene has no pending decision points.
 """
 
 
-        max_scene_length = 3500  # Reduced for memory efficiency
-        truncated_scene = scene_memory.scene_so_far_for_scene_planner[-max_scene_length:] if len(scene_memory.scene_so_far_for_scene_planner) > max_scene_length else scene_memory.scene_so_far_for_scene_planner
+        #max_scene_length = 3500  # Reduced for memory efficiency
+        truncated_scene = scene_memory.scene_so_far_for_scene_planner#[-max_scene_length:] if len(scene_memory.scene_so_far_for_scene_planner) > max_scene_length else scene_memory.scene_so_far_for_scene_planner
         human_prompt = f"""Director's Instructions:
 {scene_memory.DirectorInstructions}
 
 {f'Scene so far (DO NOT rewrite this, only output text that continues from here): {truncated_scene}' if truncated_scene else ''}
-{f'Current scene word count: {scene_memory.word_count}' if scene_memory.word_count else ''}"""
-        print("SCENE WRITER CONTEXT: ", human_prompt)
+{f'Current scene word count so far: {scene_memory.word_count}' if scene_memory.word_count else ''}"""
+        #print("SCENE WRITER CONTEXT: ", human_prompt)
         try:
             llm_response, tokens = await asyncio.wait_for(
                 story_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=self.llm_temp, model=self.model),
@@ -461,15 +465,20 @@ End naturally if the scene has no pending decision points.
             self.token_usage["prompt_tokens"] += tokens["prompt_tokens"]
             self.token_usage["completion_tokens"] += tokens["completion_tokens"]
             self.token_usage["total_tokens"] += tokens["total_tokens"]
-            clean_resp = llm_response.content.strip()
-            del llm_response, tokens
+            
 
             try:
-                parsed = self.scene_writer_parser.parse(clean_resp)
-                del clean_resp
-                scene_text = parsed.scene
-                question_text = parsed.question
-                number_of_options = parsed.number_of_options
+                raw_text = StoryHelpers._extract_content(llm_response)
+                del llm_response, tokens
+                clean_resp = StoryHelpers._strip_code_fences(raw_text)
+                success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, SceneWriterOutput, self.scene_writer_parser)
+                if success:
+                    scene_text = result.get("scene")
+                    question_text = result.get("question")
+                    number_of_options = result.get("number_of_options")
+                else:
+                    print(f"[Attempt 1] First-pass validation failed:", exc)
+                del clean_resp, result
             except Exception as e:
                 print(f"❌ SceneWriter parsing failed: {e}")
                 retry_prompt = human_prompt + "\n\nREMEMBER: Output ONLY valid JSON strictly matching schema."
@@ -497,6 +506,7 @@ End naturally if the scene has no pending decision points.
                             del recovered
                         except Exception as inner_e:
                             print(f"❌ SceneWriter JSON recovery failed: {inner_e}")
+                            raise Exception(f"Parsing failed: {exc}")
                             scene_text = retry_clean
                             question_text = ""
                             number_of_options = 0
@@ -506,7 +516,7 @@ End naturally if the scene has no pending decision points.
                         number_of_options = 0
                 del retry_clean, human_prompt, retry_prompt
 
-            print(f"🔍 DEBUG: SceneWriter parsed - scene_text: {scene_text[:50]}..., question: {question_text}, options: {number_of_options}")
+            #print(f"🔍 DEBUG: SceneWriter parsed - scene_text: {scene_text[:50]}..., question: {question_text}, options: {number_of_options}")
 
             if scene_memory.UserInput:
                 scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
@@ -523,7 +533,7 @@ End naturally if the scene has no pending decision points.
             if question_text.strip():
                 scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
                 scene_memory.ai_question = question_text.strip()
-                scene_memory.number_of_options = number_of_options if number_of_options > 0 else 1
+                scene_memory.number_of_options = number_of_options if isinstance(number_of_options, int) and number_of_options > 0 else 1
             else:
                 scene_memory.ai_question = ""
                 scene_memory.number_of_options = 0
@@ -532,7 +542,7 @@ End naturally if the scene has no pending decision points.
 
             if user_context_id and state.scene_chunk_callback:
                 try:
-                    print(f"🔍 DEBUG: Sending scene text to frontend for {user_context_id}/{scene_memory.story_id}: {scene_text[:50]}...")
+                    #print(f"🔍 DEBUG: Sending scene text to frontend for {user_context_id}/{scene_memory.story_id}: {scene_text[:50]}...")
                     state.scene_chunk_callback({
                         "type": "text",
                         "scene_text": scene_text

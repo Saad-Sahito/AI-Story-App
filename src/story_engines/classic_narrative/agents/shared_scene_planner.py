@@ -352,8 +352,8 @@ Do not include any explanations or extra fields in your response — just the JS
         """
 
 
-        max_scene_length = 2500  # Reduced for memory efficiency
-        truncated_scene = scene_memory.scene_so_far[-max_scene_length:] if len(scene_memory.scene_so_far) > max_scene_length else scene_memory.scene_so_far
+        #max_scene_length = 2500  # Reduced for memory efficiency
+        truncated_scene = scene_memory.scene_so_far#[-max_scene_length:] if len(scene_memory.scene_so_far) > max_scene_length else scene_memory.scene_so_far
         human_prompt = f"""
         Director's Instructions:
         {scene_memory.DirectorInstructions}

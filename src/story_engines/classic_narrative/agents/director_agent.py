@@ -61,7 +61,7 @@ class DirectorOutput(BaseModel):
         description="List of detailed scene plans, each containing full contextual information for the scene writer."
     )
     action: Literal["generate_and_ingest", "END"] = Field(
-        description="Action to take after generating all scenes for the current chapter."
+        description="Output generate_and_ingest if the story is not complete yet, output END if the entire story is Completed."
     )
 
 director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
@@ -160,7 +160,8 @@ Respond ONLY in JSON with this schema:
             success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, SceneBundle, scene_parser)
             
             if success:
-                state.word_count += StoryHelpers._count_words_split(scene_text)
+                new_word_count = StoryHelpers._count_words_split(scene_text)
+                state.word_count += new_word_count
                 
                 await self.memory.update_story_progress(metadata={
                     "latest_chapter_id": state.current_chapter_id, 
@@ -170,7 +171,8 @@ Respond ONLY in JSON with this schema:
                     "tone_temp": llm_temp,
                     "tokens_usage": token_usage
                 })
-                del system_prompt, human_prompt
+                await self.memory._update_user_monthly_word_count(word_count=new_word_count)
+                del system_prompt, human_prompt, new_word_count
                 return result
 
             print(f"[Attempt {attempt}] First-pass validation failed:", exc)
@@ -186,7 +188,8 @@ Respond ONLY in JSON with this schema:
                 success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, SceneBundle, scene_parser)
                 del fixed_clean
                 if success:
-                    state.word_count += StoryHelpers._count_words_split(scene_text)
+                    new_word_count = StoryHelpers._count_words_split(scene_text)
+                    state.word_count += new_word_count
                     
                     await self.memory.update_story_progress(metadata={
                         "latest_chapter_id": state.current_chapter_id, 
@@ -196,7 +199,8 @@ Respond ONLY in JSON with this schema:
                         "tone_temp": llm_temp,
                         "tokens_usage": token_usage
                     })
-                    del system_prompt, human_prompt, scene_text
+                    await self.memory._update_user_monthly_word_count(word_count=new_word_count)
+                    del system_prompt, human_prompt, scene_text, new_word_count
                     return result
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
@@ -372,13 +376,14 @@ class DirectorGraph:
         self.graph.add_node("director_node", self.director_node)
         self.graph.add_node("generate_and_ingest", self.generate_and_ingest_node)
         self.graph.add_node("ingest_chapter", self.ingest_chapter)
+        self.graph.add_node("story_complete", self.story_complete)
 
         self.graph.add_conditional_edges(
             "director_node",
             lambda state: state.next_action,
             {
                 "generate_and_ingest": "generate_and_ingest",
-                "END": "ingest_chapter",
+                "END": "story_complete",
             },
         )
         # ✅ FIX: Add conditional edge from generate_and_ingest
@@ -387,22 +392,31 @@ class DirectorGraph:
             """Route based on whether user chose to continue"""
             if state.next_action == "END":
                 return END  # End immediately without ingesting chapter
-            return "director_node"
+            return "ingest_chapter"
         
         self.graph.add_conditional_edges(
             "generate_and_ingest",
             route_after_generate,
             {
-                "director_node": "director_node",
+                "ingest_chapter": "ingest_chapter",
                 END: END  # Direct route to END
             }
         )
-        #self.graph.add_edge("generate_and_ingest", "director_node")
+        #self.graph.add_edge("generate_and_ingest", "ingest_chapter")
         self.graph.add_edge("ingest_chapter", END)
-
+        self.graph.add_edge("story_complete", END)
         self.compiled = self.graph.compile()
         self.current_chap_summary = ""
         self.llm_temp = 0.7  # default temperature
+
+    async def story_complete(self, state: StoryState):
+        await self.memory.update_story_progress(metadata={ "complete": True })
+        status_payload = {"type": "status", "message":"story complete"}
+        try:
+            self.scene_chunk_callback(status_payload)
+        except Exception as e:
+            print(f"⚠️ scene_chunk_callback raised: {e}")
+        return state
 
     async def generate_and_ingest_node(self, state: StoryState):
         """Generates all scenes using shared scene planner and ingests each sequentially."""
@@ -443,6 +457,8 @@ class DirectorGraph:
                 scene = scene_dict
                 
             # 🧱 Prepare scene input
+            if scene.scene_id > state.scene_id:
+                break
             if scene.scene_id != state.scene_id:
                 print(f"Skipping scene {scene.scene_id}, already completed.")
                 continue  # skip already completed scenes
@@ -579,14 +595,14 @@ class DirectorGraph:
     async def director_node(self, state: StoryState) -> Dict:
         """Decide the next scene or end the chapter, using schema parsing with retries."""
         system_prompt = f"""
-You are the **Director Agent**, responsible for orchestrating each chapter of the story.
+You are the Director Agent, responsible for orchestrating each chapter of the story.
 
-You receive the **Story Bible** created by the Story Author Agent, which defines the world, characters, tone, and story structure.  
-You also receive context from the memory system describing **previous chapters**, character developments, and world state.
+You received the Story Bible created by the Story Author Agent, which defines the world, characters, tone, and story structure.  
+You also received context from the memory system describing previous chapters, character developments, and world state.
 
-Your task is to **plan this chapter** by:
+Your task is to plan this chapter by:
 - Determining what happens next according to the story bible and previous events.
-- Outlining a set of coherent **scenes** that can be handed to the Scene Writer.
+- Outlining a set of coherent scenes that can be handed to the Scene Writer.
 - Keeping tone, POV, and prose consistent with the Story Author's style guide.
 - Maintaining continuity and character arcs.
 
@@ -598,6 +614,7 @@ Your task is to **plan this chapter** by:
 - Progress the narrative toward its final resolution.
 - Avoid rewriting scenes that already exist.
 - Signal when the current chapter should end.
+- Signal a targer word count for each scene.
 
 ---
 ### 🎯 Follow this structure exactly and respond ONLY in JSON::
@@ -605,20 +622,28 @@ Your task is to **plan this chapter** by:
 ---
 
 Do NOT write narrative prose — only scene instructions and narrative planning.
+If the story is complete then leave all fields empty except for 'action' which should be set to 'END'.
 """
 
         # Gather story context
+        chapter_plan_combined = "Your chapter plans for previous chapters:\n"
+        if state.current_chapter_id > 1:
+            for i in range(state.current_chapter_id):
+                chapter_plan_combined += "\n\n" + "chapter no.: " + i + "\n" + await self.memory.get_long_term_document(metadata={"type": "chapter_plan", "chapter_id": i, "story_title": state.story_title})
+
         self.current_chap_summary = await self.memory.search_episodic_scene_summary(chapter_number=state.current_chapter_id, summary_type="scene summary")
         director_context = await self.memory.get_director_context(
             current_chapter_number=state.current_chapter_id,
             query=self.current_chap_summary if self.current_chap_summary else "",
             k=5
         )
-        context = (
-            f"Story Bible: {await self.memory.get_long_term_document(metadata={'type': 'story_premise', 'story_title': state.story_title})}\n"
-            f"Relevant Chapter Context: {director_context}\n"
-            f"Chapter Number: {state.current_chapter_id}\n"
-        )
+        context = (f"""
+            Story Bible: {await self.memory.get_long_term_document(metadata={'type': 'story_premise', 'story_title': state.story_title})}
+            Chapter Number: {state.current_chapter_id}
+            {f"Relevant Chapter Context: {director_context}" if state.current_chapter_id > 1 else ""}
+            {f"{chapter_plan_combined}" if state.current_chapter_id > 1 else ""}
+            {f"Story Word Count so far: {state.word_count}" if state.word_count > 0 else ""}
+        """)
 
         
         #print("CONTEXT TO DIRECTOR:", context)
@@ -628,7 +653,6 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
         action = None
         scenario = await self.memory.get_long_term_document(metadata={"type":'chapter_plan', "chapter_id":state.current_chapter_id, "story_title": state.story_title})
 
-            # ✅ FIX: Check if chapter plan exists AND if all scenes are complete
         if scenario != "":
             print(f"📋 Found existing chapter plan for chapter {state.current_chapter_id}")
             
@@ -764,9 +788,12 @@ Do NOT write narrative prose — only scene instructions and narrative planning.
         try:
             # Load story progress
             story_progress = await self.memory.get_story_progress()
-            self.llm_temp = story_progress.get("metadata", {}).get("tone_temp", 0.7) if story_progress else 0.7
+            self.llm_temp = story_progress.get("metadata", {}).get("tone_temp", 1) if story_progress else 1
             self.model = story_progress.get("metadata", {}).get("model","")
             self.token_usage = story_progress.get("metadata", {}).get("token_usage", {})
+            complete = story_progress.get("complete", False) if story_progress else False
+            if complete:
+                return "Story already complete."
             if story_progress:
                 initialized_state = StoryState(
                     current_chapter_id=story_progress.get("latest_chapter_id", 1),

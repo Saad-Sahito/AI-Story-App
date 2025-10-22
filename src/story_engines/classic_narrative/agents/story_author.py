@@ -8,11 +8,10 @@ class StoryAuthor:
         #self.llm_client: LLMClient = llm_client
         self.memory = memory_system
 
-    async def set_story_premise(self, user_context: str, story_title: str, model: str) -> str:
+    async def set_story_premise(self, user_context: str, story_title: str, model: str) -> tuple:
         print("Setting story Premise...")
-        if not await self.memory.get_long_term_document(metadata={"type":"story_user_context", "story_title": story_title}):
-            await self.memory.add_long_term_document(text=user_context, metadata={"type":"story_user_context", "story_title": story_title})
-            detailed_premise, tokens = await story_client(system_prompt = """
+
+        detailed_premise, tokens = await story_client(system_prompt = """
 You are the Story Author Agent, a master worldbuilder and narrative architect.
 
 Your task is to design a complete story framework for a non-interactive, classic narrative based on the given User Context.
@@ -104,8 +103,8 @@ Return your output as structured JSON with these top-level fields:
 Now begin creating the story bible given the user's context.
 """,
                                                     human_prompt=f"Given User Context: {user_context}", llm_temp=0.9, model=model)
-            detailed_premise = detailed_premise.content.strip()
-            blurb = await utility_client(
+        detailed_premise = detailed_premise.content.strip()
+        blurb = await utility_client(
         system_prompt=f"""
     You are the Book Blurb Agent — a professional publishing AI specialized in writing compelling back-cover text for novels.
 
@@ -130,19 +129,19 @@ Based on the story bible given, craft the book back text.
     """,
         human_prompt=f"Given story bible: {detailed_premise}"
     )
-            blurb = blurb.content.strip()
-            image_data = await image_client(f"Create a cover image for a book with the following blurb, dont include any text or actual book in the image:\n{blurb}")
-            image_data_base64 = base64.b64encode(image_data).decode('utf-8')
-            await self.memory.add_long_term_document(text=detailed_premise, metadata={"type":"story_premise", "story_title": story_title})
-        else:
-            detailed_premise = await self.memory.get_long_term_document(metadata={"type":"story_premise", "story_title": story_title})
-            #detailed_premise = detailed_premise["text"]
+        blurb = blurb.content.strip()
+        image_data = await image_client(f"Create a SIMPLE cover image for a book with the following blurb, dont include any text or actual book in the image:\n{blurb}")
+        image_data_base64 = base64.b64encode(image_data).decode('utf-8')
+
 
         try:
             #print(detailed_premise)
+            await self.memory.add_long_term_document(text=user_context, metadata={"type":"story_user_context", "story_title": story_title})
+            await self.memory.add_long_term_document(text=detailed_premise, metadata={"type":"story_premise", "story_title": story_title})
+
             return tokens, blurb, image_data_base64
         except:
-            return "An error occured, Please try again."
+            raise "An error occured, Please try again."
 
     # def set_story_synopsis(self, detailed_premise: str, story_title: str) -> str:
     #     print("Setting story Synopsis...")
