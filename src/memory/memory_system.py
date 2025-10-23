@@ -6,7 +6,6 @@ import asyncio
 from fastapi import HTTPException
 from .qdrant_store import QdrantStore
 from .shared_resources import SHARED_QDRANT, get_sqlite_store
-from src.memory.user_management import update_user_monthly_word_count
 
 
 

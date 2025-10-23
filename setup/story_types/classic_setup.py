@@ -609,7 +609,7 @@ class ClassicStorySetup:
             }
         
         #metadata = progress.get('metadata', {})
-        story_title = progress.get('story_title', 'Untitled')
+        story_title = progress.get('story_title', 'Untitled Story')
         current_act = progress.get('current_act_id', 1)
         total_acts = progress.get('total_acts', 3)
         is_complete = progress.get('complete', False)
@@ -726,7 +726,7 @@ class ClassicStorySetup:
                     return {
                         "status": "error",
                         "message": f"Act plan not found for act {current_act}",
-                        "current_act": current_act
+                        "current_act_id": current_act
                     }
                     
             except Exception as e:
