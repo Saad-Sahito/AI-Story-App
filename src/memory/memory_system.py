@@ -257,16 +257,32 @@ class StoryMemorySystem:
     # ----------- Story Progress (Long-Term) ----------
     async def update_story_progress(self, metadata: dict = None):
         store = await self.long_term_story_progress()
-        await store.put_progress(metadata=metadata or {})
+        await store.update_story_progress(metadata=metadata or {})
 
+    async def increment_chapter(self, word_count_delta: int, scene_id: int) -> dict:
+        store = await self.long_term_story_progress()
+        return await store.increment_chapter(word_count_delta=word_count_delta, scene_id=scene_id) or {}
+    
+    async def increment_act(self, new_act_number: int) -> dict:
+        store = await self.long_term_story_progress()
+        return await store.increment_act(new_act_number=new_act_number)
+    
     async def get_story_progress(self) -> dict:
         store = await self.long_term_story_progress()
-        return await store.get_progress() or {}
+        return await store.get_story_progress() or {}
+    
+    async def get_act_progress_summary(self) -> dict:
+        store = await self.long_term_story_progress()
+        return await store.get_act_progress_summary() or {}
+    
+    async def mark_story_complete(self):
+        store = await self.long_term_story_progress()
+        return await store.mark_story_complete()
 
     # ---------- Unified scene ingestion ----------
     async def add_post_scene_bundle(self, scene_bundle: Dict[str, Any], metadata: Dict[str, Any]):
         if scene_bundle.get("story_summary"):
-            await self.add_story_summary(scene_bundle["story_summary"], metadata)
+            await self.add_story_summary(scene_bundle["story_summary"], metadata={metadata.get("chapter_id", 0): metadata.get("chapter_id", 0), "type": "scene summary"})
         if scene_bundle.get("character_details"):
             await self.add_character_detail(scene_bundle["character_details"], metadata)
         if scene_bundle.get("world_details"):
@@ -281,8 +297,9 @@ class StoryMemorySystem:
             await self.add_world_summary(parts["world_summary"], metadata)
 
     #---------------User Management------------------
-    async def _update_user_monthly_word_count(self, word_count):
-        return await update_user_monthly_word_count(user_id=self.user_id, words_added=word_count)
+    async def update_user_monthly_word_count(self, word_count):
+        store = await self.long_term_users()
+        return await store.increment_word_count(words_added=word_count)
 
     # ---------- Cleanup ----------
     async def close(self):

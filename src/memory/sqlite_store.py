@@ -9,6 +9,7 @@ from contextlib import asynccontextmanager
 
 class SQLiteStore:
     init_lock = asyncio.Lock()
+
     def __init__(self, table: str = "long_form", 
                  user_id: str = None, story_id: str = None, db_path: str = "story_memory.db"):
         self.db_path = db_path
@@ -35,7 +36,7 @@ class SQLiteStore:
             await conn.execute("PRAGMA synchronous=NORMAL;")
             await conn.execute("PRAGMA foreign_keys = ON")
             
-            # Users table (user_tag removed)
+            # Users table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS users (
                     user_id TEXT NOT NULL PRIMARY KEY,
@@ -48,16 +49,14 @@ class SQLiteStore:
                     stories TEXT DEFAULT '[]',
                     signup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_reset_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-
-                    -- Subscription-related fields
                     lqs_customer_id TEXT,
                     lqs_subscription_id TEXT,
                     lqs_variant_id TEXT,
-                    subscription_status TEXT DEFAULT 'inactive',  -- active, trialing, canceled, expired
+                    subscription_status TEXT DEFAULT 'inactive',
                     subscription_renewal_date TIMESTAMP,
                     cancel_at_period_end BOOLEAN DEFAULT 0
                 )
-                """)
+            """)
             
             # Story texts table
             await conn.execute("""
@@ -66,8 +65,8 @@ class SQLiteStore:
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
                     chapter_id TEXT NOT NULL,
-                    text TEXT, -- JSON array stored as text
-                    metadata TEXT, -- JSON stored as text
+                    text TEXT,
+                    metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id, chapter_id)
                 )
@@ -81,7 +80,7 @@ class SQLiteStore:
                     story_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     details TEXT,
-                    metadata TEXT, -- JSON stored as text
+                    metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id, name)
@@ -96,7 +95,7 @@ class SQLiteStore:
                     story_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     details TEXT,
-                    metadata TEXT, -- JSON stored as text
+                    metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id, name)
@@ -110,36 +109,59 @@ class SQLiteStore:
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
                     chapter_id INTEGER NOT NULL,
-                    type TEXT,              -- Added for filtering by note type
-                    story_title TEXT,       -- Added for filtering by story title
+                    act_id INTEGER NOT NULL,
+                    type TEXT,
+                    story_title TEXT,
                     text TEXT,
-                    metadata TEXT,          -- Keep JSON metadata for flexibility
+                    metadata TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE (user_id, story_id, chapter_id, type, story_title)
                 )
             """)
-
-            # Story progress table with image_data column
+            
+            # Shared story data table (includes total_acts and target_length)
+            await conn.execute("""
+                CREATE TABLE IF NOT EXISTS shared_story_data (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    story_id TEXT NOT NULL,
+                    story_title TEXT,
+                    story_type TEXT,
+                    total_acts INTEGER,
+                    target_length INTEGER,
+                    genre_list TEXT,
+                    pov TEXT,
+                    blurb TEXT,
+                    tone_temp FLOAT,
+                    model TEXT,
+                    image_data BLOB,
+                    public BOOLEAN,
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    UNIQUE(story_id)
+                )
+            """)
+            
+            # Story progress table (no target_length, no metadata column, token_usage as column)
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS story_progress (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
+                    current_act_id INTEGER,
                     latest_chapter_id INTEGER,
                     continue_scene_id INTEGER,
                     word_count INTEGER DEFAULT 0,
-                    image_data BLOB,
-                    public BOOLEAN,
                     complete BOOLEAN,
-                    metadata TEXT,
+                    token_usage TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id),
                     FOREIGN KEY (user_id) REFERENCES users(user_id) ON DELETE CASCADE
                 )
             """)
-
+            
+            # Feedback table
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS feedback (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -159,7 +181,7 @@ class SQLiteStore:
                 )
             """)
             
-            # Create indexes for better performance (idx_users_user_tag removed)
+            # Create indexes
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_story_texts_user_story ON story_texts(user_id, story_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_characters_user_story ON characters_raw(user_id, story_id)")
             await conn.execute("CREATE INDEX IF NOT EXISTS idx_world_elements_user_story ON world_elements_raw(user_id, story_id)")
@@ -168,28 +190,100 @@ class SQLiteStore:
             
             await conn.commit()
 
+    # Helper function to get shared story data
+    async def _get_shared_story_data(self, story_id: str) -> Optional[Dict[str, Any]]:
+        """Retrieve shared story data for a given story_id."""
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT story_id, story_title, story_type, total_acts, target_length, genre_list, pov, 
+                       blurb, tone_temp, model, image_data, public, created_at, updated_at
+                FROM shared_story_data
+                WHERE story_id = ?
+            """, (story_id,))
+            row = await cursor.fetchone()
+            if row:
+                result = dict(row)
+                result["genre_list"] = json.loads(result["genre_list"]) if result["genre_list"] else []
+                return result
+            return None
 
-    # ----------------------------------------
-    # 👤 USER HELPERS
-    # ----------------------------------------
+    # Helper function to upsert shared story data
+    async def _upsert_shared_story_data(self, story_id: str, metadata: Dict[str, Any]):
+        """Insert or update shared story data, preserving existing values where not specified."""
+        async with self._get_connection() as conn:
+            existing = await self._get_shared_story_data(story_id)
+            if existing:
+                merged_data = {
+                    "story_title": metadata.get("story_title", existing["story_title"]),
+                    "story_type": metadata.get("story_type", existing["story_type"] or "classic"),
+                    "total_acts": metadata.get("total_acts", existing["total_acts"] or 3),
+                    "target_length": metadata.get("target_length", existing["target_length"] or 0),
+                    "genre_list": metadata.get("genre", existing["genre_list"]),
+                    "pov": metadata.get("pov", existing["pov"]),
+                    "blurb": metadata.get("blurb", existing["blurb"]),
+                    "tone_temp": metadata.get("tone_temp", existing["tone_temp"]),
+                    "model": metadata.get("model", existing["model"]),
+                    "image_data": metadata.get("image_data", existing["image_data"]),
+                    "public": metadata.get("public", existing["public"])
+                }
+            else:
+                merged_data = {
+                    "story_title": metadata.get("story_title"),
+                    "story_type": metadata.get("story_type", "classic"),
+                    "total_acts": metadata.get("total_acts", 3),
+                    "target_length": metadata.get("target_length", 0),
+                    "genre_list": metadata.get("genre", []),
+                    "pov": metadata.get("pov"),
+                    "blurb": metadata.get("blurb"),
+                    "tone_temp": metadata.get("tone_temp"),
+                    "model": metadata.get("model"),
+                    "image_data": metadata.get("image_data"),
+                    "public": metadata.get("public", False)
+                }
+
+            await conn.execute("""
+                INSERT INTO shared_story_data (
+                    story_id, story_title, story_type, total_acts, target_length, genre_list, pov, 
+                    blurb, tone_temp, model, image_data, public
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(story_id) DO UPDATE SET
+                    story_title = excluded.story_title,
+                    story_type = excluded.story_type,
+                    total_acts = excluded.total_acts,
+                    target_length = excluded.target_length,
+                    genre_list = excluded.genre_list,
+                    pov = excluded.pov,
+                    blurb = excluded.blurb,
+                    tone_temp = excluded.tone_temp,
+                    model = excluded.model,
+                    image_data = excluded.image_data,
+                    public = excluded.public,
+                    updated_at = CURRENT_TIMESTAMP
+            """, (
+                story_id,
+                merged_data["story_title"],
+                merged_data["story_type"],
+                merged_data["total_acts"],
+                merged_data["target_length"],
+                json.dumps(merged_data["genre_list"]),
+                merged_data["pov"],
+                merged_data["blurb"],
+                merged_data["tone_temp"],
+                merged_data["model"],
+                merged_data["image_data"],
+                merged_data["public"]
+            ))
+            await conn.commit()
+
+    # User helpers
     async def get_user(self, user_id: str) -> Optional[Dict[str, Any]]:
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def create_user(self, user_id: str, nickname: str, age: int = None):
-        async with self._get_connection() as conn:
-            await conn.execute("""
-                INSERT OR IGNORE INTO users (user_id, nickname, age)
-                VALUES (?, ?, ?)
-            """, (user_id, nickname, age))
-            await conn.commit()
-            return {"status": "success", "message": f"✅ User {nickname} created."}
-
     async def add_user(self, nickname: str, age: Optional[int], user_id: str, tier: int,
                        no_genre: List[str] = [], no_themes: List[str] = [], stories: List[Dict] = None):
-        """Add a new user to the users table."""
         stories = stories or []
         try:
             async with self._get_connection() as conn:
@@ -197,7 +291,6 @@ class SQLiteStore:
                 if await cursor.fetchone():
                     return {"status": "error", "message": f"❌ user_id '{user_id}' already exists!"}
 
-                now = asyncio.get_running_loop().time()  # we don’t actually need this, keeping defaults is fine
                 await conn.execute("""
                     INSERT INTO users (user_id, nickname, age, tier, no_genre, no_themes, stories)
                     VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -208,9 +301,7 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    # For backend use
     async def append_story(self, user_id: str, story_title: str, story_id: str, story_type: str):
-        """Append a story to the user's stories list."""
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute(
@@ -242,7 +333,6 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
     async def update_user(self, user_id: str, updates: Dict[str, Any]):
-        """Update user row with provided values, leaving unspecified fields unchanged."""
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute(
@@ -253,7 +343,6 @@ class SQLiteStore:
                 if not row:
                     return {"status": "error", "message": f"❌ user_id '{user_id}' not found!"}
 
-                # Prepare fields to update
                 fields = []
                 values = []
                 for field in ["nickname", "age", "tier", "no_genre", "no_themes"]:
@@ -281,7 +370,6 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
     async def delete_story(self, user_id: str, story_title: str, story_id: str):
-        """Delete a story from the user's stories list AND all related tables."""
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute(
@@ -320,6 +408,7 @@ class SQLiteStore:
                 await conn.execute("DELETE FROM world_elements_raw WHERE user_id = ? AND story_id = ?", (user_id, story_id))
                 await conn.execute("DELETE FROM director_notes WHERE user_id = ? AND story_id = ?", (user_id, story_id))
                 await conn.execute("DELETE FROM story_progress WHERE user_id = ? AND story_id = ?", (user_id, story_id))
+                await conn.execute("DELETE FROM shared_story_data WHERE story_id = ?", (story_id,))
 
                 await conn.commit()
 
@@ -332,8 +421,6 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
     async def get_user_profile(self, user_id: str):
-        """Fetch full user profile."""
-        # Ensure the 30-day check happens before returning data
         await self.ensure_word_count_fresh(user_id)
         try:
             async with self._get_connection() as conn:
@@ -346,7 +433,6 @@ class SQLiteStore:
                 if not row:
                     return {"status": "error", "message": "❌ User not found"}
 
-                # Convert JSON fields back into lists for app use
                 user_data = dict(row)
                 user_data["no_genre"] = json.loads(user_data["no_genre"]) if user_data["no_genre"] else []
                 user_data["no_themes"] = json.loads(user_data["no_themes"]) if user_data["no_themes"] else []
@@ -357,21 +443,15 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-
-
-
-    # For backend use
-    async def increment_word_count(self, user_id: str, words_added: int):
-        """Increment user's word count by a given number."""
+    async def increment_word_count(self, words_added: int):
         if not isinstance(words_added, int) or words_added < 0:
             return {"status": "error", "message": "❌ words_added must be a non-negative integer"}
 
         try:
             async with self._get_connection() as conn:
-                # Ensure user exists
                 cursor = await conn.execute("""
                     SELECT monthly_word_count FROM users WHERE user_id = ?
-                """, (user_id,))
+                """, (self.user_id,))
                 row = await cursor.fetchone()
                 if not row:
                     return {"status": "error", "message": "❌ User not found"}
@@ -379,7 +459,7 @@ class SQLiteStore:
                 new_value = row["monthly_word_count"] + words_added
                 await conn.execute("""
                     UPDATE users SET monthly_word_count = ? WHERE user_id = ?
-                """, (new_value, user_id))
+                """, (new_value, self.user_id))
                 await conn.commit()
 
                 return {
@@ -391,9 +471,7 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    # For Backend Use
     async def get_word_count(self, user_id: str):
-        """Get the user's current monthly word count and last reset date."""
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute("""
@@ -414,14 +492,8 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-
-    # ----------------------------------------
-    # 🧾 SUBSCRIPTION MANAGEMENT
-    # ----------------------------------------
+    # Subscription management
     async def update_subscription(self, user_id: str, data: Dict[str, Any]):
-        """
-        Update user's Lemon Squeezy subscription info (triggered by webhook events).
-        """
         try:
             async with self._get_connection() as conn:
                 await conn.execute("""
@@ -448,9 +520,6 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Error updating subscription: {str(e)}"}
 
     async def is_subscription_active(self, user_id: str) -> bool:
-        """
-        Return True if the user's subscription is active or trialing.
-        """
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
                 SELECT subscription_status FROM users WHERE user_id = ?
@@ -458,15 +527,8 @@ class SQLiteStore:
             row = await cursor.fetchone()
             return bool(row and row["subscription_status"] in ["active", "trialing"])
 
-    # ----------------------------------------
-    # 🔄 MONTHLY RESET SYSTEM
-    # ----------------------------------------
+    # Monthly reset system
     async def ensure_word_count_fresh(self, user_id: str):
-        """
-        Resets word count if:
-        - 30 days have passed since last reset, OR
-        - subscription renewal date has arrived
-        """
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute("""
@@ -502,9 +564,6 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Error checking reset: {str(e)}"}
 
     async def _reset_word_count(self, conn, user_id: str, new_value: Optional[int] = None):
-        """
-        Reset or set new monthly word count for user.
-        """
         new_value = new_value or 0
         now = datetime.now(UTC).isoformat()
         await conn.execute("""
@@ -515,25 +574,7 @@ class SQLiteStore:
         """, (new_value, now, user_id))
         await conn.commit()
 
-    # async def set_word_count(self, user_id: str, new_value: int):
-    #     """
-    #     Manually update the user's word count to a specific new value.
-    #     """
-    #     try:
-    #         async with self._get_connection() as conn:
-    #             await self._reset_word_count(conn, user_id, new_value)
-    #             return {"status": "success", "message": f"✅ Word count set to {new_value}"}
-    #     except Exception as e:
-    #         return {"status": "error", "message": f"❌ Error updating word count: {str(e)}"}
-
-
-
-
-
-
-
     async def get_user_profile_with_stories(self, user_id: str):
-        """Fetch user profile and their stories with progress (fixed image_data decoding)."""
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute(
@@ -573,9 +614,11 @@ class SQLiteStore:
                     if not story_id:
                         continue
 
+                    # Get user-specific progress
                     cursor = await conn.execute(
                         """
-                        SELECT latest_chapter_id, continue_scene_id, word_count, metadata, image_data, public, complete
+                        SELECT current_act_id, latest_chapter_id, continue_scene_id, 
+                               word_count, complete, token_usage
                         FROM story_progress
                         WHERE user_id = ? AND story_id = ?
                         LIMIT 1
@@ -584,42 +627,53 @@ class SQLiteStore:
                     )
                     progress_row = await cursor.fetchone()
 
+                    # Get shared story data
+                    shared_data = await self._get_shared_story_data(story_id)
+
                     story_data = {
                         "title": title,
                         "story_id": story_id,
-                        "story_type": story_type,
+                        "story_type": story_type or "classic",
+                        "current_act_id": 1,
                         "latest_chapter_id": 0,
                         "continue_scene_id": 0,
                         "word_count": 0,
+                        "complete": False,
+                        "token_usage": 0,
                         "model": "",
                         "blurb": "",
                         "image_data": None,
                         "public": False,
-                        "complete": False
+                        "pov": None,
+                        "genre": [],
+                        "tone_temp": None,
+                        "total_acts": 3,
+                        "target_length": 0
                     }
 
                     if progress_row:
-                        metadata = json.loads(progress_row["metadata"] or "{}")
-
-                        # Handle image_data correctly
-                        raw_image = progress_row["image_data"]
-                        if raw_image:
-                            if isinstance(raw_image, bytes):
-                                image_b64 = base64.b64encode(raw_image).decode("utf-8")
-                            else:
-                                image_b64 = raw_image  # already base64 string
-                        else:
-                            image_b64 = None
-
                         story_data.update({
+                            "current_act_id": progress_row["current_act_id"] or 1,
                             "latest_chapter_id": progress_row["latest_chapter_id"] or 0,
                             "continue_scene_id": progress_row["continue_scene_id"] or 0,
                             "word_count": progress_row["word_count"] or 0,
-                            "model": metadata.get("model", ""),
-                            "blurb": metadata.get("blurb", ""),
-                            "image_data": image_b64,
-                            "public": bool(progress_row["public"]),
-                            "complete": bool(progress_row["complete"])
+                            "complete": bool(progress_row["complete"]),
+                            "token_usage": json.loads(progress_row["token_usage"]) if progress_row["token_usage"] else 0
+                        })
+
+                    if shared_data:
+                        story_data.update({
+                            "model": shared_data["model"] or "",
+                            "blurb": shared_data["blurb"] or "",
+                            "image_data": (base64.b64encode(shared_data["image_data"]).decode("utf-8") 
+                                          if shared_data["image_data"] else None),
+                            "public": bool(shared_data["public"]),
+                            "pov": shared_data["pov"],
+                            "genre": shared_data["genre_list"],
+                            "tone_temp": shared_data["tone_temp"],
+                            "total_acts": shared_data["total_acts"],
+                            "target_length": shared_data["target_length"] or 0,
+                            "story_type": shared_data["story_type"] or story_type or "classic"
                         })
 
                     stories.append(story_data)
@@ -633,34 +687,25 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    async def update_story_public_status(self, user_id: str, story_id: str, public: bool):
-        """Update the public status for a story in the story_progress table."""
+    async def update_story_public_status(self, story_id: str, public: bool):
         try:
             async with self._get_connection() as conn:
-                cursor = await conn.execute(
-                    """
-                    SELECT user_id, story_id FROM story_progress WHERE user_id = ? AND story_id = ?
-                    """,
-                    (user_id, story_id)
-                )
-                if not await cursor.fetchone():
-                    return {"status": "error", "message": f"❌ Story with user_id '{user_id}' and story_id '{story_id}' not found!"}
-
-                await conn.execute(
-                    """
-                    UPDATE story_progress
-                    SET public = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND story_id = ?
-                    """,
-                    (public, user_id, story_id)
-                )
+                shared_data = await self._get_shared_story_data(story_id)
+                if not shared_data:
+                    await self._upsert_shared_story_data(story_id, {"public": public})
+                else:
+                    await conn.execute("""
+                        UPDATE shared_story_data
+                        SET public = ?,
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE story_id = ?
+                    """, (public, story_id))
+                
                 await conn.commit()
                 return {"status": "success", "message": f"Public status updated to {public} for story_id '{story_id}'"}
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    # For backend use
     async def put_text(self, entry: dict, metadata: Optional[Dict[str, Any]] = None):
         chapter_id = (metadata or {}).get("chapter_id", "")
         async with self._get_connection() as conn:
@@ -689,10 +734,10 @@ class SQLiteStore:
                 ))
                 await conn.commit()
     
-    # For backend use
     async def put_to_director_notes(self, entry: Any, metadata: Optional[Dict[str, Any]] = None):
         metadata = metadata or {}
         chapter_id = int(metadata.get("chapter_id", 0))
+        act_id = int(metadata.get("act_id", 0))
         type_ = metadata.get("type", "default")
         story_title = metadata.get("story_title", "Untitled")
 
@@ -700,10 +745,10 @@ class SQLiteStore:
             async with conn.execute('BEGIN'):
                 await conn.execute(f"""
                     INSERT INTO {self.table} (
-                        user_id, story_id, chapter_id, type, story_title, text, metadata
+                        user_id, story_id, chapter_id, act_id, type, story_title, text, metadata
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, story_id, chapter_id, type, story_title)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, story_id, chapter_id, act_id, type, story_title)
                     DO UPDATE SET
                         text = excluded.text,
                         metadata = excluded.metadata,
@@ -712,6 +757,7 @@ class SQLiteStore:
                     self.user_id,
                     self.story_id,
                     chapter_id,
+                    act_id,
                     type_,
                     story_title,
                     json.dumps(entry),
@@ -719,105 +765,7 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
-    # For backend use
-    async def put_progress(self, metadata: Optional[Dict[str, Any]] = None):
-        """Insert or update story progress while preserving existing metadata values."""
-        metadata = metadata or {}
-        chapter_id = metadata.get("latest_chapter_id")
-        scene_id = metadata.get("continue_scene_id")
-        word_count = metadata.get("word_count", 0)
-        story_title = metadata.get("story_title")
-        tone_temp = metadata.get("tone_temp")
-        model = metadata.get("model")
-        token_usage = metadata.get("token_usage")  # dict
-        blurb = metadata.get("blurb")
-        image_data = metadata.get("image_data")  # Bytes
-        public = metadata.get("public")
-        complete = metadata.get("complete")
-
-        async with self._get_connection() as conn:
-            cursor = await conn.execute("""
-                SELECT metadata, latest_chapter_id, continue_scene_id, word_count, image_data, public, complete
-                FROM story_progress
-                WHERE user_id = ? AND story_id = ?
-            """, (self.user_id, self.story_id))
-
-            existing_row = await cursor.fetchone()
-
-            if existing_row:
-                existing_meta = json.loads(existing_row["metadata"] or "{}")
-
-                # Merge old metadata with new (only overwrite if new value is not None)
-                merged_meta = {
-                    "chapter_id": chapter_id if chapter_id is not None else existing_meta.get("chapter_id"),
-                    "scene_id": scene_id if scene_id is not None else existing_meta.get("scene_id"),
-                    "word_count": word_count if word_count != 0 else existing_meta.get("word_count", 0),
-                    "story_title": story_title if story_title is not None else existing_meta.get("story_title"),
-                    "tone_temp": tone_temp if tone_temp is not None else existing_meta.get("tone_temp"),
-                    "model": model if model is not None else existing_meta.get("model"),
-                    "token_usage": token_usage if token_usage is not None else existing_meta.get("token_usage", {}),
-                    "blurb": blurb if blurb is not None else existing_meta.get("blurb")
-                }
-
-                await conn.execute("""
-                    UPDATE story_progress
-                    SET latest_chapter_id = ?,
-                        continue_scene_id = ?,
-                        word_count = ?,
-                        image_data = ?,
-                        public = ?,
-                        complete = ?,
-                        metadata = ?,
-                        updated_at = CURRENT_TIMESTAMP
-                    WHERE user_id = ? AND story_id = ?
-                """, (
-                    merged_meta["chapter_id"],
-                    merged_meta["scene_id"],
-                    merged_meta["word_count"],
-                    image_data if image_data is not None else existing_row["image_data"],
-                    public if public is not None else existing_row["public"],
-                    complete if complete is not None else existing_row["complete"],
-                    json.dumps(merged_meta),
-                    self.user_id,
-                    self.story_id
-                ))
-
-            else:
-                # No existing record — insert new
-                clean_meta = {
-                    "chapter_id": chapter_id,
-                    "scene_id": scene_id,
-                    "word_count": word_count,
-                    "story_title": story_title,
-                    "tone_temp": tone_temp,
-                    "model": model,
-                    "token_usage": token_usage,
-                    "blurb": blurb,
-                    "public": public,
-                    "complete": complete
-                }
-
-                await conn.execute("""
-                    INSERT INTO story_progress (
-                        user_id, story_id, latest_chapter_id, continue_scene_id, word_count, image_data, public, complete, metadata
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """, (
-                    self.user_id,
-                    self.story_id,
-                    chapter_id,
-                    scene_id,
-                    word_count,
-                    image_data,
-                    public,
-                    complete,
-                    json.dumps(clean_meta)
-                ))
-
-            await conn.commit()
-
-    # For backend use
     async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):
-        """Append new details to existing character/world details."""
         async with self._get_connection() as conn:
             for name, details in details_dict.items():
                 cursor = await conn.execute(
@@ -848,9 +796,7 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
-    # For backend use
     async def get_text(self, chapter_id: str) -> List[dict]:
-        """Get the full JSON array (list of dicts) for a chapter."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"SELECT text FROM {self.table} WHERE user_id = ? AND story_id = ? AND chapter_id = ?",
@@ -862,13 +808,9 @@ class SQLiteStore:
                 return json.loads(row['text'])
             return []
     
-    # For backend use
     async def get_from_director_notes(self, metadata: dict):
-        """
-        Retrieve text entry by chapter_id, type, and story_title.
-        Returns either a list or a single string depending on stored data.
-        """
         chapter_id = metadata.get("chapter_id", 0)
+        act_id = metadata.get("act_id", 0)
         type_ = metadata.get("type", "default")
         story_title = metadata.get("story_title", "Untitled")
 
@@ -879,10 +821,11 @@ class SQLiteStore:
                 WHERE user_id = ?
                 AND story_id = ?
                 AND chapter_id = ?
+                AND act_id = ?
                 AND type = ?
                 AND story_title = ?
                 """,
-                (self.user_id, self.story_id, chapter_id, type_, story_title)
+                (self.user_id, self.story_id, chapter_id, act_id, type_, story_title)
             )
             row = await cursor.fetchone()
 
@@ -897,33 +840,289 @@ class SQLiteStore:
             except json.JSONDecodeError:
                 return text
 
-    async def get_progress(self) -> Optional[Dict[str, Any]]:
-        """Get the latest story progress."""
-        async with self._get_connection() as conn:
-            cursor = await conn.execute(
-                "SELECT latest_chapter_id, continue_scene_id, word_count, image_data, public, complete, metadata FROM story_progress WHERE user_id = ? AND story_id = ? LIMIT 1",
-                (self.user_id, self.story_id)
-            )
-            row = await cursor.fetchone()
-            
-            if row:
-                metadata = json.loads(row['metadata']) if row['metadata'] else {}
-                # Ensure token_usage is a dict
-                metadata['token_usage'] = metadata.get('token_usage', {}) if isinstance(metadata.get('token_usage'), (dict, list)) else {}
-                return {
-                    'latest_chapter_id': row['latest_chapter_id'],
-                    'continue_scene_id': row['continue_scene_id'],
-                    'word_count': row['word_count'],
-                    'image_data': row['image_data'],
-                    'public': row['public'],
-                    'complete': row['complete'],
-                    'metadata': metadata
-                }
-            return None
+    async def update_story_progress(self, metadata: Optional[Dict[str, Any]] = None):
+        """
+        Insert or update story progress.
+        
+        User-specific fields (story_progress):
+            - current_act_id: Current act number
+            - latest_chapter_id: Current chapter number
+            - continue_scene_id: Current scene number
+            - word_count: Current story word count
+            - complete: Story completion status (bool)
+            - token_usage: Token count (int or dict)
+        
+        Shared fields (shared_story_data):
+            - total_acts: Total number of acts planned
+            - target_length: Target word count for the story
+            - pov: Point of view
+            - genre: Story genre
+            - story_type: "classic" or "interactive"
+            - story_title: Story title
+            - tone_temp: Temperature setting for tone
+            - model: LLM model
+            - blurb: Story blurb/description
+            - image_data: Cover image
+            - public: Public status
+        """
+        metadata = metadata or {}
+        
+        # User-specific fields
+        current_act_id = metadata.get("current_act_id")
+        chapter_id = metadata.get("latest_chapter_id")
+        scene_id = metadata.get("continue_scene_id")
+        word_count = metadata.get("word_count")
+        complete = metadata.get("complete")
+        token_usage = metadata.get("token_usage")
+        
+        # Shared fields
+        shared_metadata = {
+            "story_title": metadata.get("story_title"),
+            "story_type": metadata.get("story_type"),
+            "total_acts": metadata.get("total_acts"),
+            "target_length": metadata.get("target_length"),
+            "genre": metadata.get("genre"),
+            "pov": metadata.get("pov"),
+            "blurb": metadata.get("blurb"),
+            "tone_temp": metadata.get("tone_temp"),
+            "model": metadata.get("model"),
+            "image_data": metadata.get("image_data"),
+            "public": metadata.get("public")
+        }
 
-    # For backend use
+        async with self._get_connection() as conn:
+            # Update shared_story_data
+            await self._upsert_shared_story_data(self.story_id, shared_metadata)
+            
+            # Update story_progress
+            cursor = await conn.execute("""
+                SELECT current_act_id, latest_chapter_id, continue_scene_id, 
+                       word_count, complete, token_usage
+                FROM story_progress
+                WHERE user_id = ? AND story_id = ?
+            """, (self.user_id, self.story_id))
+            
+            existing_row = await cursor.fetchone()
+            
+            if existing_row:
+                # Handle token_usage merging for dictionaries
+                existing_token_usage = json.loads(existing_row["token_usage"]) if existing_row["token_usage"] else 0
+                if isinstance(token_usage, dict) and isinstance(existing_token_usage, dict):
+                    updated_token_usage = existing_token_usage.copy()
+                    for key, value in token_usage.items():
+                        updated_token_usage[key] = updated_token_usage.get(key, 0) + value
+                    token_usage = updated_token_usage
+                elif isinstance(token_usage, dict) and isinstance(existing_token_usage, int):
+                    token_usage = sum(token_usage.values()) + existing_token_usage
+                elif isinstance(token_usage, int) and isinstance(existing_token_usage, dict):
+                    token_usage = token_usage + sum(existing_token_usage.values())
+                elif token_usage is None:
+                    token_usage = existing_token_usage
+
+                await conn.execute("""
+                    UPDATE story_progress
+                    SET current_act_id = ?,
+                        latest_chapter_id = ?,
+                        continue_scene_id = ?,
+                        word_count = ?,
+                        complete = ?,
+                        token_usage = ?,
+                        updated_at = CURRENT_TIMESTAMP
+                    WHERE user_id = ? AND story_id = ?
+                """, (
+                    current_act_id if current_act_id is not None else existing_row["current_act_id"] or 1,
+                    chapter_id if chapter_id is not None else existing_row["latest_chapter_id"],
+                    scene_id if scene_id is not None else existing_row["continue_scene_id"],
+                    word_count if word_count is not None else existing_row["word_count"] or 0,
+                    complete if complete is not None else existing_row["complete"],
+                    json.dumps(token_usage) if token_usage is not None else existing_row["token_usage"] or "0",
+                    self.user_id,
+                    self.story_id
+                ))
+            else:
+                await conn.execute("""
+                    INSERT INTO story_progress (
+                        user_id, story_id, current_act_id, latest_chapter_id, 
+                        continue_scene_id, word_count, complete, token_usage
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """, (
+                    self.user_id,
+                    self.story_id,
+                    current_act_id or 1,
+                    chapter_id or 0,
+                    scene_id or 0,
+                    word_count or 0,
+                    complete or False,
+                    json.dumps(token_usage or 0)
+                ))
+            
+            await conn.commit()
+
+    async def get_story_progress(self) -> Optional[Dict[str, Any]]:
+        """
+        Get the latest story progress.
+        
+        Returns dict with:
+            - current_act_id: Current act number
+            - latest_chapter_id: Current chapter number
+            - continue_scene_id: Current scene number
+            - word_count: Total words written
+            - complete: Is story finished
+            - token_usage: Tokens used
+            - total_acts: Total acts planned
+            - target_length: Target word count for the story
+            - pov: Point of view
+            - genre: Story genre
+            - story_type: "classic" or "interactive"
+            - story_title: Story title
+            - tone_temp: Temperature for tone
+            - model: LLM model
+            - blurb: Story blurb
+            - image_data: Cover image
+            - public: Is story public
+        """
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("""
+                SELECT current_act_id, latest_chapter_id, continue_scene_id, 
+                       word_count, complete, token_usage
+                FROM story_progress 
+                WHERE user_id = ? AND story_id = ?
+                LIMIT 1
+            """, (self.user_id, self.story_id))
+            
+            progress_row = await cursor.fetchone()
+            shared_data = await self._get_shared_story_data(self.story_id)
+            
+            if not progress_row and not shared_data:
+                return None
+            
+            result = {
+                "current_act_id": 1,
+                "latest_chapter_id": 0,
+                "continue_scene_id": 0,
+                "word_count": 0,
+                "complete": False,
+                "token_usage": 0,
+                "total_acts": 3,
+                "target_length": 0,
+                "pov": None,
+                "genre": [],
+                "story_type": "classic",
+                "story_title": None,
+                "tone_temp": None,
+                "model": None,
+                "blurb": None,
+                "image_data": None,
+                "public": False
+            }
+            
+            if progress_row:
+                result.update({
+                    "current_act_id": progress_row["current_act_id"] or 1,
+                    "latest_chapter_id": progress_row["latest_chapter_id"] or 0,
+                    "continue_scene_id": progress_row["continue_scene_id"] or 0,
+                    "word_count": progress_row["word_count"] or 0,
+                    "complete": bool(progress_row["complete"]),
+                    "token_usage": json.loads(progress_row["token_usage"]) if progress_row["token_usage"] else 0
+                })
+            
+            if shared_data:
+                result.update({
+                    "total_acts": shared_data["total_acts"] or 3,
+                    "target_length": shared_data["target_length"] or 0,
+                    "pov": shared_data["pov"],
+                    "genre": shared_data["genre_list"],
+                    "story_type": shared_data["story_type"] or "classic",
+                    "story_title": shared_data["story_title"],
+                    "tone_temp": shared_data["tone_temp"],
+                    "model": shared_data["model"],
+                    "blurb": shared_data["blurb"],
+                    "image_data": shared_data["image_data"] if shared_data["image_data"] else None,
+                    "public": bool(shared_data["public"])
+                })
+            
+            return result
+
+    async def get_act_progress_summary(self) -> Dict[str, Any]:
+        """
+        Get a summary of act-based progress for display/debugging.
+        
+        Returns:
+            Dict with current_act_id, total_acts, chapters_completed, 
+            word_count, target_length, completion_percentage
+        """
+        progress = await self.get_story_progress()
+        
+        if not progress:
+            return {
+                "current_act_id": 1,
+                "total_acts": 3,
+                "chapters_completed": 0,
+                "word_count": 0,
+                "target_length": 0,
+                "completion_percentage": 0,
+                "is_complete": False,
+                "genre": [],
+                "pov": None,
+                "story_type": "classic"
+            }
+        
+        word_count = progress["word_count"]
+        target_length = progress["target_length"]
+        completion_pct = 0
+        if target_length > 0:
+            completion_pct = min(100, int((word_count / target_length) * 100))
+        
+        return {
+            "current_act_id": progress["current_act_id"],
+            "total_acts": progress["total_acts"],
+            "chapters_completed": progress["latest_chapter_id"] or 0,
+            "word_count": word_count,
+            "target_length": target_length,
+            "completion_percentage": completion_pct,
+            "is_complete": progress["complete"],
+            "genre": progress["genre"],
+            "pov": progress["pov"],
+            "story_type": progress["story_type"]
+        }
+
+    async def increment_chapter(self, word_count_delta: int = 0, scene_id: int = 1):
+        progress = await self.get_story_progress()
+        
+        if not progress:
+            raise ValueError("No story progress found")
+        
+        current_chapter = progress["latest_chapter_id"] or 0
+        current_word_count = progress["word_count"]
+        
+        await self.update_story_progress({
+            "latest_chapter_id": current_chapter + 1,
+            "continue_scene_id": scene_id,
+            "word_count": current_word_count + word_count_delta
+        })
+
+    async def increment_act(self, new_act_number: int):
+        progress = await self.get_story_progress()
+        
+        if not progress:
+            raise ValueError("No story progress found")
+        
+        total_acts = progress["total_acts"]
+        
+        if new_act_number > total_acts:
+            await self.update_story_progress({
+                "current_act_id": new_act_number,
+                "complete": True
+            })
+        else:
+            await self.update_story_progress({
+                "current_act_id": new_act_number
+            })
+
+    async def mark_story_complete(self):
+        await self.update_story_progress({"complete": True})
+
     async def get_character_or_world(self, name: str) -> Optional[Dict[str, Any]]:
-        """Get specific character or world element."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"SELECT name, details, metadata FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
@@ -933,90 +1132,72 @@ class SQLiteStore:
             
             if row:
                 return {
-                    'name': row['name'],
-                    'details': row['details'],
-                    'metadata': json.loads(row['metadata']) if row['metadata'] else {}
+                    "name": row["name"],
+                    "details": row["details"],
+                    "metadata": json.loads(row["metadata"]) if row["metadata"] else {}
                 }
             return None
 
-    # For backend use
     async def get_all_characters_or_worlds(self) -> Dict[str, Any]:
-        """Get all characters or world elements."""
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"SELECT name, details FROM {self.table} WHERE user_id = ? AND story_id = ?",
                 (self.user_id, self.story_id)
             )
             rows = await cursor.fetchall()
-            return {row['name']: row['details'] for row in rows}
+            return {row["name"]: row["details"] for row in rows}
 
     async def close(self):
-        """Close database connection (SQLite handles this automatically)."""
         pass
 
-    #---------------Analytics Only------------------------
     async def get_all_users(self):
-        """Fetch all rows from the users table."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM users")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def get_all_story_texts(self):
-        """Fetch all rows from the story_texts table."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM story_texts")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def get_all_characters_raw(self):
-        """Fetch all rows from the characters_raw table."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM characters_raw")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def get_all_world_elements_raw(self):
-        """Fetch all rows from the world_elements_raw table."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM world_elements_raw")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def get_all_director_notes(self):
-        """Fetch all rows from the director_notes table."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM director_notes")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def get_all_story_progress(self):
-        """Fetch all rows from the story_progress table."""
         async with self._get_connection() as conn:
-            cursor = await conn.execute("SELECT * FROM story_progress")
+            cursor = await conn.execute("""
+                SELECT id, user_id, story_id, current_act_id, latest_chapter_id, 
+                       continue_scene_id, word_count, complete, token_usage, 
+                       created_at, updated_at
+                FROM story_progress
+            """)
             rows = await cursor.fetchall()
-            # Decode binary image data to base64 for easy export
-            results = []
-            for row in rows:
-                record = dict(row)
-                # if record.get("image_data"):
-                #     record["image_data"] = base64.b64encode(record["image_data"]).decode("utf-8")
-                results.append(record)
-            return results
+            return [dict(row) for row in rows]
 
     async def get_all_feedback(self):
-        """Fetch all rows from the feedback table."""
-        print("Getting feedback...")
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM feedback")
             rows = await cursor.fetchall()
             return [dict(row) for row in rows]
 
     async def get_all_data(self):
-        """
-        Fetch all data from every table in a structured format.
-        Returns a dictionary for easy JSON serialization or analytics use.
-        """
         users = await self.get_all_users()
         story_texts = await self.get_all_story_texts()
         characters = await self.get_all_characters_raw()
@@ -1025,6 +1206,15 @@ class SQLiteStore:
         story_progress = await self.get_all_story_progress()
         feedback = await self.get_all_feedback()
 
+        async with self._get_connection() as conn:
+            cursor = await conn.execute("SELECT * FROM shared_story_data")
+            rows = await cursor.fetchall()
+            shared_story_data = [dict(row) for row in rows]
+            for record in shared_story_data:
+                record["genre_list"] = json.loads(record["genre_list"]) if record["genre_list"] else []
+                if record.get("image_data"):
+                    record["image_data"] = base64.b64encode(record["image_data"]).decode("utf-8")
+
         return {
             "users": users,
             "story_texts": story_texts,
@@ -1032,15 +1222,13 @@ class SQLiteStore:
             "world_elements_raw": world_elements,
             "director_notes": director_notes,
             "story_progress": story_progress,
+            "shared_story_data": shared_story_data,
             "feedback": feedback
         }
 
-    #--------------Feedback----------------------
     async def insert_feedback(self, feedback: Dict[str, Any]):
-        """Insert one feedback record into the feedback table."""
         try:
             async with self._get_connection() as conn:
-                # Define columns (excluding id and submitted_at which auto-generate)
                 columns = [
                     "usage_mode", "model_used", "story_quality", "story_like", "story_improve",
                     "interactivity_naturalness", "story_pacing", "ease_of_use", 
@@ -1052,8 +1240,8 @@ class SQLiteStore:
                 
                 values = [feedback.get(col, None) for col in columns]
                 
-                await conn.execute(sql, values)  # ✅ Async execute
-                await conn.commit()              # ✅ Async commit
+                await conn.execute(sql, values)
+                await conn.commit()
                 
                 return {"status": "success", "message": "Feedback inserted successfully"}
                 

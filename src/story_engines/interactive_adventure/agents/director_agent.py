@@ -142,7 +142,7 @@ class Ingestor:
                     "tone_temp": llm_temp,
                     "token_usage": token_usage
                 })
-                await self.memory._update_user_monthly_word_count(word_count=new_word_count)
+                await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                 del system_prompt, human_prompt
                 return result
             else:
@@ -170,7 +170,7 @@ class Ingestor:
                         "tone_temp": llm_temp,
                         "token_usage": token_usage
                     })
-                    await self.memory._update_user_monthly_word_count(word_count=new_word_count)
+                    await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                     del system_prompt, human_prompt, scene_text
                     return result
 

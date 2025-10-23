@@ -465,9 +465,7 @@ async def api_add_user(user: UserCreate, request: Request):
     return result
 
 @app.patch("/users/{user_id}/stories/{story_title}")
-async def api_delete_story(user_id: str, story_title: str, story_type: str):
-    story_title_normalized = story_title.lower().replace(" ", "_")
-    story_id = f"{story_title_normalized}_{user_id}"
+async def api_delete_story(user_id: str, story_title: str, story_id: str, story_type: str):
     await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
     return await delete_story(user_id=user_id, story_title=story_title, story_id=story_id)
 
