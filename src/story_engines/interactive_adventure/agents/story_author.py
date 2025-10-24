@@ -1,72 +1,522 @@
-
-from src.memory.memory_system import StoryMemorySystem
 import base64
-from src.llm_client.llm_client import story_client, utility_client, image_client  # Import the convenience function
+import json
+from typing import Any, Dict, List, Optional, Tuple
+from pydantic import BaseModel, Field
+from langchain_core.output_parsers import PydanticOutputParser
+from src.llm_client.llm_client import story_client, utility_client, image_client
+from src.memory.memory_system import StoryMemorySystem
+
+
+# ============================================================================
+# PYDANTIC MODELS FOR INTERACTIVE STORIES
+# ============================================================================
+
+class StorySeed(BaseModel):
+    """Initial story foundation - lean and flexible for interactive narratives"""
+    title: str = Field(..., description="Story title")
+    premise: str = Field(..., description="Core story concept in 3-4 sentences")
+    protagonist: Dict[str, str] = Field(
+        ..., 
+        description="Main character with keys: name, core_trait, desire, fear"
+    )
+    world_essentials: Dict[str, str] = Field(
+        ...,
+        description="Setting info with keys: setting, time_period, key_rule"
+    )
+    initial_conflict: str = Field(..., description="Opening tension/conflict")
+    themes: List[str] = Field(..., description="1-3 core themes")
+    genre: List[str] = Field(..., description="Primary genres (list of 1-3 genres)")
+    tone: str = Field(..., description="Emotional tone (e.g., dark, hopeful, epic)")
+    style_guide: Dict[str, str] = Field(
+        ...,
+        description="Keys: prose_style, pov, tense, narrative_voice"
+    )
+    target_length: int = Field(..., description="Target word count for entire story")
+    act_count: int = Field(..., description="Number of acts (typically 3 for interactive)")
+
+
+class ActPlan(BaseModel):
+    """
+    Lightweight act plan for interactive stories.
+    No rigid chapter outlines - story flows with user choices.
+    """
+    act_number: int = Field(..., description="Which act this is (1, 2, 3)")
+    act_title: str = Field(..., description="Evocative name for this act")
+    act_purpose: str = Field(
+        ..., 
+        description="What this act accomplishes in 2-3 sentences"
+    )
+    key_themes: List[str] = Field(
+        ..., 
+        description="2-4 themes to emphasize in this act"
+    )
+    potential_branches: List[str] = Field(
+        ...,
+        description="3-5 possible story directions based on user choices"
+    )
+    emotional_trajectory: str = Field(
+        ..., 
+        description="Overall emotional shift across this act"
+    )
+    key_moments: List[str] = Field(
+        ...,
+        description="3-5 pivotal moments or revelations that should occur"
+    )
+    target_word_count: int = Field(
+        ...,
+        description="Suggested word count for this act"
+    )
+    act_closure_suggestion: str = Field(
+        ..., 
+        description="Natural stopping point for this act (e.g., 'Hero makes irreversible choice')"
+    )
+
+
+# ============================================================================
+# OUTPUT PARSERS
+# ============================================================================
+
+story_seed_parser = PydanticOutputParser(pydantic_object=StorySeed)
+act_plan_parser = PydanticOutputParser(pydantic_object=ActPlan)
+
+
+# ============================================================================
+# STORY AUTHOR CLASS (INTERACTIVE)
+# ============================================================================
 
 class StoryAuthor:
+    """
+    Manages interactive story creation through act-based, choice-driven planning.
+    
+    Workflow:
+    1. create_story_seed() - Initial lean foundation
+    2. generate_blurb() - Marketing copy from seed
+    3. generate_cover_image() - Visual based on blurb
+    4. plan_act() - Lightweight act plans (no rigid chapter outlines)
+    """
+    
     def __init__(self, memory_system: StoryMemorySystem):
-        #self.llm_client: LLMClient = llm_client
         self.memory = memory_system
 
-    async def set_story_premise(self, user_context: str, story_title: str, model: str) -> tuple:
-        print("Setting story Premise...")
-        #if not await self.memory.get_long_term_document(metadata={"type":"story_user_context", "story_title": story_title}):
-        detailed_premise, tokens = await story_client(system_prompt = (
-"You are the Story Author Agent for an interactive, choice-driven narrative experience. "
-"Your goal is to create a compelling initial foundation for the story based on the provided user context. "
-"Do NOT plan the entire plot — instead, establish a flexible premise that the Director and Scene Writer can expand "
-"as the user makes choices.\n\n"
 
-"Your outline should include:\n"
-"- A story premise (a few sentences introducing the main setup and potential conflict).\n"
-"- A list of key characters (2-5), including the protagonist, each with a short description of their role or motivation.\n"
-"- The world and setting (where and when the story takes place, including tone and atmosphere).\n"
-"- The genre, tone, and point of view (POV).\n"
-"- The initial story goals or tensions (what might drive the first few scenes, without determining outcomes).\n"
-"- A short title suggestion.\n"
-"- Optional themes or motifs that could guide tone and narrative flavor.\n\n"
-"- Define the story length in terms of word count.\n\n"
+    async def create_story_seed(
+        self, 
+        user_context: Dict[str, Any], 
+        story_title: str, 
+        model: str = "gpt-4"
+    ) -> Tuple[StorySeed, int]:
+        """
+        Create initial story foundation from user context for interactive narrative.
+        
+        Args:
+            user_context: Dict with keys: POV, Tone, Genre (List[str]), Title, Length, 
+                         Setting, Guide Prose, Additional Themes, target_audience_age
+            story_title: Story title from user_context['Title']
+            model: LLM model to use
+        
+        Returns:
+            Tuple of (StorySeed object, token_count)
+        """
+        print("🌱 Creating story seed for interactive story...")
+        
+        # Parse length into word count
+        word_count_map = {
+            "Short Long Story (7,500 - 15,000 words)": 12000,
+            "Novelette (15,000 - 25,000 words)": 20000,
+            "Novella (25,000 - 40,000 words)": 32000,
+            "Novel Chapter (40,000 - 60,000 words)": 50000,
+            "Full Novel (60,000 - 90,000 words)": 75000,
+            "Epic / Series (90,000 - 150,000+ words)": 120000
+        }
+        target_length = word_count_map.get(user_context.get('Length', ''), 20000)
+        
+        # Interactive stories typically shorter - use 3 acts for most lengths
+        if target_length <= 25000:
+            act_count = 3
+        elif target_length <= 50000:
+            act_count = 3
+        else:
+            act_count = 4  # Only very long interactive stories get 4 acts
+        
+        # Handle genres as a list
+        genres = user_context.get('Genre', ['Fiction'])
+        genres_str = ", ".join(genres)
+        
+        system_prompt = f"""You are the Story Architect for an interactive, choice-driven narrative.
 
-"Keep your output concise and open-ended — enough to inspire direction, but not to constrain it. "
-"Avoid writing the full story, detailed chapters, or fixed endings. "
-"Your goal is to provide a creative seed for the Director to shape interactively."
-),
-                                                human_prompt=f"Given User Context: {user_context}", llm_temp=0.9, model=model)
-        detailed_premise = detailed_premise.content.strip()
-        blurb = await utility_client(
-        system_prompt=f"""
-    You are the Book Blurb Agent — a professional publishing AI specialized in writing compelling back-cover text for novels.
+Create a flexible story foundation - NOT a rigid blueprint. This seed guides act planning, which happens progressively as the user makes choices.
 
-Your task:
-- Write a captivating book back-cover blurb (100-200 words).
-- Base it entirely on the story premise provided.
-- The text should hook the reader emotionally and stylistically.
-- Do NOT include spoilers or reveal key twists or endings.
-- Focus on atmosphere, stakes, tone, and protagonist setup.
-- Keep the language marketable and professional, similar to what you'd find on the back of a novel in a bookstore.
+The user has specified:
+- POV: {user_context.get('POV', 'Third-person')}
+- Tone: {user_context.get('Tone', 'Balanced')}
+- Genres: {genres_str}
+- Setting: {user_context.get('Setting', 'To be determined')}
+- Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
+- Themes: {user_context.get('Additional Themes', 'Universal')}
+- Target Audience: {user_context.get('target_audience_age', 'General')} years old
+- Target Length: {target_length} words ({act_count} acts recommended)
 
-Formatting:
-- Output only the final blurb, no extra commentary.
-- Keep tone consistent with the story's genre (e.g., mysterious for thrillers, lyrical for romance, epic for fantasy).
+Create a story foundation that:
+1. Respects ALL user specifications (POV, tone, genres are fixed)
+2. Establishes an open-ended premise with potential for branching paths
+3. Creates a compelling protagonist with clear motivations
+4. Defines world rules that enable interesting choices
+5. Sets up initial conflict without determining outcomes
+6. Leaves room for user agency and emergent storytelling
 
-Examples of blurbs:
-1. "When a quiet village is shattered by a single scream, Detective Aria Vale is drawn into a web of secrets that could tear her world apart..."
-2. "In a kingdom where dreams can kill, one girl's forbidden magic may be the only thing that can save them all..."
-3. "Two strangers. One unforgettable summer. A story of love, loss, and the courage to begin again."
+CRITICAL for Interactive Stories:
+- Do NOT plan fixed plot points or predetermined endings
+- Focus on setup, not resolution
+- Emphasize potential conflicts and choices, not outcomes
+- Keep it open-ended enough for meaningful user decisions
 
-Based on the story premise given, craft the book back text.
-    """,
-        human_prompt=f"Given story premise: {detailed_premise}"
-    )
-        blurb = blurb.content.strip()
-        image_data = await image_client(f"Create a SIMPLE cover image for a book with the following blurb, dont include any text or actual book in the image:\n{blurb}")
+Output Structure:
+- title: Use "{user_context.get('Title', 'Untitled')}" exactly as given
+- premise: 3-4 sentences establishing setup and initial tension
+- protagonist: Dict with name, core_trait, desire, fear (age-appropriate)
+- world_essentials: Dict with setting, time_period, key_rule
+- initial_conflict: What's at stake initially
+- themes: Use user's themes: {user_context.get('Additional Themes', [])}
+- genre: Use exactly: {genres}
+- tone: Use exactly: {user_context.get('Tone', 'Balanced')}
+- style_guide: Dict with prose_style, pov, tense, narrative_voice
+- target_length: {target_length}
+- act_count: {act_count}
+
+{story_seed_parser.get_format_instructions()}
+"""
+        
+        human_prompt = f"""Create an interactive story seed with these specifications:
+
+Title: {user_context.get('Title', 'Untitled Story')}
+Setting: {user_context.get('Setting', 'Create an appropriate setting')}
+Genres: {genres_str}
+POV: {user_context.get('POV', 'Third-person')}
+Tone: {user_context.get('Tone', 'Balanced')}
+Prose Style: {user_context.get('Guide Prose', 'Standard')}
+Themes: {user_context.get('Additional Themes', 'Universal human experiences')}
+Target Audience Age: {user_context.get('target_audience_age', 'General audience')}
+Length: {user_context.get('Length', 'Standard')} ({target_length} words)
+
+Generate a compelling foundation that enables meaningful user choices and branching narratives, blending the specified genres ({genres_str}) appropriately."""
+        
+        response, tokens = await story_client(
+            system_prompt=system_prompt,
+            human_prompt=human_prompt,
+            llm_temp=0.9,
+            model=model
+        )
+        
+        # Parse into Pydantic model
+        story_seed = story_seed_parser.parse(response.content.strip())
+        
+        # Store both original user context and parsed seed
+        await self.memory.add_long_term_document(
+            text=json.dumps(user_context, indent=2),
+            metadata={
+                "type": "story_user_context",
+                "story_title": story_title
+            }
+        )
+        
+        await self.memory.add_long_term_document(
+            text=story_seed.model_dump_json(indent=2),
+            metadata={
+                "type": "story_seed",
+                "story_title": story_title
+            }
+        )
+        
+        print(f"✅ Interactive story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
+        return story_seed, tokens
+
+
+    async def generate_blurb(self, story_seed: StorySeed) -> str:
+        """
+        Create compelling back-cover blurb from story seed.
+        
+        Args:
+            story_seed: The StorySeed object
+            
+        Returns:
+            Marketing blurb as string
+        """
+        print("📖 Generating book blurb...")
+        
+        system_prompt = """You are a professional book marketer specializing in interactive fiction back-cover copy.
+
+Write a captivating blurb (100-200 words) that:
+- Hooks readers emotionally
+- Establishes atmosphere and stakes
+- Teases the protagonist's journey
+- Hints at meaningful choices without spoiling them
+- Matches the story's genres and tone
+- Emphasizes agency: "Your choices shape the story"
+
+Style: Professional, marketable, similar to what you'd find on interactive fiction or game narratives.
+
+Output only the blurb—no commentary or formatting."""
+        
+        genres_str = ", ".join(story_seed.genre)  # Updated to handle list of genres
+        
+        seed_summary = f"""
+Title: {story_seed.title}
+Genres: {genres_str}
+Tone: {story_seed.tone}
+Premise: {story_seed.premise}
+Protagonist: {story_seed.protagonist['name']} - {story_seed.protagonist['core_trait']}
+Initial Conflict: {story_seed.initial_conflict}
+Themes: {', '.join(story_seed.themes)}
+Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
+
+Note: This is an INTERACTIVE story where user choices matter.
+"""
+        
+        response = await utility_client(
+            system_prompt=system_prompt,
+            human_prompt=f"Create a blurb for this interactive story:\n\n{seed_summary}"
+        )
+        
+        blurb = response.content.strip()
+        print("✅ Blurb generated")
+        return blurb
+
+
+    async def generate_cover_image(self, blurb: str) -> str:
+        """
+        Generate cover image based on blurb.
+        
+        Args:
+            blurb: Book blurb text
+            
+        Returns:
+            Base64-encoded image data
+        """
+        print("🎨 Generating cover image...")
+        
+        image_prompt = (
+            f"Create a simple, evocative cover image for an INTERACTIVE story. "
+            f"Focus on mood and atmosphere with a sense of choice/agency. "
+            f"Do NOT include text or an actual book. "
+            f"Style: artistic, professional, engaging.\n\n{blurb}"
+        )
+        
+        image_data = await image_client(image_prompt)
         image_data_base64 = base64.b64encode(image_data).decode('utf-8')
+        
+        print("✅ Cover image generated")
+        return image_data_base64
 
-        try:
-            await self.memory.add_long_term_document(text=user_context, metadata={"type":"story_user_context", "story_title": story_title})
-            await self.memory.add_long_term_document(text=detailed_premise, metadata={"type":"story_premise", "story_title": story_title})
 
-            #print(detailed_premise)
-            return tokens, blurb, image_data_base64
-        except:
-            raise "An error occured, Please try again."
+    async def plan_act(
+        self, 
+        story_title: str,
+        act_number: int,
+        model: str = "gpt-4"
+    ) -> Tuple[ActPlan, int]:
+        """
+        Generate lightweight act plan for interactive story.
+        No rigid chapter outlines - story flows with user choices.
+        
+        Args:
+            story_title: Title of the story
+            act_number: Which act to plan (1, 2, 3, etc.)
+            model: LLM model to use
+            
+        Returns:
+            Tuple of (ActPlan object, token_count)
+        """
+        print(f"📋 Planning Act {act_number} for interactive story...")
+        
+        # Get story seed
+        story_seed_json = await self.memory.get_long_term_document(
+            metadata={'type': 'story_seed', 'story_title': story_title}
+        )
+        story_seed = json.loads(story_seed_json) if story_seed_json else {}
+        
+        # Get story progress
+        progress = await self.memory.get_story_progress()
+        current_word_count = progress.get('word_count', 0) if progress else 0
+        target_total = story_seed.get('target_length', 50000)
+        remaining_words = target_total - current_word_count
+        
+        # Build context based on act number
+        if act_number == 1:
+            context_prompt = self._build_act_1_context(story_seed)
+        else:
+            context_prompt = await self._build_later_act_context(
+                story_title=story_title,
+                story_seed=story_seed,
+                act_number=act_number,
+                current_word_count=current_word_count,
+                remaining_words=remaining_words
+            )
+        
+        # Construct system prompt
+        genres_str = ", ".join(story_seed.get('genre', ['Fiction']))  # Updated to handle list of genres
+        
+        system_prompt = f"""You are the Act Planner for an interactive, choice-driven story.
+
+Design Act {act_number} as a FLEXIBLE framework, not a rigid blueprint.
+
+Your output must include:
+1. act_number (int)
+2. act_title (string) - Evocative name
+3. act_purpose (string) - What this act accomplishes (2-3 sentences)
+4. key_themes (list of strings) - 2-4 themes to emphasize
+5. potential_branches (list of strings) - 3-5 possible story directions based on user choices
+6. emotional_trajectory (string) - How emotions shift across this act
+7. key_moments (list of strings) - 3-5 pivotal moments or revelations that COULD occur (not must)
+8. target_word_count (int) - Suggested word count for this act
+9. act_closure_suggestion (string) - Natural stopping point (e.g., "Hero makes irreversible choice")
+
+CRITICAL for Interactive:
+- Do NOT plan fixed plot points or predetermined outcomes
+- Focus on themes, tensions, and potential conflicts
+- Suggest possible branches, not required paths
+- Leave room for user agency and emergent storytelling
+- Respect established genres: {genres_str}
+
+Guidelines:
+- Keep planning loose and adaptive
+- Respect established tone, world rules, and character motivations
+- For Act 1: Establish world, introduce choices, present initial conflict
+- For Act 2+: Build on previous developments, escalate stakes, expand choices
+- Allow story to evolve based on actual user decisions
+
+{act_plan_parser.get_format_instructions()}
+"""
+        
+        response, tokens = await story_client(
+            system_prompt=system_prompt,
+            human_prompt=context_prompt,
+            llm_temp=0.8,
+            model=model
+        )
+        
+        # Parse into Pydantic model
+        act_plan = act_plan_parser.parse(response.content.strip())
+        
+        # Store in memory
+        await self.memory.add_long_term_document(
+            text=act_plan.model_dump_json(indent=2),
+            metadata={
+                "type": "act_plan",
+                "act_id": act_number,
+                "story_title": story_title
+            }
+        )
+        
+        print(f"✅ Act {act_number} planned: '{act_plan.act_title}' (~{act_plan.target_word_count} words)")
+        print(f"   Potential branches: {len(act_plan.potential_branches)}")
+        
+        return act_plan, tokens
+
+
+    def _build_act_1_context(self, story_seed: dict) -> str:
+        """Build context prompt for Act 1 planning."""
+        act_1_target = int(story_seed['target_length'] * 0.30)  # 30% for Act 1 (interactive)
+        genres_str = ", ".join(story_seed.get('genre', ['Fiction']))  # Updated to handle list of genres
+        
+        return f"""Story Seed:
+{json.dumps(story_seed, indent=2)}
+
+This is Act 1 of an INTERACTIVE story. Your goals:
+- Establish the world and its rules (setting: {story_seed['world_essentials'].get('setting', 'TBD')})
+- Introduce {story_seed['protagonist']['name']} and their ordinary world
+- Present the inciting incident
+- Offer initial meaningful choices to the user
+- Set up the initial conflict: {story_seed['initial_conflict']}
+- End when user makes a defining choice that commits them to the journey
+- Maintain {story_seed['style_guide']['pov']} POV and {story_seed['tone']} tone
+- Blend genres: {genres_str}
+- Keep content appropriate for {story_seed.get('target_audience_age', 'general')} year old readers
+
+Target word count for Act 1: ~{act_1_target} words (approximately 30% of story)
+
+Remember: Plan themes and tensions, not fixed outcomes. User choices will shape the actual story.
+"""
+
+
+    async def _build_later_act_context(
+        self,
+        story_title: str,
+        story_seed: dict,
+        act_number: int,
+        current_word_count: int,
+        remaining_words: int
+    ) -> str:
+        """Build context prompt for Act 2+ planning."""
+        
+        # Get all previous act plans
+        previous_acts = []
+        for i in range(1, act_number):
+            try:
+                act_plan_json = await self.memory.get_long_term_document(
+                    metadata={'type': 'act_plan', 'act_id': i, 'story_title': story_title}
+                )
+                previous_acts.append(f"=== Act {i} Plan ===\n{act_plan_json}")
+            except:
+                pass
+        
+        previous_acts_text = "\n\n".join(previous_acts) if previous_acts else "No previous acts"
+        
+        # Get rolling summary using director context
+        progress = await self.memory.get_story_progress()
+        latest_chapter = progress.get('latest_chapter_id', 0) if progress else 0
+        
+        rolling_summary = await self.memory.get_director_context(
+            current_chapter_number=latest_chapter + 1,
+            query="",
+            k=5
+        )
+        
+        # Determine act purpose
+        total_acts = story_seed.get('act_count', 3)
+        if act_number == 2:
+            act_guidance = "Escalate stakes, complicate choices, introduce new tensions based on user decisions"
+            word_percentage = 0.40
+        elif act_number == total_acts:
+            act_guidance = "Bring story toward resolution based on accumulated choices, deliver thematic payoff"
+            word_percentage = 0.30
+        else:
+            act_guidance = "Develop consequences, expand world, present harder choices"
+            word_percentage = 0.30
+        
+        suggested_word_count = int(remaining_words * word_percentage) if remaining_words > 0 else 5000
+        
+        target_age = story_seed.get('target_audience_age', 'general')
+        genres_str = ", ".join(story_seed.get('genre', ['Fiction']))  # Updated to handle list of genres
+        
+        return f"""Story Seed:
+{json.dumps(story_seed, indent=2)}
+
+Previous Acts Planned:
+{previous_acts_text}
+
+Story So Far (What Actually Happened Based on User Choices):
+{rolling_summary}
+
+Current Story Stats:
+- Word count so far: {current_word_count}
+- Estimated remaining words: {remaining_words}
+- Latest completed chapter: {latest_chapter}
+- Target audience: {target_age} years old
+
+This is Act {act_number} of {total_acts} for an INTERACTIVE story.
+Your goals: {act_guidance}
+
+Maintain throughout:
+- POV: {story_seed['style_guide']['pov']}
+- Tone: {story_seed['tone']}
+- Prose style: {story_seed['style_guide'].get('prose_style', 'Standard')}
+- Genre conventions: {genres_str}
+- Age-appropriate content for {target_age} year old readers
+
+Suggested word count for this act: ~{suggested_word_count} words
+
+CRITICAL: Base your planning on what ACTUALLY happened in previous acts (see rolling summary).
+User choices may have taken the story in unexpected directions - adapt your plan accordingly.
+Suggest potential branches, but don't force predetermined outcomes.
+"""
+

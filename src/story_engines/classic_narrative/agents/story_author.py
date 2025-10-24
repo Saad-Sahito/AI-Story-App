@@ -25,7 +25,7 @@ class StorySeed(BaseModel):
     )
     central_conflict: str = Field(..., description="Primary story tension")
     themes: List[str] = Field(..., description="1-3 core themes")
-    genre: str = Field(..., description="Primary genre")
+    genre: List[str] = Field(..., description="Primary genres (list of 1-3 genres)")
     tone: str = Field(..., description="Emotional tone (e.g., dark, hopeful, epic)")
     style_guide: Dict[str, str] = Field(
         ...,
@@ -152,7 +152,9 @@ class StoryAuthor:
             act_count = 4
         else:
             act_count = 5
-        
+        # Handle genres as a list
+        genres = user_context.get('Genre', ['Fiction'])
+        genres_str = ", ".join(genres)
         system_prompt = f"""You are the Story Architect. Create a flexible story foundation for a classic narrative.
 
 Your goal: Provide a creative seed—NOT a rigid blueprint. This seed guides act planning, which happens progressively as the story unfolds.
@@ -160,7 +162,7 @@ Your goal: Provide a creative seed—NOT a rigid blueprint. This seed guides act
 The user has specified:
 - POV: {user_context.get('POV', 'Third-person')}
 - Tone: {user_context.get('Tone', 'Balanced')}
-- Genre: {user_context.get('Genre', 'Fiction')}
+- Genre: {genres_str}
 - Setting: {user_context.get('Setting', 'To be determined')}
 - Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
 - Themes: {user_context.get('Additional Themes', 'Universal')}
@@ -181,7 +183,7 @@ Output Structure:
 - world_essentials: Dict with setting (use user's setting), time_period, key_rule
 - central_conflict: What's at stake
 - themes: Use user's themes: {user_context.get('Additional Themes', [])}
-- genre: Use exactly: {user_context.get('Genre', 'Fiction')}
+- genre: Use exactly: {genres}
 - tone: Use exactly: {user_context.get('Tone', 'Balanced')}
 - style_guide: Dict with prose_style (from Guide Prose), pov (from POV), tense, narrative_voice
 - target_length: {target_length}
@@ -202,7 +204,7 @@ Rules:
 
 Title: {user_context.get('Title', 'Untitled')}
 Setting: {user_context.get('Setting', 'Create an appropriate setting')}
-Genre: {user_context.get('Genre', 'Fiction')}
+Genre: {genres_str}
 POV: {user_context.get('POV', 'Third-person')}
 Tone: {user_context.get('Tone', 'Balanced')}
 Prose Style: {user_context.get('Guide Prose', 'Standard')}
@@ -267,11 +269,11 @@ Write a captivating blurb (100-200 words) that:
 Style: Professional, marketable, similar to what you'd find in a bookstore.
 
 Output only the blurb—no commentary or formatting."""
-        
+        genres_str = ", ".join(story_seed.genre)  # Updated to handle list of genres
         # Format seed info for context
         seed_summary = f"""
 Title: {story_seed.title}
-Genre: {story_seed.genre}
+Genre: {genres_str}
 Tone: {story_seed.tone}
 Premise: {story_seed.premise}
 Protagonist: {story_seed.protagonist['name']} - {story_seed.protagonist['core_trait']}
@@ -360,6 +362,8 @@ Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
             )
         
         # Construct system prompt
+        #genres_str = ", ".join(story_seed.get('genre', ['Fiction']))  # Updated to handle list of genres
+
         system_prompt = f"""You are the Act Planner. Design Act {act_number} based on the story foundation and what has happened so far.
 
 Your output must include:
@@ -489,7 +493,8 @@ Suggested chapter count: {max(2, act_1_target // 3000)} chapters (~3000 words ea
         
         # Get target audience for content filtering
         target_age = story_seed.get('target_audience_age', 'general')
-        
+        genres_str = ", ".join(story_seed.get('genre', ['Fiction']))  # Updated to handle list of genres
+
         return f"""Story Seed:
 {json.dumps(story_seed, indent=2)}
 
@@ -512,7 +517,7 @@ Maintain throughout:
 - POV: {story_seed['style_guide']['pov']}
 - Tone: {story_seed['tone']}
 - Prose style: {story_seed['style_guide'].get('prose_style', 'Standard')}
-- Genre conventions: {story_seed['genre']}
+- Genre conventions: {genres_str}
 - Age-appropriate content for {target_age} year old readers
 
 Suggested word count for this act: ~{suggested_word_count} words

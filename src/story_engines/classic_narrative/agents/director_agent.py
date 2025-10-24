@@ -14,7 +14,7 @@ from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
-from src.llm_client.llm_client import story_client, ingestor_gemini_client
+from src.llm_client.llm_client import story_client, ingestor_client
 
 
 # ============================================================================
@@ -130,7 +130,7 @@ World Names: {list(worlds.keys())}
 """
 
         for attempt in range(1, max_retries + 1):
-            resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -230,7 +230,7 @@ World Details:
 """
 
         for attempt in range(1, max_retries + 1):
-            resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
             del raw_text, resp
@@ -720,7 +720,8 @@ Create scene plans that bring this chapter to life.
                 user_id=self.memory.user_id,
                 story_id=self.memory.story_id,
                 director_instructions=director_instructions,
-                scene_chunk_callback=self.scene_chunk_callback
+                scene_chunk_callback=self.scene_chunk_callback,
+                
             )
 
             scene_text, scene_cluster, status, tokens = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
@@ -728,7 +729,8 @@ Create scene plans that bring this chapter to life.
                 stop_event=self.stop_event,
                 llm_temp=self.llm_temp,
                 model=self.model,
-                token_usage=self.token_usage
+                token_usage=self.token_usage,
+                target_length=self.target_length
             )
             
             if status != "SUCCESS":
@@ -845,6 +847,7 @@ Create scene plans that bring this chapter to life.
             self.llm_temp = story_progress.get("tone_temp", 0.7)
             self.model = story_progress.get("model", "gpt-4")
             self.token_usage = story_progress.get("token_usage", {})
+            self.target_length = story_progress.get("target_length", 50000)
             
             complete = story_progress.get("complete", False)
             if complete:
@@ -908,11 +911,11 @@ Flow with Act-Based Director:
 2. WebSocket calls continue_story_generation()
    - Checks if current act complete
    - Plans next act if needed
-   - Updates current_act in progress
+   - Updates current_act_id in progress
    ↓
 3. DirectorGraph.run() starts
-   - Loads story progress (includes current_act)
-   - Initializes state with current_act
+   - Loads story progress (includes current_act_id)
+   - Initializes state with current_act_id
    ↓
 4. director_node() executes
    - Checks if story is complete (no more chapters/acts)

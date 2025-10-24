@@ -99,7 +99,7 @@ class SharedScenePlannerService:
         def planner_decider(state: SceneState):
             if getattr(state, "fatal", False) or getattr(state, "next_node", None) == "FATAL_ERROR":
                 return "FATAL_ERROR"
-            if state.batch_counter >= 3:  # Check after every 3 paragraphs
+            if state.batch_counter >= self.batch_size:  # Check after every 3 paragraphs
                 return "ScenePlanner"
             return "SceneWriter"
 
@@ -139,12 +139,17 @@ class SharedScenePlannerService:
         traceback.print_exc()
         return state
 
-    async def run_scene(self, user_context: UserSceneContext, token_usage: dict, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7, model: str = "None", batch_size: int = 3) -> Tuple[str, list, str]:
+    async def run_scene(self, user_context: UserSceneContext, token_usage: dict, target_length: int, stop_event: asyncio.Event | None = None, llm_temp: float = 0.7, model: str = "None") -> Tuple[str, list, str]:
         print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
         self.llm_temp = llm_temp
         self.model = model
         self.token_usage = token_usage
-        self.batch_size = batch_size
+        if target_length < 25000:
+            self.batch_size = 1
+        elif target_length < 75000:
+            self.batch_size = 2
+        else:
+            self.batch_size = 3
         del llm_temp, model, token_usage
         try:
             user_context.scene_state.user_context_id = user_context.user_id

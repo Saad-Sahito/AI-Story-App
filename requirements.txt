@@ -1,21 +1,17 @@
 # === Core numerical and ML dependencies ===
-
 numpy==1.26.4
 torch==2.7.1
 torchvision==0.22.1
 transformers>=4.40,<4.46
 sentence-transformers>=2.2,<3.0
 
-
 # === LangChain ecosystem (pinned and mutually compatible) ===
 langchain==0.3.27
 langchain-core==0.3.79
 langchain-community==0.3.31
-langchain-openai==0.2.10
-langchain-google-genai==2.0.10
+langchain-openai==0.3.28
 langchain-anthropic==0.2.3
-langchain-groq==0.3.7
-
+langchain-xai==0.2.5
 
 # === LLM orchestration and agent graph ===
 langgraph>=0.3.27

@@ -1,8 +1,9 @@
 #from urllib import response
 #from langchain_ollama import ChatOllama  # for local deployment only not render
 from langchain_openai import ChatOpenAI
-from langchain_google_genai import ChatGoogleGenerativeAI
+#from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
+from langchain_xai import ChatXAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import os
 import requests
@@ -10,7 +11,7 @@ import asyncio
 from asyncio import Semaphore
 import time
 from dotenv import load_dotenv
-from langchain_groq import ChatGroq
+#from langchain_groq import ChatGroq
 from langchain_community.callbacks import get_openai_callback
 from openai import AsyncOpenAI
 from langchain_openai import OpenAI  # Optional, for prompt refinement
@@ -21,6 +22,7 @@ GROQ_MODELS = ["openai/gpt-oss-120b", "llama-3.3-70b-versatile"]
 CLAUDE_MODELS = ["claude-haiku-4-5-20251001", "claude-sonnet-4-5-20250929", "claude-opus-4-1-20250805"]
 GPT_MODELS = ["gpt-5-nano-2025-08-07", "gpt-5-mini-2025-08-07", "gpt-4o-mini-2024-07-18", "gpt-5-2025-08-07", "gpt-4o-2024-08-06", "gpt-4.1-2025-04-14", "gpt-5-pro-2025-10-06"]
 GEMINI_MODELS = ["gemini-2.5-flash-lite", "gemini-2.5-flash", "gemini-2.5-pro"]
+GROK_MODELS = ["grok-4-fast-reasoning"]
 
 class LLMClient:
     def __init__(self):
@@ -31,11 +33,12 @@ class LLMClient:
             # Get the Groq API key from the environment
             self.openai_client = AsyncOpenAI(api_key=os.getenv("OPENAI_API_KEY"))
             self.claude_api_key = os.environ.get("CLAUDE_API_KEY")
-            self.groq_api_key = os.environ.get("GROQ_API_KEY")
+            #self.groq_api_key = os.environ.get("GROQ_API_KEY")
             self.openai_api_key = os.environ.get("OPENAI_API_KEY")
-            self.google_api_key = os.environ.get("GOOGLE_API_KEY")
+            #self.google_api_key = os.environ.get("GOOGLE_API_KEY")
+            self.xai_api_key = os.environ.get("XAI_API_KEY")
             #self.llm_ollama = ChatOllama(model="llama3.1", temperature=0.5)
-            self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=self.openai_api_key)
+           # self.llm_openai = ChatOpenAI(model_name="gpt-4o-mini", temperature=0.5, openai_api_key=self.openai_api_key)
             
             #self.llm_for_scene_planner = ChatGroq(model="meta-llama/llama-4-maverick-17b-128e-instruct", temperature=0.2, groq_api_key=self.groq_api_key)
             #self.llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, google_api_key=self.google_api_key)
@@ -109,12 +112,13 @@ class LLMClient:
         model: str = "None"
     ) -> tuple[AIMessage, dict]:
         try:
+            model = "grok-4-fast-reasoning"
             # --- Select appropriate client ---
-            if model in GROQ_MODELS:
-                llm = ChatGroq(model=model, temperature=llm_temp, groq_api_key=self.groq_api_key)
-                token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
-                usage_key = "token_usage"
-            elif model in GPT_MODELS:
+            # if model in GROQ_MODELS:
+            #     llm = ChatGroq(model=model, temperature=llm_temp, groq_api_key=self.groq_api_key)
+            #     token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
+            #     usage_key = "token_usage"
+            if model in GPT_MODELS:
                 if model == "gpt-5-nano-2025-08-07":
                     llm = ChatOpenAI(model=model, temperature=1, openai_api_key=self.openai_api_key)
                 else:
@@ -126,10 +130,14 @@ class LLMClient:
                 llm = ChatAnthropic(model_name=model, temperature=llm_temp, api_key=self.claude_api_key)
                 token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": None}
                 usage_key = "usage"
-            elif model in GEMINI_MODELS:
-                llm = ChatGoogleGenerativeAI(model=model, temperature=llm_temp, google_api_key=self.google_api_key)
-                token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": "total_tokens"}
-                usage_key = "usage_metadata"
+            # elif model in GEMINI_MODELS:
+            #     llm = ChatGoogleGenerativeAI(model=model, temperature=llm_temp, google_api_key=self.google_api_key)
+            #     token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": "total_tokens"}
+            #     usage_key = "usage_metadata"
+            elif model in GROK_MODELS:
+                llm = ChatXAI(xai_api_key=self.xai_api_key, temperature=llm_temp, model=model)
+                token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
+                usage_key = "token_usage"
             else:
                 raise ValueError(f"Unknown model: {model}")
 
@@ -177,7 +185,8 @@ class LLMClient:
         """Blocking call to Groq LLM – returns the full response and token counts."""
         # The .invoke() method returns an object that contains the response metadata
         #llm_for_scene_planner = ChatOpenAI(model="gpt-4o-mini", temperature="0.1", openai_api_key=self.openai_api_key)
-        llm_for_scene_planner = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1, groq_api_key=self.groq_api_key)
+        #llm_for_scene_planner = ChatGroq(model="openai/gpt-oss-20b", temperature=0.1, groq_api_key=self.groq_api_key)
+        llm_for_scene_planner = ChatAnthropic(model_name="claude-haiku-4-5-20251001", temperature=0.5, api_key=self.claude_api_key)
         async with self.sem:
             response = await llm_for_scene_planner.ainvoke([
                 SystemMessage(content=system_prompt),
@@ -227,11 +236,12 @@ class LLMClient:
     #     return response
 
 
-    async def _ingestor_gemini_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    async def _ingestor_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
         """Blocking call to Gemini LLM – returns the full response."""
-        llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, google_api_key=self.google_api_key)
+        #llm_gemini = ChatGoogleGenerativeAI(model="gemini-2.5-flash", temperature=0.1, google_api_key=self.google_api_key)
+        llm = ChatOpenAI(model="gpt-4o-mini", temperature=0.1, openai_api_key=self.openai_api_key)
         async with self.sem:
-            response = await llm_gemini.ainvoke([
+            response = await llm.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
             ])
@@ -239,9 +249,9 @@ class LLMClient:
         token_usage = response.usage_metadata
         
         # Extract the prompt and completion token counts
-        prompt_tokens = token_usage.get('input_tokens', 0)
-        completion_tokens = token_usage.get('output_tokens', 0)
-        total_tokens = token_usage.get('total_tokens', 0)
+        # prompt_tokens = token_usage.get('input_tokens', 0)
+        # completion_tokens = token_usage.get('output_tokens', 0)
+        # total_tokens = token_usage.get('total_tokens', 0)
         
         # print("--- Token Usage ---")
         # print(f"Prompt Tokens (Input): {prompt_tokens}")
@@ -272,10 +282,10 @@ async def llm_for_scene_planner_client(system_prompt: str = "", human_prompt: st
     client = await get_shared_client()
     return await client._llm_for_scene_planner_client(system_prompt, human_prompt)
 
-async def ingestor_gemini_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def ingestor_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access gemini_client through shared instance."""
     client = await get_shared_client()
-    return await client._ingestor_gemini_client(system_prompt, human_prompt)
+    return await client._ingestor_client(system_prompt, human_prompt)
 
 async def utility_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access model through shared instance."""

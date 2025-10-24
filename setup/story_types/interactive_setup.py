@@ -13,7 +13,7 @@ from asyncio import Lock
 from typing import Optional
 from contextlib import asynccontextmanager
 
-SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
+SESSION_TTL = 1800  # 0.5 hour expiration for inactive sessions
 BASE_SESSION_KEY = "interactive_session"
 load_dotenv()
 
@@ -376,8 +376,13 @@ class InteractiveStorySetup:
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
 
     async def create_premise(self, initial_story_data: dict, model: str):
-        """Create story premise and update session in Redis."""
+        """
+        Create story seed, blurb, and cover image at story initialization.
+        Works for BOTH classic and interactive stories.
+        """
         client = await get_redis_client()
+        
+        # Mapping dictionaries
         tone_dict = {
             0: "Playful", 20: "Lighthearted", 40: "Adventurous",
             60: "Dramatic", 80: "Serious", 100: "Intense"
@@ -394,68 +399,283 @@ class InteractiveStorySetup:
             80: "Full Novel (60,000 - 90,000 words)",
             100: "Epic / Series (90,000 - 150,000+ words)"
         }
+        
+        # Extract metadata
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
+        story_type = initial_story_data.get("story_type", "interactive")
+        
+        # Get user session
         user_key = f"{BASE_SESSION_KEY}:{user_id}"
         user_lock_key = f"lock:{user_key}"
         user_data = await self._get_session(user_id=user_id)
+        
         async with redis_lock(client, user_lock_key):
             if not user_data:
                 raise HTTPException(status_code=403, detail="Invalid user ID")
+            
             story_data = user_data["stories"].get(story_id)
             if not story_data:
                 raise HTTPException(status_code=405, detail="Invalid story ID")
+            
             story_author = StoryAuthor(memory_system=story_data['memory_system'])
+            
+            # Map tone integer to string and get temperature
             if "Tone" in initial_story_data:
                 tone_value = int(initial_story_data["Tone"])
                 mapped_tone = tone_dict.get(tone_value)
                 mapped_tone_temp = tone_temp_dict.get(tone_value, 0.7)
+                
                 if mapped_tone is None:
-                    mapped_tone = tone_dict[min(tone_dict.keys(), key=lambda k: abs(k - tone_value))]
-                    mapped_tone_temp = tone_temp_dict.get(min(tone_temp_dict.keys(), key=lambda k: abs(k - tone_value)), 0.7)
+                    closest_key = min(tone_dict.keys(), key=lambda k: abs(k - tone_value))
+                    mapped_tone = tone_dict[closest_key]
+                    mapped_tone_temp = tone_temp_dict.get(closest_key, 0.7)
+                
                 initial_story_data["Tone"] = mapped_tone
+            
+            # Map length integer to string
             if "Length" in initial_story_data:
                 length_value = int(initial_story_data["Length"])
                 mapped_length = length_dict.get(length_value)
+                
                 if mapped_length is None:
-                    mapped_length = length_dict[min(length_dict.keys(), key=lambda k: abs(k - length_value))]
+                    closest_key = min(length_dict.keys(), key=lambda k: abs(k - length_value))
+                    mapped_length = length_dict[closest_key]
+                
                 initial_story_data["Length"] = mapped_length
-            if "age" in initial_story_data:
-                age = int(initial_story_data["age"])
-            filtered_data = {k: v for k, v in initial_story_data.items() if k not in ["story_id", "user_id", "age"]}
-            form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
-            form_string += f"\nThe target audience is {age} years old."
-            tokens, blurb, image_data = await story_author.set_story_premise(
-                form_string,
-                initial_story_data.get("Title", ""),
-                model=model
-            )
-            del story_author
+            
+            # Clean user context (remove system fields)
+            user_context = {
+                k: v for k, v in initial_story_data.items() 
+                if k not in ["story_id", "user_id", "story_type"]
+            }
+            
+            story_title = user_context.get("Title", "Untitled Story")
+            
+            try:
+                # Step 1: Create story seed
+                print(f"🌱 Creating {story_type} story seed for: {story_title}")
+                story_seed, seed_tokens = await story_author.create_story_seed(
+                    user_context=user_context,
+                    story_title=story_title,
+                    model=model
+                )
+                
+                # Step 2: Generate blurb
+                print(f"📖 Generating blurb for: {story_title}")
+                blurb = await story_author.generate_blurb(story_seed)
+                
+                # Step 3: Generate cover image
+                print(f"🎨 Generating cover image for: {story_title}")
+                image_data_base64 = await story_author.generate_cover_image(blurb)
+                
+                # Step 4: Plan Act 1
+                print(f"📋 Planning Act 1 for: {story_title}")
+                act_1_plan, act_tokens = await story_author.plan_act(
+                    story_title=story_title,
+                    act_number=1,
+                    model=model
+                )
+                tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                tokens_usage["prompt_tokens"] = act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"]
+                tokens_usage["completion_tokens"] = act_tokens["completion_tokens"] + seed_tokens["completion_tokens"]
+                tokens_usage["total_tokens"] = act_tokens["total_tokens"] + seed_tokens["total_tokens"]
+
+                story_info = {
+                    "title": story_title,
+                    "act_count": story_seed.act_count,
+                    "target_length": story_seed.target_length,
+                    "act_1_title": act_1_plan.act_title,
+                    "genre": story_seed.genre,
+                    "tone": user_context.get("Tone"),
+                    "pov": story_seed.style_guide.get("pov"),
+                    "story_type": "interactive"
+                }
+                
+                print(f"✅ Story initialization complete: {story_title}")
+                print(f"   - Type: {story_type}")
+                print(f"   - Acts planned: {story_seed.act_count}")
+                print(f"   - Target length: {story_seed.target_length} words")
+                print(f"   - Total tokens used: {tokens_usage}")
+                
+            except Exception as e:
+                print(f"❌ Error during story initialization: {str(e)}")
+                raise HTTPException(
+                    status_code=500, 
+                    detail=f"Failed to initialize story: {str(e)}"
+                )
+            
+            finally:
+                del story_author
+            
+            # Update story progress in memory system
             await story_data["memory_system"].update_story_progress(
                 metadata={
                     "latest_chapter_id": 1,
                     "continue_scene_id": 1,
-                    "story_title": initial_story_data["Title"],
+                    "story_title": story_title,
                     "word_count": 0,
+                    "current_act_id": 1,
+                    "total_acts": story_seed.act_count,
                     "tone_temp": mapped_tone_temp,
                     "model": model,
-                    "token_usage": tokens,
+                    "token_usage": tokens_usage,
                     "blurb": blurb,
-                    "image_data": image_data
+                    "image_data": image_data_base64,
+                    "story_type": story_type,
+                    "target_length": story_seed.target_length,
+                    "pov": story_seed.style_guide.get("pov", "Third-person"),
+                    "genre": story_seed.genre,
+                    "complete": False
                 }
             )
+            
+            # Update Redis session
             serializable_story_data = {
                 "memory_system_params": story_data.get("memory_system_params", {}),
                 "last_active": time.time(),
             }
             user_data["stories"][story_id] = serializable_story_data
-        await self._set_session(user_id, story_id, serializable_story_data)
-        await self._set_session(user_id, data=user_data)
-        from src.memory.user_management import append_story
-        await append_story(user_id=user_id, story_title=initial_story_data.get("Title", ""), story_id=story_id, story_type=initial_story_data.get("story_type", ""))
-        return {"status": "success", "blurb": blurb, "image_data": image_data}
+            
+            await self._set_session(user_id, story_id, serializable_story_data)
+            await self._set_session(user_id, data=user_data)
+            
+            # Register story in user management
+            from src.memory.user_management import append_story
+            await append_story(
+                user_id=user_id, 
+                story_title=story_title, 
+                story_id=story_id, 
+                story_type=story_type
+            )
+            
+            return {
+                "status": "success",
+                "blurb": blurb,
+                "image_data": image_data_base64,
+                "story_info": story_info,
+                "tokens_used": tokens_usage
+            }
+
+
+    async def continue_story_generation(self, user_id: str, story_id: str):
+        """
+        Continue story generation - works for BOTH classic and interactive.
+        
+        For Interactive: Word-count-based act transitions
+        For Classic: Closure-condition-based act transitions
+        
+        Returns:
+            Dict with status, current_act, message, and action info
+        """
+        print(f"🔍 Checking story continuation status for {story_id}...")
+        
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=405, detail="Invalid story ID")
+        
+        memory_system = story_data['memory_system']
+        progress = await memory_system.get_story_progress()
+        
+        if not progress:
+            print("❌ No story progress found")
+            return {
+                "status": "error",
+                "message": "No story progress found"
+            }
+        
+        #metadata = progress.get('metadata', {})
+        story_title = progress.get('story_title', 'Untitled Story')
+        story_type = progress.get('story_type', 'interactive')
+        current_act = progress.get('current_act_id', 1)
+        total_acts = progress.get('total_acts', 3)
+        current_word_count = progress.get('word_count', 0)
+        target_length = progress.get('target_length', 50000)
+        is_complete = progress.get('complete', False)
+        latest_chapter = progress.get('latest_chapter_id', 1)
+        
+        print(f"📊 Story Status: {story_type}, Act {current_act}/{total_acts}, Chapter {latest_chapter}")
+        
+        if is_complete:
+            print("✅ Story already complete")
+            return {
+                "status": "story_complete",
+                "message": "Story has already been completed",
+                "current_act_id": current_act,
+                "total_acts": total_acts
+            }
+        print("continue_story_generation, current_word_count: ", current_word_count, "target_length: ", target_length)
+        # Interactive: Word-count-based transitions
+        if current_word_count >= target_length:
+            await memory_system.mark_story_complete()
+            return {
+                "status": "story_complete",
+                "message": "Story reached target length",
+                "current_act_id": current_act,
+                "total_acts": total_acts
+            }
+        
+        # Calculate expected act based on progress percentage
+        act_percentage = current_word_count / target_length if target_length > 0 else 0
+        expected_act = min(int(act_percentage * total_acts) + 1, total_acts)
+
+        print("continue_story_generation, expected_act: ", expected_act, "current_act: ", current_act)
+
+        if expected_act > current_act:
+            # Time to transition to next act
+            story_author = StoryAuthor(memory_system=memory_system)
+            
+            try:
+                act_plan, tokens = await story_author.plan_act(
+                    story_title=story_title,
+                    act_number=expected_act,
+                    model=progress.get('model', 'gpt-4')
+                )
+                
+                await memory_system.increment_act(new_act_number=expected_act)
+                
+                # Update token usage
+                current_tokens = progress.get('token_usage', {})
+                if isinstance(current_tokens, dict):
+                    tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                    tokens_usage["prompt_tokens"] = tokens["prompt_tokens"] + current_tokens["prompt_tokens"]
+                    tokens_usage["completion_tokens"] = tokens["completion_tokens"] + current_tokens["completion_tokens"]
+                    tokens_usage["total_tokens"] = tokens["total_tokens"] + current_tokens["total_tokens"]
+
+                await memory_system.update_story_progress(
+                    metadata={"token_usage": tokens_usage}
+                )
+                
+                return {
+                    "status": "act_transition",
+                    "current_act_id": expected_act,
+                    "total_acts": total_acts,
+                    "act_title": act_plan.act_title,
+                    "message": f"Started Act {expected_act}: {act_plan.act_title}",
+                    "progress_percentage": int(act_percentage * 100),
+                    "tokens_used": tokens
+                }
+            finally:
+                del story_author
+        
+        # Continue current act
+        return {
+            "status": "continue_act",
+            "current_act_id": current_act,
+            "total_acts": total_acts,
+            "latest_chapter": latest_chapter,
+            "progress_percentage": int(act_percentage * 100),
+            "message": f"Continuing Act {current_act}"
+        }
 
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
+        """
+        WebSocket handler for story generation - works for BOTH classic and interactive.
+        """
         await websocket.accept()
         client = await get_redis_client()
         ws_key = f"{BASE_SESSION_KEY}_active_ws:{user_id}:{story_id}"
@@ -465,6 +685,7 @@ class InteractiveStorySetup:
         disconnect_event = asyncio.Event()
 
         try:
+            # Lock WebSocket connection
             async with redis_lock(client, f"lock:{ws_key}", timeout=30, retries=10, retry_delay=1.0):
                 if await client.get(ws_key):
                     await websocket.send_json({"error": "Another connection is active for this story"})
@@ -472,6 +693,7 @@ class InteractiveStorySetup:
                     return
                 await client.set(ws_key, "1", ex=SESSION_TTL)
 
+            # Receive initial data
             try:
                 init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
             except asyncio.TimeoutError:
@@ -479,6 +701,7 @@ class InteractiveStorySetup:
                 await websocket.close(code=1001)
                 return
 
+            # Validate user/story IDs
             received_user_id = init_data.get("user_id")
             received_story_id = init_data.get("story_id")
             if not received_user_id or not received_story_id or received_user_id != user_id or received_story_id != story_id:
@@ -486,19 +709,24 @@ class InteractiveStorySetup:
                 await websocket.close(code=1000)
                 return
 
+            # Get user session
             user_key = f"{BASE_SESSION_KEY}:{user_id}"
+            user_lock_key = f"lock:{user_key}"
             user_data = await self._get_session(user_id)
-            async with redis_lock(client, f"lock:{user_key}", timeout=30, retries=10, retry_delay=1.0):
+            
+            async with redis_lock(client, user_lock_key, timeout=30, retries=10, retry_delay=1.0):
                 if not user_data:
                     await websocket.send_json({"error": "Invalid user ID"})
                     await websocket.close(code=1000)
                     return
+                
                 story_data = user_data["stories"].get(story_id)
                 if not story_data:
                     await websocket.send_json({"error": "Invalid story ID"})
                     await websocket.close(code=1000)
                     return
 
+                # Lock director to prevent concurrent runs
                 async with redis_lock(client, f"lock:{director_key}", timeout=30, retries=10, retry_delay=1.0):
                     if await client.get(director_key):
                         await websocket.send_json({"error": "Story progression already active"})
@@ -506,9 +734,15 @@ class InteractiveStorySetup:
                         return
                     await client.set(director_key, "1", ex=SESSION_TTL)
 
+                # Initialize memory system if needed
                 if not story_data.get("memory_system_initialized", False):
                     await story_data["memory_system"].qdrant_initialize()
                     story_data["memory_system_initialized"] = True
+                    
+                    # Initialize correct Director based on story type
+                    progress = await story_data["memory_system"].get_story_progress()
+                    #story_type = progress.get('story_type', 'interactive')
+                    
                     story_data["director"] = DirectorGraph(memory_system=story_data["memory_system"])
 
                     story_key = f"{BASE_SESSION_KEY}:{user_id}:{story_id}"
@@ -525,6 +759,64 @@ class InteractiveStorySetup:
                         pipe.expire(user_key, SESSION_TTL)
                         await pipe.execute()
 
+            # Check act status and plan next act if needed
+            print(f"🔍 Checking story continuation status...")
+            try:
+                act_status = await self.continue_story_generation(user_id, story_id)
+                
+                if act_status['status'] == 'story_complete':
+                    await websocket.send_json({
+                        "type": "story_complete",
+                        "message": act_status.get('message', 'Story is complete'),
+                        "current_act_id": act_status.get('current_act_id'),
+                        "total_acts": act_status.get('total_acts')
+                    })
+                    await websocket.close(code=1000)
+                    return
+                
+                elif act_status['status'] == 'act_transition':
+                    await websocket.send_json({
+                        "type": "act_transition",
+                        "message": act_status.get('message'),
+                        "current_act_id": act_status.get('current_act_id'),
+                        "total_acts": act_status.get('total_acts'),
+                        "act_title": act_status.get('act_title'),
+                        "progress_percentage": act_status.get('progress_percentage', 0),
+                        "tokens_used": act_status.get('tokens_used', 0)
+                    })
+                    print(f"✅ {act_status['message']}")
+                
+                elif act_status['status'] == 'continue_act':
+                    await websocket.send_json({
+                        "type": "act_status",
+                        "message": act_status.get('message'),
+                        "current_act_id": act_status.get('current_act_id'),
+                        "total_acts": act_status.get('total_acts'),
+                        "latest_chapter_id": act_status.get('latest_chapter_id'),
+                        "progress_percentage": act_status.get('progress_percentage', 0)
+                    })
+                    print(f"▶️ {act_status['message']}")
+                
+                elif act_status['status'] == 'error':
+                    await websocket.send_json({
+                        "type": "error",
+                        "message": act_status.get('message', 'Unknown error')
+                    })
+                    await websocket.close(code=1000)
+                    return
+                    
+            except Exception as e:
+                print(f"❌ Error checking act status: {e}")
+                import traceback
+                traceback.print_exc()
+                await websocket.send_json({
+                    "type": "error",
+                    "message": f"Failed to check story status: {str(e)}"
+                })
+                await websocket.close(code=1000)
+                return
+
+            # Continue with normal Director execution
             queue = asyncio.Queue()
 
             def scene_chunk_callback(chunk: dict):
@@ -564,6 +856,7 @@ class InteractiveStorySetup:
                             print("❌ Client disconnected during recv_loop")
                             disconnect_event.set()
                             break
+                        
                         if "choice" in msg:
                             choice = msg["choice"].strip()
                             if not choice:
@@ -574,6 +867,7 @@ class InteractiveStorySetup:
                                     pipe.rpush(queue_key, choice)
                                     pipe.expire(queue_key, SESSION_TTL)
                                     await pipe.execute()
+                        
                         elif "continue_chapter" in msg:
                             choice = msg["continue_chapter"]
                             if choice is None:
@@ -586,6 +880,7 @@ class InteractiveStorySetup:
                                     pipe.rpush(queue_key, choice)
                                     pipe.expire(queue_key, SESSION_TTL)
                                     await pipe.execute()
+                                
                 except Exception as e:
                     print(f"❌ recv_loop crashed: {e}")
                     disconnect_event.set()
@@ -623,7 +918,8 @@ class InteractiveStorySetup:
 
         except Exception as e:
             print(f"❌ Error in handle_story_websocket: {e}")
-            import traceback; traceback.print_exc()
+            import traceback
+            traceback.print_exc()
             try:
                 await websocket.send_json({"error": f"Server error: {str(e)}"})
             except Exception:

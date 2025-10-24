@@ -14,7 +14,7 @@ from asyncio import Lock
 from src.memory.user_management import append_story
 from contextlib import asynccontextmanager
 
-SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
+SESSION_TTL = 1800  # 0.5 hour expiration for inactive sessions
 BASE_SESSION_KEY = "classic_session"
 load_dotenv()
 
@@ -492,13 +492,16 @@ class ClassicStorySetup:
                     model=model
                 )
                 
-                total_tokens = seed_tokens + act_tokens
+                tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                tokens_usage["prompt_tokens"] = act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"]
+                tokens_usage["completion_tokens"] = act_tokens["completion_tokens"] + seed_tokens["completion_tokens"]
+                tokens_usage["total_tokens"] = act_tokens["total_tokens"] + seed_tokens["total_tokens"]
                 
                 print(f"✅ Story initialization complete: {story_title}")
                 print(f"   - Acts planned: {story_seed.act_count}")
                 print(f"   - Target length: {story_seed.target_length} words")
                 print(f"   - Act 1 chapters: {len(act_1_plan.chapter_outlines)}")
-                print(f"   - Total tokens used: {total_tokens}")
+                print(f"   - Total tokens used: {tokens_usage}")
                 
             except Exception as e:
                 print(f"❌ Error during story initialization: {str(e)}")
@@ -522,7 +525,7 @@ class ClassicStorySetup:
                     "total_acts": story_seed.act_count,  # Track total acts
                     "tone_temp": mapped_tone_temp,
                     "model": model,
-                    "token_usage": total_tokens,
+                    "token_usage": tokens_usage,
                     "blurb": blurb,
                     "image_data": image_data_base64,
                     "story_type": story_type,
@@ -565,7 +568,7 @@ class ClassicStorySetup:
                     "tone": user_context.get("Tone"),
                     "pov": story_seed.style_guide.get("pov")
                 },
-                "tokens_used": total_tokens
+                "tokens_used": tokens_usage
             }
 
 
@@ -685,9 +688,15 @@ class ClassicStorySetup:
                                 
                                 # Update token usage
                                 current_tokens = progress.get('token_usage', {})
+                                if isinstance(current_tokens, dict):
+                                    tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                                    tokens_usage["prompt_tokens"] = tokens["prompt_tokens"] + current_tokens["prompt_tokens"]
+                                    tokens_usage["completion_tokens"] = tokens["completion_tokens"] + current_tokens["completion_tokens"]
+                                    tokens_usage["total_tokens"] = tokens["total_tokens"] + current_tokens["total_tokens"]
+                                
                                 
                                 await memory_system.update_story_progress(
-                                    metadata={"token_usage": current_tokens}
+                                    metadata={"token_usage": tokens_usage}
                                 )
                                 
                                 return {

@@ -4,7 +4,7 @@ import re
 import json
 from typing import Any, Dict, Tuple, Optional
 from langchain_core.messages import AIMessage
-from src.llm_client.llm_client import ingestor_gemini_client
+from src.llm_client.llm_client import ingestor_client
 
 
 class StoryHelpers:
@@ -188,7 +188,7 @@ You are a JSON repair agent.
 """
 
         prompt = f"Fix the following json: {text}\nIf it is correct, then output as is, DO NOT add anything else, no leading or ending remarks."
-        resp = await ingestor_gemini_client(system_prompt=system_prompt, human_prompt=prompt)
+        resp = await ingestor_client(system_prompt=system_prompt, human_prompt=prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         
