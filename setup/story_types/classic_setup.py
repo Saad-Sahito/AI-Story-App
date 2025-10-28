@@ -476,6 +476,8 @@ class ClassicStorySetup:
                     model=model
                 )
                 
+
+
                 # Step 2: Generate blurb
                 print(f"📖 Generating blurb for: {story_title}")
                 blurb = await story_author.generate_blurb(story_seed)
@@ -483,6 +485,23 @@ class ClassicStorySetup:
                 # Step 3: Generate cover image
                 print(f"🎨 Generating cover image for: {story_title}")
                 image_data_base64 = await story_author.generate_cover_image(blurb)
+                # Store both original user context and parsed seed
+                await story_data['memory_system'].add_long_term_document(
+                    text=json.dumps(user_context, indent=2),
+                    metadata={
+                        "type": "story_user_context",
+                        "story_title": story_title
+                    }
+                )
+                
+                await story_data['memory_system'].add_long_term_document(
+                    text=story_seed.model_dump_json(indent=2),
+                    metadata={
+                        "type": "story_seed",
+                        "story_title": story_title
+                    }
+                )
+                
                 
                 # Step 4: Plan Act 1 (ready for story generation to begin)
                 print(f"📋 Planning Act 1 for: {story_title}")
@@ -496,13 +515,15 @@ class ClassicStorySetup:
                 tokens_usage["prompt_tokens"] = act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"]
                 tokens_usage["completion_tokens"] = act_tokens["completion_tokens"] + seed_tokens["completion_tokens"]
                 tokens_usage["total_tokens"] = act_tokens["total_tokens"] + seed_tokens["total_tokens"]
-                
+                del user_context
                 print(f"✅ Story initialization complete: {story_title}")
                 print(f"   - Acts planned: {story_seed.act_count}")
                 print(f"   - Target length: {story_seed.target_length} words")
                 print(f"   - Act 1 chapters: {len(act_1_plan.chapter_outlines)}")
                 print(f"   - Total tokens used: {tokens_usage}")
+
                 
+
             except Exception as e:
                 print(f"❌ Error during story initialization: {str(e)}")
                 raise HTTPException(
@@ -514,24 +535,31 @@ class ClassicStorySetup:
                 # Clean up author instance
                 del story_author
             
+
+            
             # Update story progress in memory system
             await story_data["memory_system"].update_story_progress(
                 metadata={
                     "latest_chapter_id": 1,
                     "continue_scene_id": 1,
                     "story_title": story_title,
-                    "word_count": 0,
+                    "story_word_count": 0,
+                    "chapter_word_count": 0,
                     "current_act_id": 1,  # Track current act
                     "total_acts": story_seed.act_count,  # Track total acts
                     "tone_temp": mapped_tone_temp,
                     "model": model,
-                    "token_usage": tokens_usage,
+                    "author_token_usage": tokens_usage,
                     "blurb": blurb,
                     "image_data": image_data_base64,
                     "story_type": story_type,
                     "target_length": story_seed.target_length,
                     "pov": story_seed.style_guide.get("pov", "Third-person"),
+                    "prose_style": story_seed.style_guide.get("prose_style", "Third-person"),
+                    "narrative_voice": story_seed.style_guide.get("narrative_voice", "Third-person"),
+                    "tense": story_seed.style_guide.get("tense", "Third-person"),
                     "genre": story_seed.genre,
+                    "themes": story_seed.themes,
                     "complete": False
                 }
             )
@@ -685,18 +713,16 @@ class ClassicStorySetup:
                                 
                                 # Update progress with new act
                                 await memory_system.increment_act(new_act_number=next_act)
-                                
+                
                                 # Update token usage
-                                current_tokens = progress.get('token_usage', {})
-                                if isinstance(current_tokens, dict):
-                                    tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                                    tokens_usage["prompt_tokens"] = tokens["prompt_tokens"] + current_tokens["prompt_tokens"]
-                                    tokens_usage["completion_tokens"] = tokens["completion_tokens"] + current_tokens["completion_tokens"]
-                                    tokens_usage["total_tokens"] = tokens["total_tokens"] + current_tokens["total_tokens"]
-                                
-                                
+                                writer_tokens = progress.get("author_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+                                if isinstance(writer_tokens, dict):
+                                    writer_tokens["prompt_tokens"] = tokens["prompt_tokens"] + writer_tokens["prompt_tokens"]
+                                    writer_tokens["completion_tokens"] = tokens["completion_tokens"] + writer_tokens["completion_tokens"]
+                                    writer_tokens["total_tokens"] = tokens["total_tokens"] + writer_tokens["total_tokens"]
+
                                 await memory_system.update_story_progress(
-                                    metadata={"token_usage": tokens_usage}
+                                    metadata={"author_token_usage": writer_tokens}
                                 )
                                 
                                 return {
@@ -871,7 +897,7 @@ class ClassicStorySetup:
                         "total_acts": act_status.get('total_acts'),
                         "act_title": act_status.get('act_title'),
                         "chapter_count": act_status.get('chapter_count'),
-                        "tokens_used": act_status.get('tokens_used', 0)
+                        #"tokens_used": act_status.get('tokens_used', 0)
                     })
                     print(f"✅ {act_status['message']}")
                 
@@ -985,7 +1011,7 @@ class ClassicStorySetup:
                         scene_chunk_callback=scene_chunk_callback,
                         stop_event=disconnect_event
                     )
-                    await queue.put({"chapter_complete": True})
+                    #await queue.put({"chapter_complete": True})
                 except Exception as e:
                     await queue.put({"error": f"Director failed: {str(e)}"})
                 finally:

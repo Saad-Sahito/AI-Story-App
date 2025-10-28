@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
-from src.llm_client.llm_client import story_client, utility_client, image_client
+from src.llm_client.llm_client import author_client, utility_client, image_client
 from src.memory.memory_system import StoryMemorySystem
 
 
@@ -42,6 +42,7 @@ class ActPlan(BaseModel):
     """
     act_number: int = Field(..., description="Which act this is (1, 2, 3)")
     act_title: str = Field(..., description="Evocative name for this act")
+    story_style_guide: str = Field(..., description="prose style, pov, tense, narrative voice")
     act_purpose: str = Field(
         ..., 
         description="What this act accomplishes in 2-3 sentences"
@@ -103,7 +104,7 @@ class StoryAuthor:
         self, 
         user_context: Dict[str, Any], 
         story_title: str, 
-        model: str = "gpt-4"
+        model: str = "None"
     ) -> Tuple[StorySeed, int]:
         """
         Create initial story foundation from user context for interactive narrative.
@@ -141,7 +142,8 @@ class StoryAuthor:
         # Handle genres as a list
         genres = user_context.get('Genre', ['Fiction'])
         genres_str = ", ".join(genres)
-        
+        themes = user_context.get('Additional Themes', [''])
+        themes_str = ", ".join(themes)
         system_prompt = f"""You are the Story Architect for an interactive, choice-driven narrative.
 
 Create a flexible story foundation - NOT a rigid blueprint. This seed guides act planning, which happens progressively as the user makes choices.
@@ -152,7 +154,7 @@ The user has specified:
 - Genres: {genres_str}
 - Setting: {user_context.get('Setting', 'To be determined')}
 - Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
-- Themes: {user_context.get('Additional Themes', 'Universal')}
+- Themes: {themes_str}
 - Target Audience: {user_context.get('target_audience_age', 'General')} years old
 - Target Length: {target_length} words ({act_count} acts recommended)
 
@@ -176,10 +178,10 @@ Output Structure:
 - protagonist: Dict with name, core_trait, desire, fear (age-appropriate)
 - world_essentials: Dict with setting, time_period, key_rule
 - initial_conflict: What's at stake initially
-- themes: Use user's themes: {user_context.get('Additional Themes', [])}
+- themes: Use exactly if any: {themes}
 - genre: Use exactly: {genres}
 - tone: Use exactly: {user_context.get('Tone', 'Balanced')}
-- style_guide: Dict with prose_style, pov, tense, narrative_voice
+- style_guide: Dict with prose_style (from Prose Style), pov (from POV), tense, narrative_voice
 - target_length: {target_length}
 - act_count: {act_count}
 
@@ -194,13 +196,13 @@ Genres: {genres_str}
 POV: {user_context.get('POV', 'Third-person')}
 Tone: {user_context.get('Tone', 'Balanced')}
 Prose Style: {user_context.get('Guide Prose', 'Standard')}
-Themes: {user_context.get('Additional Themes', 'Universal human experiences')}
+Themes: {themes_str}
 Target Audience Age: {user_context.get('target_audience_age', 'General audience')}
 Length: {user_context.get('Length', 'Standard')} ({target_length} words)
 
 Generate a compelling foundation that enables meaningful user choices and branching narratives, blending the specified genres ({genres_str}) appropriately."""
         
-        response, tokens = await story_client(
+        response, tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.9,
@@ -211,21 +213,21 @@ Generate a compelling foundation that enables meaningful user choices and branch
         story_seed = story_seed_parser.parse(response.content.strip())
         
         # Store both original user context and parsed seed
-        await self.memory.add_long_term_document(
-            text=json.dumps(user_context, indent=2),
-            metadata={
-                "type": "story_user_context",
-                "story_title": story_title
-            }
-        )
+        # await self.memory.add_long_term_document(
+        #     text=json.dumps(user_context, indent=2),
+        #     metadata={
+        #         "type": "story_user_context",
+        #         "story_title": story_title
+        #     }
+        # )
         
-        await self.memory.add_long_term_document(
-            text=story_seed.model_dump_json(indent=2),
-            metadata={
-                "type": "story_seed",
-                "story_title": story_title
-            }
-        )
+        # await self.memory.add_long_term_document(
+        #     text=story_seed.model_dump_json(indent=2),
+        #     metadata={
+        #         "type": "story_seed",
+        #         "story_title": story_title
+        #     }
+        # )
         
         print(f"✅ Interactive story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
         return story_seed, tokens
@@ -312,7 +314,7 @@ Note: This is an INTERACTIVE story where user choices matter.
         self, 
         story_title: str,
         act_number: int,
-        model: str = "gpt-4"
+        model: str = "None"
     ) -> Tuple[ActPlan, int]:
         """
         Generate lightweight act plan for interactive story.
@@ -336,7 +338,7 @@ Note: This is an INTERACTIVE story where user choices matter.
         
         # Get story progress
         progress = await self.memory.get_story_progress()
-        current_word_count = progress.get('word_count', 0) if progress else 0
+        current_word_count = progress.get('story_word_count', 0) if progress else 0
         target_total = story_seed.get('target_length', 50000)
         remaining_words = target_total - current_word_count
         
@@ -362,13 +364,14 @@ Design Act {act_number} as a FLEXIBLE framework, not a rigid blueprint.
 Your output must include:
 1. act_number (int)
 2. act_title (string) - Evocative name
-3. act_purpose (string) - What this act accomplishes (2-3 sentences)
-4. key_themes (list of strings) - 2-4 themes to emphasize
-5. potential_branches (list of strings) - 3-5 possible story directions based on user choices
-6. emotional_trajectory (string) - How emotions shift across this act
-7. key_moments (list of strings) - 3-5 pivotal moments or revelations that COULD occur (not must)
-8. target_word_count (int) - Suggested word count for this act
-9. act_closure_suggestion (string) - Natural stopping point (e.g., "Hero makes irreversible choice")
+3. story_style_guide (string)
+4. act_purpose (string) - What this act accomplishes (2-3 sentences)
+5. key_themes (list of strings) - 2-4 themes to emphasize
+6. potential_branches (list of strings) - 3-5 possible story directions based on user choices
+7. emotional_trajectory (string) - How emotions shift across this act
+8. key_moments (list of strings) - 3-5 pivotal moments or revelations that COULD occur (not must)
+9. target_word_count (int) - Suggested word count for this act
+10. act_closure_suggestion (string) - Natural stopping point (e.g., "Hero makes irreversible choice")
 
 CRITICAL for Interactive:
 - Do NOT plan fixed plot points or predetermined outcomes
@@ -387,7 +390,7 @@ Guidelines:
 {act_plan_parser.get_format_instructions()}
 """
         
-        response, tokens = await story_client(
+        response, tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=context_prompt,
             llm_temp=0.8,
@@ -432,7 +435,7 @@ This is Act 1 of an INTERACTIVE story. Your goals:
 - Blend genres: {genres_str}
 - Keep content appropriate for {story_seed.get('target_audience_age', 'general')} year old readers
 
-Target word count for Act 1: ~{act_1_target} words (approximately 30% of story)
+Target word count for Act 1: ~{act_1_target} words
 
 Remember: Plan themes and tensions, not fixed outcomes. User choices will shape the actual story.
 """
@@ -486,7 +489,7 @@ Remember: Plan themes and tensions, not fixed outcomes. User choices will shape 
         suggested_word_count = int(remaining_words * word_percentage) if remaining_words > 0 else 5000
         
         target_age = story_seed.get('target_audience_age', 'general')
-        genres_str = ", ".join(story_seed.get('genre', ['Fiction']))  # Updated to handle list of genres
+        genres_str = ", ".join(story_seed.get('genre', ['Fiction']))
         
         return f"""Story Seed:
 {json.dumps(story_seed, indent=2)}

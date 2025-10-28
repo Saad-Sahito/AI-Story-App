@@ -460,7 +460,7 @@ class InteractiveStorySetup:
                     story_title=story_title,
                     model=model
                 )
-                
+
                 # Step 2: Generate blurb
                 print(f"📖 Generating blurb for: {story_title}")
                 blurb = await story_author.generate_blurb(story_seed)
@@ -468,6 +468,23 @@ class InteractiveStorySetup:
                 # Step 3: Generate cover image
                 print(f"🎨 Generating cover image for: {story_title}")
                 image_data_base64 = await story_author.generate_cover_image(blurb)
+                # Store both original user context and parsed seed
+                await story_data['memory_system'].add_long_term_document(
+                    text=json.dumps(user_context, indent=2),
+                    metadata={
+                        "type": "story_user_context",
+                        "story_title": story_title
+                    }
+                )
+                
+                await story_data['memory_system'].add_long_term_document(
+                    text=story_seed.model_dump_json(indent=2),
+                    metadata={
+                        "type": "story_seed",
+                        "story_title": story_title
+                    }
+                )
+                
                 
                 # Step 4: Plan Act 1
                 print(f"📋 Planning Act 1 for: {story_title}")
@@ -491,13 +508,15 @@ class InteractiveStorySetup:
                     "pov": story_seed.style_guide.get("pov"),
                     "story_type": "interactive"
                 }
-                
+                del user_context
                 print(f"✅ Story initialization complete: {story_title}")
                 print(f"   - Type: {story_type}")
                 print(f"   - Acts planned: {story_seed.act_count}")
                 print(f"   - Target length: {story_seed.target_length} words")
                 print(f"   - Total tokens used: {tokens_usage}")
                 
+                
+
             except Exception as e:
                 print(f"❌ Error during story initialization: {str(e)}")
                 raise HTTPException(
@@ -507,25 +526,30 @@ class InteractiveStorySetup:
             
             finally:
                 del story_author
-            
+
             # Update story progress in memory system
             await story_data["memory_system"].update_story_progress(
                 metadata={
                     "latest_chapter_id": 1,
                     "continue_scene_id": 1,
                     "story_title": story_title,
-                    "word_count": 0,
+                    "story_word_count": 0,
+                    "chapter_word_count": 0,
                     "current_act_id": 1,
                     "total_acts": story_seed.act_count,
                     "tone_temp": mapped_tone_temp,
                     "model": model,
-                    "token_usage": tokens_usage,
+                    "author_token_usage": tokens_usage,
                     "blurb": blurb,
                     "image_data": image_data_base64,
                     "story_type": story_type,
                     "target_length": story_seed.target_length,
                     "pov": story_seed.style_guide.get("pov", "Third-person"),
+                    "prose_style": story_seed.style_guide.get("prose_style", ""),
+                    "narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
+                    "tense": story_seed.style_guide.get("tense", ""),
                     "genre": story_seed.genre,
+                    "themes": story_seed.themes,
                     "complete": False
                 }
             )
@@ -593,7 +617,7 @@ class InteractiveStorySetup:
         story_type = progress.get('story_type', 'interactive')
         current_act = progress.get('current_act_id', 1)
         total_acts = progress.get('total_acts', 3)
-        current_word_count = progress.get('word_count', 0)
+        current_word_count = progress.get('story_word_count', 0)
         target_length = progress.get('target_length', 50000)
         is_complete = progress.get('complete', False)
         latest_chapter = progress.get('latest_chapter_id', 1)
@@ -639,15 +663,14 @@ class InteractiveStorySetup:
                 await memory_system.increment_act(new_act_number=expected_act)
                 
                 # Update token usage
-                current_tokens = progress.get('token_usage', {})
-                if isinstance(current_tokens, dict):
-                    tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                    tokens_usage["prompt_tokens"] = tokens["prompt_tokens"] + current_tokens["prompt_tokens"]
-                    tokens_usage["completion_tokens"] = tokens["completion_tokens"] + current_tokens["completion_tokens"]
-                    tokens_usage["total_tokens"] = tokens["total_tokens"] + current_tokens["total_tokens"]
+                writer_tokens = progress.get("author_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+                if isinstance(writer_tokens, dict):
+                    writer_tokens["prompt_tokens"] = tokens["prompt_tokens"] + writer_tokens["prompt_tokens"]
+                    writer_tokens["completion_tokens"] = tokens["completion_tokens"] + writer_tokens["completion_tokens"]
+                    writer_tokens["total_tokens"] = tokens["total_tokens"] + writer_tokens["total_tokens"]
 
                 await memory_system.update_story_progress(
-                    metadata={"token_usage": tokens_usage}
+                    metadata={"author_token_usage": writer_tokens}
                 )
                 
                 return {
@@ -740,7 +763,7 @@ class InteractiveStorySetup:
                     story_data["memory_system_initialized"] = True
                     
                     # Initialize correct Director based on story type
-                    progress = await story_data["memory_system"].get_story_progress()
+                    #progress = await story_data["memory_system"].get_story_progress()
                     #story_type = progress.get('story_type', 'interactive')
                     
                     story_data["director"] = DirectorGraph(memory_system=story_data["memory_system"])
@@ -782,7 +805,7 @@ class InteractiveStorySetup:
                         "total_acts": act_status.get('total_acts'),
                         "act_title": act_status.get('act_title'),
                         "progress_percentage": act_status.get('progress_percentage', 0),
-                        "tokens_used": act_status.get('tokens_used', 0)
+                        #"tokens_used": act_status.get('tokens_used', 0)
                     })
                     print(f"✅ {act_status['message']}")
                 
@@ -893,7 +916,7 @@ class InteractiveStorySetup:
                         scene_chunk_callback=scene_chunk_callback,
                         stop_event=disconnect_event
                     )
-                    await queue.put({"chapter_complete": True})
+                    #await queue.put({"chapter_complete": True})
                 except Exception as e:
                     await queue.put({"error": f"Director failed: {str(e)}"})
                 finally:

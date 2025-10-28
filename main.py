@@ -1,5 +1,5 @@
 
-from fastapi import FastAPI, HTTPException, Query, Request, WebSocket
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
@@ -464,10 +464,22 @@ async def api_add_user(user: UserCreate, request: Request):
     print(f"User added: {result}")
     return result
 
-@app.patch("/users/{user_id}/stories/{story_title}")
-async def api_delete_story(user_id: str, story_title: str, story_id: str, story_type: str):
-    await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
-    return await delete_story(user_id=user_id, story_title=story_title, story_id=story_id)
+class DeleteStoryRequest(BaseModel):
+    story_title: str
+    story_type: str
+
+@app.patch("/users/{user_id}/stories/{story_id}/delete")
+async def api_delete_story(
+    user_id: str,
+    story_id: str,
+    data: DeleteStoryRequest = Body(...),
+    # auth dependencies...
+):
+    try:
+        await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=data.story_type)
+    except:
+        pass
+    return await delete_story(user_id=user_id, story_title=data.story_title, story_id=story_id)
 
 @app.get("/users/{user_id}/profile/data")
 async def api_get_user_profile_data(user_id: str):
@@ -482,16 +494,15 @@ async def api_update_user_settings(user_id: str, user_data: Dict[str, Any]):
     return await update_user_settings(user_id=user_id, user_data=user_data)
 
 #-----------------------Utility Calls----------------------
+# class ModelSuggestorRequest(BaseModel):
+#     initial_story_data: dict
+
+# @app.post("/utility/model_suggestor")
+# async def api_model_suggestor(request: ModelSuggestorRequest, tier: int):
+#     return await user_context_extractor_model(user_context=request.initial_story_data, tier=tier)
+
 class TitleGeneratorRequest(BaseModel):
     initial_story_data: dict
-
-class ModelSuggestorRequest(BaseModel):
-    initial_story_data: dict
-
-@app.post("/utility/model_suggestor")
-async def api_model_suggestor(request: ModelSuggestorRequest, tier: int):
-    return await user_context_extractor_model(user_context=request.initial_story_data, tier=tier)
-
 
 @app.post("/utility/title_generator")
 async def api_title_generator(request: TitleGeneratorRequest):

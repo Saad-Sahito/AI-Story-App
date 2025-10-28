@@ -67,7 +67,7 @@ async def user_context_extractor_title(user_context: dict) -> dict:
             mapped_length = length_dict[min(length_dict.keys(), key=lambda k: abs(k - length_value))]
         user_context["Length"] = mapped_length
 
-    filtered_data = {k: v for k, v in user_context.items() if k not in ["story_id", "user_id"]}
+    filtered_data = {k: v for k, v in user_context.items() if k not in ["story_id", "user_id", "POV", "Guide Prose"]}
     form_string = "\n".join([f"{k.capitalize()}: {v}" for k, v in filtered_data.items()])
 
     try:

@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
-from src.llm_client.llm_client import story_client, utility_client, image_client
+from src.llm_client.llm_client import author_client, utility_client, image_client
 from src.memory.memory_system import StoryMemorySystem
 
 
@@ -116,7 +116,7 @@ class StoryAuthor:
         self, 
         user_context: Dict[str, Any], 
         story_title: str, 
-        model: str = "gpt-4"
+        model: str = "None"
     ) -> Tuple[StorySeed, int]:
         """
         Create initial story foundation from user context.
@@ -155,6 +155,8 @@ class StoryAuthor:
         # Handle genres as a list
         genres = user_context.get('Genre', ['Fiction'])
         genres_str = ", ".join(genres)
+        themes = user_context.get('Additional Themes', [''])
+        themes_str = ", ".join(themes)
         system_prompt = f"""You are the Story Architect. Create a flexible story foundation for a classic narrative.
 
 Your goal: Provide a creative seed—NOT a rigid blueprint. This seed guides act planning, which happens progressively as the story unfolds.
@@ -165,7 +167,7 @@ The user has specified:
 - Genre: {genres_str}
 - Setting: {user_context.get('Setting', 'To be determined')}
 - Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
-- Themes: {user_context.get('Additional Themes', 'Universal')}
+- Themes: {themes_str}
 - Target Audience: {user_context.get('target_audience_age', 'General')} years old
 - Target Length: {target_length} words ({act_count} acts recommended)
 
@@ -177,15 +179,15 @@ Create a story foundation that:
 5. Identifies the central dramatic question
 
 Output Structure:
-- title: Use "{user_context.get('Title', 'Untitled')}" exactly as given
+- title: Use "{user_context.get('Title', 'Untitled Story')}" exactly as given
 - premise: 3-4 sentences establishing setup and conflict
 - protagonist: Dict with name, core_trait, desire, fear (age-appropriate for {user_context.get('target_audience_age', 'general')} audience)
 - world_essentials: Dict with setting (use user's setting), time_period, key_rule
 - central_conflict: What's at stake
-- themes: Use user's themes: {user_context.get('Additional Themes', [])}
+- themes: Use exactly if any: {themes}
 - genre: Use exactly: {genres}
 - tone: Use exactly: {user_context.get('Tone', 'Balanced')}
-- style_guide: Dict with prose_style (from Guide Prose), pov (from POV), tense, narrative_voice
+- style_guide: Dict with prose_style (from Prose Style), pov (from POV), tense, narrative_voice
 - target_length: {target_length}
 - act_count: {act_count}
 
@@ -208,13 +210,13 @@ Genre: {genres_str}
 POV: {user_context.get('POV', 'Third-person')}
 Tone: {user_context.get('Tone', 'Balanced')}
 Prose Style: {user_context.get('Guide Prose', 'Standard')}
-Themes: {user_context.get('Additional Themes', 'Universal human experiences')}
+Themes: {themes_str}
 Target Audience Age: {user_context.get('target_audience_age', 'General audience')}
 Length: {user_context.get('Length', 'Standard')} ({target_length} words)
 
 Generate a compelling story foundation that brings these elements together."""
         
-        response, tokens = await story_client(
+        response, tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.9,
@@ -224,22 +226,22 @@ Generate a compelling story foundation that brings these elements together."""
         # Parse into Pydantic model
         story_seed = story_seed_parser.parse(response.content.strip())
         
-        # Store both original user context and parsed seed
-        await self.memory.add_long_term_document(
-            text=json.dumps(user_context, indent=2),
-            metadata={
-                "type": "story_user_context",
-                "story_title": story_title
-            }
-        )
+        # # Store both original user context and parsed seed
+        # await self.memory.add_long_term_document(
+        #     text=json.dumps(user_context, indent=2),
+        #     metadata={
+        #         "type": "story_user_context",
+        #         "story_title": story_title
+        #     }
+        # )
         
-        await self.memory.add_long_term_document(
-            text=story_seed.model_dump_json(indent=2),
-            metadata={
-                "type": "story_seed",
-                "story_title": story_title
-            }
-        )
+        # await self.memory.add_long_term_document(
+        #     text=story_seed.model_dump_json(indent=2),
+        #     metadata={
+        #         "type": "story_seed",
+        #         "story_title": story_title
+        #     }
+        # )
         
         print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
         return story_seed, tokens
@@ -321,7 +323,7 @@ Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
         self, 
         story_title: str,
         act_number: int,
-        model: str = "gpt-4"
+        model: str = "None"
     ) -> Tuple[ActPlan, int]:
         """
         Generate detailed chapter plans for the specified act.
@@ -345,7 +347,7 @@ Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
         
         # Get story progress
         progress = await self.memory.get_story_progress()
-        current_word_count = progress.get('word_count', 0)
+        current_word_count = progress.get('story_word_count', 0)
         target_total = story_seed.get('target_length', 50000)
         remaining_words = target_total - current_word_count
         
@@ -394,7 +396,7 @@ Guidelines:
 {act_plan_parser.get_format_instructions()}
 """
         
-        response, tokens = await story_client(
+        response, tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=context_prompt,
             llm_temp=0.8,

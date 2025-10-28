@@ -33,6 +33,7 @@ httpx
 requests
 python-dotenv
 python-jose
+replicate
 
 # === Optional / debugging ===
 memory-profiler

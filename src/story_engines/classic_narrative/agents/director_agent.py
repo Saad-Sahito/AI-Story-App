@@ -1,4 +1,4 @@
-# src/agents/director_agent.py
+# src/classic_adventure/agents/director_agent.py
 
 import json
 import asyncio
@@ -14,7 +14,7 @@ from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
-from src.llm_client.llm_client import story_client, ingestor_client
+from src.llm_client.llm_client import director_client, ingestor_client
 
 
 # ============================================================================
@@ -26,11 +26,12 @@ class StoryState:
     current_chapter_id: int = 1
     scene_id: int = 1
     story_title: str = "None"
-    word_count: int = 0
+    story_word_count: int = 0
+    current_chapter_word_count: int = 0
     current_act_id: int = 1
     chapter_plan: Optional[Dict[str, Any]] = field(default_factory=dict)
     next_action: str = ""
-    error_message: Optional[str] = None  # Added for error propagation
+    error_message: Optional[str] = None
 
 
 class ScenePlan(BaseModel):
@@ -47,7 +48,8 @@ class ScenePlan(BaseModel):
     key_events: List[str] = Field(..., description="Key narrative events that must occur")
     emotional_beats: List[str] = Field(..., description="Target emotional beats")
     thematic_notes: List[str] = Field(..., description="How this scene reinforces story themes")
-    word_count: str = Field(..., description="Target word count for the scene")
+    word_count: int = Field(..., description="Target word count for the scene")
+    style_guide: str = Field(..., description="prose_style, pov, tense, narrative_voice that the writer must follow")
 
 
 class DirectorOutput(BaseModel):
@@ -105,7 +107,7 @@ class Ingestor:
     def __init__(self, memory_system: StoryMemorySystem):
         self.memory = memory_system
 
-    async def ingest_scene(self, state: StoryState, scene_text: str, token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
+    async def ingest_scene(self, state: StoryState, scene_text: str, director_token_usage: dict, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
         
@@ -143,19 +145,22 @@ World Names: {list(worlds.keys())}
             
             if success:
                 new_word_count = StoryHelpers._count_words_split(scene_text)
-                state.word_count += new_word_count
+                state.current_chapter_word_count += new_word_count
+                state.story_word_count += new_word_count
                 
                 await self.memory.update_story_progress(metadata={
                     "latest_chapter_id": state.current_chapter_id, 
                     "continue_scene_id": state.scene_id + 1, 
-                    "word_count": state.word_count,
-                    "token_usage": token_usage
+                    "story_word_count": state.story_word_count,
+                    "chapter_word_count": state.current_chapter_word_count,
+                    "director_token_usage": director_token_usage,
+                    "writer_token_usage": writer_token_usage
                 })
                 await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                 del system_prompt, human_prompt, new_word_count
                 return result
-
-            print(f"[Attempt {attempt}] Scene ingestion validation failed:", exc)
+            else:
+                print(f"[Attempt {attempt}] Scene ingestion validation failed:", exc)
 
             try:
                 fixed_resp = await StoryHelpers._json_fixer(clean_resp)
@@ -171,13 +176,16 @@ World Names: {list(worlds.keys())}
                 
                 if success:
                     new_word_count = StoryHelpers._count_words_split(scene_text)
-                    state.word_count += new_word_count
+                    state.current_chapter_word_count += new_word_count
+                    state.story_word_count += new_word_count
                     
                     await self.memory.update_story_progress(metadata={
                         "latest_chapter_id": state.current_chapter_id, 
                         "continue_scene_id": state.scene_id + 1, 
-                        "word_count": state.word_count,
-                        "token_usage": token_usage
+                        "story_word_count": state.story_word_count,
+                        "chapter_word_count": state.current_chapter_word_count,
+                        "director_token_usage": director_token_usage,
+                        "writer_token_usage": writer_token_usage
                     })
                     await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                     del system_prompt, human_prompt, new_word_count
@@ -233,6 +241,7 @@ World Details:
             resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
             clean_resp = StoryHelpers._strip_code_fences(raw_text)
+            print(clean_resp)
             del raw_text, resp
             gc.collect()
 
@@ -256,7 +265,7 @@ World Details:
                 result.update({
                     "current_chapter_id": state.current_chapter_id,
                     "scene_id": state.scene_id,
-                    "word_count": state.word_count,
+                    
                 })
                 del system_prompt, human_prompt
                 return result
@@ -290,7 +299,7 @@ World Details:
                     result.update({
                         "current_chapter_id": state.current_chapter_id,
                         "scene_id": state.scene_id,
-                        "word_count": state.word_count,
+                        
                     })
                     del system_prompt, human_prompt
                     return result
@@ -311,7 +320,7 @@ World Details:
                     "world_summary": {},
                     "current_chapter_id": state.current_chapter_id,
                     "scene_id": state.scene_id,
-                    "word_count": state.word_count,
+                    
                 }
 
 
@@ -358,11 +367,12 @@ class DirectorGraph:
             }
         )
         
-        self.graph.add_edge("ingest_chapter", END)  # Loop back to director_node
+        self.graph.add_edge("ingest_chapter", END)
         self.graph.add_edge("story_complete", END)
         self.graph.add_edge("error_termination", END)
         self.compiled = self.graph.compile()
         
+        self.act_title = ""
         self.current_chap_summary = ""
         self.llm_temp = 0.7
         self.model = ""
@@ -403,6 +413,7 @@ class DirectorGraph:
             
             act_plan = json.loads(act_plan_json)
             chapter_outlines = act_plan.get('chapter_outlines', [])
+            self.act_title = act_plan.get('act_title', 'Unknown')
             
             for chapter_outline in chapter_outlines:
                 if chapter_outline.get('chapter_number') == state.current_chapter_id:
@@ -428,10 +439,22 @@ class DirectorGraph:
         )
         story_seed = json.loads(story_seed_json) if story_seed_json else {}
         
+        # Extract chapter target word count and expected scenes from chapter outline
+        chapter_word_target = chapter_outline.get('target_word_count', 3000)
+        expected_scenes = len(chapter_outline.get('key_scenes', [])) or 3
+        
+        # Calculate target word count per scene
+        target_words_per_scene = int(chapter_word_target / expected_scenes)
+        
+        print(f"📊 Chapter Word Count Planning:")
+        print(f"   Chapter target: {chapter_word_target} words")
+        print(f"   Expected scenes: {expected_scenes}")
+        print(f"   → Target per scene: {target_words_per_scene} words")
+        
         system_prompt = f"""
 You are the Scene Planner working under the Director.
 
-You have received a chapter outline from the Act Plan. Your job is to break it into 3-5 detailed scene plans that the Scene Writer will execute.
+You have received a chapter outline from the Act Plan. Your job is to break it into {expected_scenes} detailed scene plans that the Scene Writer will execute.
 
 Chapter Outline:
 {json.dumps(chapter_outline, indent=2)}
@@ -444,12 +467,20 @@ Story Style Guidelines:
 - Tone: {story_seed.get('tone', 'Balanced')}
 - Genre: {story_seed.get('genre', 'Fiction')}
 
+╔═══════════════════════════════════════════════════════════╗
+║ WORD COUNT REQUIREMENTS (CRITICAL)                         ║
+╠═══════════════════════════════════════════════════════════╣
+║ Chapter Target:     {chapter_word_target:>5} words         ║
+║ Expected Scenes:    {expected_scenes:>5}                   ║
+║ Target Per Scene:   {target_words_per_scene:>5} words      ║
+╚═══════════════════════════════════════════════════════════╝
+
 Your Output:
-Create detailed scene plans that:
+Create {expected_scenes} detailed scene plans that:
 1. Follow the chapter's key_scenes list
 2. Progress toward the chapter's closure condition: "{chapter_outline.get('ends_when', 'Chapter completes')}"
 3. Match the emotional beats: {chapter_outline.get('emotional_beats', 'N/A')}
-4. Distribute the chapter's word count target ({chapter_outline.get('target_word_count', 3000)} words) across scenes
+4. Distribute the chapter's word count ({chapter_word_target} words) across scenes
 
 Each scene plan must include:
 - scene_goal: What this scene accomplishes
@@ -459,7 +490,13 @@ Each scene plan must include:
 - key_events: What must happen
 - emotional_beats: Emotional progression
 - thematic_notes: How it reinforces themes
-- word_count: Target words for this scene
+- word_count: Target words for this scene (approximately {target_words_per_scene} words each)
+
+CRITICAL WORD COUNT RULES:
+- Each scene should target approximately {target_words_per_scene} words
+- Total across all scenes must equal {chapter_word_target} words
+- Distribute evenly unless specific scenes require more/less
+- Scene Writer will enforce these limits strictly
 
 Output ONLY valid JSON matching this schema:
 {director_parser.get_format_instructions()}
@@ -469,17 +506,17 @@ Set action to "generate_and_ingest" unless the story is complete.
 
         human_prompt = f"""
 Chapter Number: {state.current_chapter_id}
-Chapter Title: {chapter_outline.get('chapter_title', 'Untitled')}
+Chapter Title: {chapter_outline.get('chapter_title', 'Untitled Story')}
 Chapter Goal: {chapter_outline.get('chapter_goal', 'Continue story')}
-Current Story Word Count: {state.word_count}
+Current Story Word Count: {state.story_word_count}
 
-Create scene plans that bring this chapter to life.
+Create {expected_scenes} scene plans that bring this chapter to life, with each scene targeting approximately {target_words_per_scene} words.
 """
 
         max_retries = 3
         for attempt in range(1, max_retries + 1):
             try:
-                resp, tokens = await story_client(
+                resp, director_tokens = await director_client(
                     system_prompt=system_prompt,
                     human_prompt=human_prompt,
                     llm_temp=self.llm_temp,
@@ -489,11 +526,11 @@ Create scene plans that bring this chapter to life.
                 raw_text = StoryHelpers._extract_content(resp)
                 clean_resp = StoryHelpers._strip_code_fences(raw_text)
                 
-                self.token_usage["prompt_tokens"] += tokens["prompt_tokens"]
-                self.token_usage["completion_tokens"] += tokens["completion_tokens"]
-                self.token_usage["total_tokens"] += tokens["total_tokens"]
+                self.director_token_usage["prompt_tokens"] += director_tokens["prompt_tokens"]
+                self.director_token_usage["completion_tokens"] += director_tokens["completion_tokens"]
+                self.director_token_usage["total_tokens"] += director_tokens["total_tokens"]
                 
-                del raw_text, resp, tokens
+                del raw_text, resp, director_tokens
                 gc.collect()
                 
                 if isinstance(clean_resp, dict):
@@ -505,7 +542,19 @@ Create scene plans that bring this chapter to life.
                 
                 if success:
                     scenes = result.get("scenes", [])
+                    
+                    # Validate and adjust word counts
+                    total_words = sum(s.get('word_count', target_words_per_scene) for s in scenes)
+                    if abs(total_words - chapter_word_target) > chapter_word_target * 0.2:
+                        print(f"⚠️ Adjusting scene word counts: planned {total_words} vs target {chapter_word_target}")
+                        # Redistribute evenly
+                        for scene in scenes:
+                            scene['word_count'] = target_words_per_scene
+                    
                     print(f"✅ Generated {len(scenes)} scene plans for chapter {state.current_chapter_id}")
+                    for i, s in enumerate(scenes, 1):
+                        print(f"   Scene {i}: {s.get('word_count', 0)} words - {s.get('scene_goal', 'N/A')}")
+                    
                     return scenes
 
                 print(f"[Attempt {attempt}] Scene planning validation failed:", exc)
@@ -525,7 +574,18 @@ Create scene plans that bring this chapter to life.
                 
                 if success:
                     scenes = result.get("scenes", [])
+                    
+                    # Validate and adjust word counts
+                    total_words = sum(s.get('word_count', target_words_per_scene) for s in scenes)
+                    if abs(total_words - chapter_word_target) > chapter_word_target * 0.2:
+                        print(f"⚠️ Adjusting scene word counts: planned {total_words} vs target {chapter_word_target}")
+                        for scene in scenes:
+                            scene['word_count'] = target_words_per_scene
+                    
                     print(f"✅ Generated {len(scenes)} scene plans (after json_fixer)")
+                    for i, s in enumerate(scenes, 1):
+                        print(f"   Scene {i}: {s.get('word_count', 0)} words - {s.get('scene_goal', 'N/A')}")
+                    
                     return scenes
 
                 print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
@@ -545,7 +605,7 @@ Create scene plans that bring this chapter to life.
     async def director_node(self, state: StoryState) -> Dict:
         print(f"\n🎬 Director Node: Chapter {state.current_chapter_id}, Act {state.current_act_id}")
         
-        # Check if story is complete (e.g., no more chapters in act or no more acts)
+        # Check if story is complete
         try:
             act_plan_json = await self.memory.get_long_term_document(
                 metadata={
@@ -583,7 +643,7 @@ Create scene plans that bring this chapter to life.
             state.next_action = "ERROR"
             return state.__dict__
 
-        # Check for existing chapter plan (resume case)
+        # Check for existing chapter plan
         existing_plan = await self.memory.get_long_term_document(
             metadata={
                 "type": "chapter_plan",
@@ -660,6 +720,7 @@ Create scene plans that bring this chapter to life.
             text=json.dumps(chapter_plan_doc),
             metadata={
                 "chapter_id": state.current_chapter_id,
+                "act_id": state.current_act_id,
                 "type": "chapter_plan",
                 "story_title": state.story_title
             }
@@ -714,26 +775,31 @@ Create scene plans that bring this chapter to life.
 
             director_instructions = json.dumps(scene.model_dump(), indent=2)
             state.scene_id = scene.scene_id
+            scene_target_word_count = scene.word_count
+            
             print(f"\n🎬 Running Scene {scene.scene_id} | Goal: {scene.scene_goal}")
+            print(f"📊 Target: {scene_target_word_count} words")
 
             user_context = UserSceneContext.create_for_user(
                 user_id=self.memory.user_id,
                 story_id=self.memory.story_id,
                 director_instructions=director_instructions,
                 scene_chunk_callback=self.scene_chunk_callback,
-                
-            )
-
-            scene_text, scene_cluster, status, tokens = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
-                user_context=user_context,
-                stop_event=self.stop_event,
                 llm_temp=self.llm_temp,
                 model=self.model,
-                token_usage=self.token_usage,
-                target_length=self.target_length
+                token_usage=self.writer_token_usage,
+                target_length=self.target_length,
+                scene_target_length=scene_target_word_count
             )
-            
+
+            scene_text, scene_cluster, status, writer_tokens = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
+                user_context=user_context,
+                stop_event=self.stop_event
+            )
+                        
             if status != "SUCCESS":
+                del user_context
+                gc.collect()
                 print(f"🛑 Scene {scene.scene_id} failed with status: {status}")
                 status_payload = {"type": "status", "ERROR": f"Scene {scene.scene_id} failed: {status}"}
                 try:
@@ -746,9 +812,6 @@ Create scene plans that bring this chapter to life.
                 return state.__dict__
 
             print(f"✅ Scene {scene.scene_id} completed successfully")
-            self.token_usage = tokens
-            del user_context, tokens
-            gc.collect()
 
             if redis_client:
                 try:
@@ -779,11 +842,14 @@ Create scene plans that bring this chapter to life.
                 except Exception as e:
                     print(f"⚠️ Redis handling error: {e}")
 
+            self.writer_token_usage = writer_tokens
+            del writer_tokens
             ingestor = Ingestor(self.memory)
             scene_bundle = await ingestor.ingest_scene(
                 state=state,
                 scene_text=scene_text,
-                token_usage=self.token_usage
+                director_token_usage=self.director_token_usage,
+                writer_token_usage=self.writer_token_usage
             )
             del ingestor
             gc.collect()
@@ -794,7 +860,8 @@ Create scene plans that bring this chapter to life.
                     "chapter_id": state.current_chapter_id,
                     "story_title": state.story_title,
                     "scene_id": state.scene_id,
-                    "word_count": state.word_count,
+                    "story_word_count": state.story_word_count,
+                    "act_title": self.act_title
                 }
             )
 
@@ -824,12 +891,18 @@ Create scene plans that bring this chapter to life.
             state=state,
             current_chap_summary=self.current_chap_summary
         )
+        try:
+            self.scene_chunk_callback({"chapter_complete": True})
+            await self.memory.update_story_progress({"chapter_word_count": 0})
+        except Exception as e:
+            print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+            import traceback
+            traceback.print_exc()
         
         self.current_chap_summary = ""
         del ingestor
         gc.collect()
         
-        #state.next_action = "director_node"  # Loop back to director_node
         return state
 
     async def run(self, scene_chunk_callback, stop_event: asyncio.Event | None = None):
@@ -839,14 +912,16 @@ Create scene plans that bring this chapter to life.
 
         try:
             story_progress = await self.memory.get_story_progress()
-            
+            story_word_count = story_progress.get("story_word_count", 0)
+            current_chapter_word_count = story_progress.get("chapter_word_count", 0)
             if not story_progress:
                 print("❌ No story progress found")
                 return "No story progress found"
             
             self.llm_temp = story_progress.get("tone_temp", 0.7)
-            self.model = story_progress.get("model", "gpt-4")
-            self.token_usage = story_progress.get("token_usage", {})
+            self.model = story_progress.get("model", "None")
+            self.director_token_usage = story_progress.get("director_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+            self.writer_token_usage = story_progress.get("writer_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
             self.target_length = story_progress.get("target_length", 50000)
             
             complete = story_progress.get("complete", False)
@@ -858,13 +933,14 @@ Create scene plans that bring this chapter to life.
                 current_chapter_id=story_progress.get("latest_chapter_id", 1),
                 scene_id=story_progress.get("continue_scene_id", 1),
                 story_title=story_progress.get("story_title", "None"),
-                word_count=story_progress.get("word_count", 0),
+                story_word_count=story_word_count,
+                current_chapter_word_count=current_chapter_word_count,
                 current_act_id=story_progress.get("current_act_id", 1),
                 next_action=""
             )
             
             print(f"📖 Story State: Chapter {initialized_state.current_chapter_id}, Scene {initialized_state.scene_id}, Act {initialized_state.current_act_id}")
-            print(f"📊 Word Count: {initialized_state.word_count}")
+            print(f"📊 Current Chapter Word Count: {initialized_state.current_chapter_word_count}")
 
             task = asyncio.create_task(
                 self.compiled.ainvoke(
@@ -875,7 +951,7 @@ Create scene plans that bring this chapter to life.
 
             while not task.done():
                 if stop_event.is_set():
-                    print("🛑 Stop event received — cancelling DirectorGraph task...")
+                    print("🛑 Stop event received – cancelling DirectorGraph task...")
                     task.cancel()
                     try:
                         await task
@@ -904,7 +980,7 @@ Create scene plans that bring this chapter to life.
 # ============================================================================
 
 """
-Flow with Act-Based Director:
+Flow with Act-Based Director + Word Count Strictness:
 
 1. User starts story (or continues)
    ↓
@@ -921,11 +997,15 @@ Flow with Act-Based Director:
    - Checks if story is complete (no more chapters/acts)
    - Gets current act plan
    - Extracts chapter outline for current chapter
-   - Converts chapter outline → scene plans
+   - Converts chapter outline → scene plans WITH WORD COUNT TARGETS
+   - Distributes chapter word count evenly across scenes
    - Returns scene plans or ERROR if failed
    ↓
 5. generate_and_ingest_node() executes
-   - Runs each scene plan through Scene Writer
+   - For each scene plan:
+     * Extracts scene target word count
+     * Passes to Scene Writer via shared scene planner
+     * Scene Writer enforces word count limits strictly
    - Ingests each scene
    - User can pause/continue between scenes
    ↓
@@ -940,10 +1020,18 @@ Flow with Act-Based Director:
    ↓
 9. On story completion: route to story_complete
 
+Word Count Enforcement:
+- Chapter outlines specify target_word_count
+- Director calculates words-per-scene distribution
+- Each scene plan gets specific word_count target
+- Scene Writer receives scene_target_length parameter
+- Scene Planner checks progress against target
+- Circuit breakers force completion at 120% overage
+- Urgency warnings at 150/300 words remaining
+- Progress tracking sent to frontend
+
 Act Transition Logic (in continue_story_generation):
 - After chapter completion, check if act closure condition met
 - If yes: increment_act(), plan next act
 - If story complete: mark_story_complete()
 """
-
-

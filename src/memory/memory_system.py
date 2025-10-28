@@ -281,7 +281,7 @@ class StoryMemorySystem:
     # ---------- Unified scene ingestion ----------
     async def add_post_scene_bundle(self, scene_bundle: Dict[str, Any], metadata: Dict[str, Any]):
         if scene_bundle.get("story_summary"):
-            await self.add_story_summary(scene_bundle["story_summary"], metadata={metadata.get("chapter_id", 0): metadata.get("chapter_id", 0), "type": "scene summary"})
+            await self.add_story_summary(scene_bundle["story_summary"], metadata={"chapter_id": metadata.get("chapter_id", 0),"scene_id": metadata.get("scene_id", 0), "type": "scene summary", "act_id": metadata.get("act_id", 0)})
         if scene_bundle.get("character_details"):
             await self.add_character_detail(scene_bundle["character_details"], metadata)
         if scene_bundle.get("world_details"):
@@ -289,7 +289,7 @@ class StoryMemorySystem:
 
     async def add_post_chapter_bundle(self, parts: Dict[str, Dict], metadata: Dict[str, Any]):
         if parts.get("summary"):
-            await self.add_story_summary(parts["summary"], metadata={metadata.get("chapter_id", 0): metadata.get("chapter_id", 0), "type": "chapter summary"})
+            await self.add_story_summary(parts["summary"], metadata={"chapter_id": metadata.get("chapter_id", 0), "type": "chapter summary", "act_id": metadata.get("act_id", 0)})
         if parts.get("character_summary"):
             await self.add_character_summary(parts["character_summary"], metadata)
         if parts.get("world_summary"):
@@ -298,7 +298,7 @@ class StoryMemorySystem:
     #---------------User Management------------------
     async def update_user_monthly_word_count(self, word_count):
         store = await self.long_term_users()
-        return await store.increment_word_count(words_added=word_count)
+        return await store.increment_monthly_word_count(words_added=word_count)
 
     # ---------- Cleanup ----------
     async def close(self):
