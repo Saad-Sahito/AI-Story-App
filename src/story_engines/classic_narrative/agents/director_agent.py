@@ -253,7 +253,7 @@ World Details:
             if success:
                 await self.memory.add_post_chapter_bundle(
                     parts=result, 
-                    metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
+                    metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title,"act_id": state.current_act_id}
                 )
                 
                 await self.memory.increment_chapter(word_count_delta=0, scene_id=1)
@@ -376,7 +376,7 @@ class DirectorGraph:
         self.current_chap_summary = ""
         self.llm_temp = 0.7
         self.model = ""
-        self.token_usage = {}
+        
 
     async def story_complete(self, state: StoryState):
         print("✅ Marking story as complete")
@@ -522,20 +522,23 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
                     llm_temp=self.llm_temp,
                     model=self.model
                 )
-                
+                print(director_tokens)
+                if resp is None:
+                    print(f"Retrying _chapter_outline_to_scene_plans... (attempt {attempt+1})")
+                    continue
                 raw_text = StoryHelpers._extract_content(resp)
                 clean_resp = StoryHelpers._strip_code_fences(raw_text)
                 
                 self.director_token_usage["prompt_tokens"] += director_tokens["prompt_tokens"]
                 self.director_token_usage["completion_tokens"] += director_tokens["completion_tokens"]
                 self.director_token_usage["total_tokens"] += director_tokens["total_tokens"]
-                
+                #print("_chapter_outline_to_scene_plans response: ", clean_resp)
                 del raw_text, resp, director_tokens
                 gc.collect()
                 
                 if isinstance(clean_resp, dict):
                     clean_resp = json.dumps(clean_resp)
-
+                
                 success, result, exc = StoryHelpers._try_validate_with_model_then_parser(
                     clean_resp, DirectorOutput, director_parser
                 )
@@ -857,10 +860,11 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             await self.memory.add_story_scene_cluster(
                 text=scene_cluster,
                 metadata={
+                    "act_id": state.current_act_id,
                     "chapter_id": state.current_chapter_id,
                     "story_title": state.story_title,
                     "scene_id": state.scene_id,
-                    "story_word_count": state.story_word_count,
+                    "chapter_word_count": state.current_chapter_word_count,
                     "act_title": self.act_title
                 }
             )
@@ -868,9 +872,11 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             await self.memory.add_post_scene_bundle(
                 scene_bundle=scene_bundle,
                 metadata={
+                    "act_id": state.current_act_id,
                     "scene_id": state.scene_id,
                     "chapter_id": state.current_chapter_id,
-                    "story_title": state.story_title
+                    "story_title": state.story_title,
+                    "type": "scene summary"
                 }
             )
 
@@ -920,8 +926,29 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             
             self.llm_temp = story_progress.get("tone_temp", 0.7)
             self.model = story_progress.get("model", "None")
-            self.director_token_usage = story_progress.get("director_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-            self.writer_token_usage = story_progress.get("writer_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+            def parse_token_usage(value):
+                default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                if not value:
+                    return default
+                try:
+                    if isinstance(value, str):
+                        parsed = json.loads(value)
+                        if not isinstance(parsed, dict) or not all(
+                            key in parsed for key in ["prompt_tokens", "completion_tokens", "total_tokens"]
+                        ):
+                            return default
+                        return parsed
+                    elif isinstance(value, dict):
+                        if not all(key in value for key in ["prompt_tokens", "completion_tokens", "total_tokens"]):
+                            return default
+                        return value
+                    return default
+                except json.JSONDecodeError:
+                    return default
+            
+            # Initialize token usage fields
+            self.director_token_usage = parse_token_usage(story_progress.get("director_token_usage"))
+            self.writer_token_usage = parse_token_usage(story_progress.get("writer_token_usage"))
             self.target_length = story_progress.get("target_length", 50000)
             
             complete = story_progress.get("complete", False)

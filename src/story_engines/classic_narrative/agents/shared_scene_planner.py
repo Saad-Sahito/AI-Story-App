@@ -188,6 +188,11 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
                 await asyncio.sleep(0.2)
 
             result = await task
+            # Update user_context.scene_state with the final result
+            if not isinstance(result, dict):
+                user_context.scene_state = result
+            else:
+                user_context.scene_state = SceneState(**result)
             next_node = getattr(result, "next_node", None) if not isinstance(result, dict) else result.get("next_node")
             error_message = getattr(result, "error_message", None) if not isinstance(result, dict) else result.get("error_message")
             scene_memory = getattr(result, "scene_memory", None) if not isinstance(result, dict) else result.get("scene_memory")

@@ -634,7 +634,7 @@ class InteractiveStorySetup:
             }
         print("continue_story_generation, current_word_count: ", current_word_count, "target_length: ", target_length)
         # Interactive: Word-count-based transitions
-        if current_word_count >= target_length:
+        if current_word_count >= target_length + 4000:
             await memory_system.mark_story_complete()
             return {
                 "status": "story_complete",
@@ -657,7 +657,7 @@ class InteractiveStorySetup:
                 act_plan, tokens = await story_author.plan_act(
                     story_title=story_title,
                     act_number=expected_act,
-                    model=progress.get('model', 'gpt-4')
+                    model=progress.get('model', 'None')
                 )
                 
                 await memory_system.increment_act(new_act_number=expected_act)

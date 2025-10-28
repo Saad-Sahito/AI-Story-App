@@ -515,7 +515,7 @@ class ClassicStorySetup:
                 tokens_usage["prompt_tokens"] = act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"]
                 tokens_usage["completion_tokens"] = act_tokens["completion_tokens"] + seed_tokens["completion_tokens"]
                 tokens_usage["total_tokens"] = act_tokens["total_tokens"] + seed_tokens["total_tokens"]
-                del user_context
+                
                 print(f"✅ Story initialization complete: {story_title}")
                 print(f"   - Acts planned: {story_seed.act_count}")
                 print(f"   - Target length: {story_seed.target_length} words")
@@ -644,8 +644,12 @@ class ClassicStorySetup:
         current_act = progress.get('current_act_id', 1)
         total_acts = progress.get('total_acts', 3)
         is_complete = progress.get('complete', False)
+        target_length = progress.get('target_length', 50000)
+        current_word_count = progress.get('story_word_count', 0)
         latest_chapter = progress.get('latest_chapter_id', 1)
         
+        act_percentage = current_word_count / target_length if target_length > 0 else 0
+
         print(f"📊 Story Status: Act {current_act}/{total_acts}, Chapter {latest_chapter}")
         
         if is_complete:
@@ -694,67 +698,68 @@ class ClassicStorySetup:
                     if latest_chapter > max_chapter_in_act:
                         print(f"🔍 Checking if Act {current_act} is complete...")
                         
-                        completion_check = await story_author.check_act_completion(
-                            story_title=story_title,
-                            act_number=current_act
-                        )
+                        # completion_check = await story_author.check_act_completion(
+                        #     story_title=story_title,
+                        #     act_number=current_act
+                        # )
                         
-                        if completion_check['next_action'] == 'START_NEXT_ACT':
-                            if current_act < total_acts:
-                                # Plan next act
-                                next_act = current_act + 1
-                                print(f"🎬 Transitioning to Act {next_act}")
-                                
-                                act_plan, tokens = await story_author.plan_act(
-                                    story_title=story_title,
-                                    act_number=next_act,
-                                    model=progress.get('model', 'gpt-4')
-                                )
-                                
-                                # Update progress with new act
-                                await memory_system.increment_act(new_act_number=next_act)
-                
-                                # Update token usage
-                                writer_tokens = progress.get("author_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-                                if isinstance(writer_tokens, dict):
-                                    writer_tokens["prompt_tokens"] = tokens["prompt_tokens"] + writer_tokens["prompt_tokens"]
-                                    writer_tokens["completion_tokens"] = tokens["completion_tokens"] + writer_tokens["completion_tokens"]
-                                    writer_tokens["total_tokens"] = tokens["total_tokens"] + writer_tokens["total_tokens"]
+                        #if completion_check['next_action'] == 'START_NEXT_ACT':
+                        if current_act < total_acts:
+                            # Plan next act
+                            next_act = current_act + 1
+                            print(f"🎬 Transitioning to Act {next_act}")
+                            
+                            act_plan, tokens = await story_author.plan_act(
+                                story_title=story_title,
+                                act_number=next_act,
+                                model=progress.get('model', 'gpt-4')
+                            )
+                            
+                            # Update progress with new act
+                            await memory_system.increment_act(new_act_number=next_act)
+            
+                            # Update token usage
+                            writer_tokens = progress.get("author_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
+                            if isinstance(writer_tokens, dict):
+                                writer_tokens["prompt_tokens"] = tokens["prompt_tokens"] + writer_tokens["prompt_tokens"]
+                                writer_tokens["completion_tokens"] = tokens["completion_tokens"] + writer_tokens["completion_tokens"]
+                                writer_tokens["total_tokens"] = tokens["total_tokens"] + writer_tokens["total_tokens"]
 
-                                await memory_system.update_story_progress(
-                                    metadata={"author_token_usage": writer_tokens}
-                                )
-                                
-                                return {
-                                    "status": "act_transition",
-                                    "current_act_id": next_act,
-                                    "total_acts": total_acts,
-                                    "act_title": act_plan.act_title,
-                                    "chapter_count": len(act_plan.chapter_outlines),
-                                    "message": f"Started Act {next_act}: {act_plan.act_title}",
-                                    "tokens_used": tokens
-                                }
-                            else:
-                                # All acts complete
-                                print("✅ All acts completed - Story complete")
-                                await memory_system.mark_story_complete()
-                                return {
-                                    "status": "story_complete",
-                                    "current_act_id": current_act,
-                                    "total_acts": total_acts,
-                                    "message": "All acts completed. Story is finished."
-                                }
-                        
-                        elif completion_check['next_action'] == 'COMPLETE_STORY':
-                            # Story complete due to closure condition
-                            print("✅ Story closure condition met - Story complete")
+                            await memory_system.update_story_progress(
+                                metadata={"author_token_usage": writer_tokens}
+                            )
+                            
+                            return {
+                                "status": "act_transition",
+                                "current_act_id": next_act,
+                                "total_acts": total_acts,
+                                "act_title": act_plan.act_title,
+                                "chapter_count": len(act_plan.chapter_outlines),
+                                "message": f"Started Act {next_act}: {act_plan.act_title}",
+                                "tokens_used": tokens,
+                                "progress_percentage": int(act_percentage * 100),
+                            }
+                        else:
+                            # All acts complete
+                            print("✅ All acts completed - Story complete")
                             await memory_system.mark_story_complete()
                             return {
                                 "status": "story_complete",
                                 "current_act_id": current_act,
                                 "total_acts": total_acts,
-                                "message": "Story closure condition met."
+                                "message": "All acts completed. Story is finished."
                             }
+                        
+                        # elif completion_check['next_action'] == 'COMPLETE_STORY':
+                        #     # Story complete due to closure condition
+                        #     print("✅ Story closure condition met - Story complete")
+                        #     await memory_system.mark_story_complete()
+                        #     return {
+                        #         "status": "story_complete",
+                        #         "current_act_id": current_act,
+                        #         "total_acts": total_acts,
+                        #         "message": "Story closure condition met."
+                        #     }
                 else:
                     print(f"⚠️ No act plan found for act {current_act}")
                     # This shouldn't happen, but handle gracefully
@@ -776,6 +781,7 @@ class ClassicStorySetup:
                 "current_act_id": current_act,
                 "total_acts": total_acts,
                 "latest_chapter_id": latest_chapter,
+                "progress_percentage": int(act_percentage * 100),
                 "message": f"Continuing Act {current_act}"
             }
         
@@ -897,6 +903,8 @@ class ClassicStorySetup:
                         "total_acts": act_status.get('total_acts'),
                         "act_title": act_status.get('act_title'),
                         "chapter_count": act_status.get('chapter_count'),
+                        "progress_percentage": act_status.get('progress_percentage', 0),
+
                         #"tokens_used": act_status.get('tokens_used', 0)
                     })
                     print(f"✅ {act_status['message']}")
@@ -908,7 +916,9 @@ class ClassicStorySetup:
                         "message": act_status.get('message'),
                         "current_act_id": act_status.get('current_act_id'),
                         "total_acts": act_status.get('total_acts'),
-                        "latest_chapter_id": act_status.get('latest_chapter_id')
+                        "latest_chapter_id": act_status.get('latest_chapter_id'),
+                        "progress_percentage": act_status.get('progress_percentage', 0),
+
                     })
                     print(f"▶️ {act_status['message']}")
                 

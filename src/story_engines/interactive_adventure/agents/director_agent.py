@@ -390,7 +390,6 @@ class DirectorGraph:
         self.current_chap_summary = ""
         self.llm_temp = 0.7
         self.model = ""
-        self.token_usage = {}
         self.target_scene_word_count = 0
 
     async def story_complete(self, state: StoryState):
