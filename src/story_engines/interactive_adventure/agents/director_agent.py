@@ -64,10 +64,10 @@ class WorldElementMemory(BaseModel):
     name: str
     chapter_id: str
     summary: str = Field(description="Summary of how this world element appeared/changed")
-    atmosphere: Optional[str] = None
-    culture: Optional[str] = None
-    events: Optional[str] = None
-    connections: Optional[Union[Dict[str, str], str]] = None
+    atmosphere: Optional[str]
+    culture: Optional[str]
+    events: Optional[str]
+    connections: Union[Dict[str, str], str] = Field(default_factory=dict)
 
 
 class ChapterBundle(BaseModel):
@@ -84,10 +84,10 @@ class SceneDirectorOutput(BaseModel):
         description="Detailed scene instructions including chapter_id, scene_id, recap, characters, detailed_scene_blueprint, user_decision_points, screenplay_notes, and style guide. Provided as a plain string, not a nested dict."
     )
     target_scene_word_count: int = Field(
-        description="Target word count for the scene, guiding the Scene Writer on the expected length."
+        description="Target word count for the scene, guiding the Scene Writer on the expected length. If ending chapter leave empty."
     )
     action: Literal["generate_and_ingest", "END"] = Field(
-        description="Action to take after instructions: 'generate_and_ingest' to continue or 'END' if the chapter closure condition is met."
+        description="Action to take now for instructions: 'generate_and_ingest' to continue or 'END' if the chapter closure condition is met and chapter should end NOW."
     )
 
 
@@ -96,7 +96,7 @@ scene_director_parser = PydanticOutputParser(pydantic_object=SceneDirectorOutput
 
 class ChapterDirectorOutput(BaseModel):
     instructions: str = Field(
-        description="Detailed chapter instructions including style guide for the story. Plain string, not nested dict."
+        description="Detailed chapter instructions including style guide for the story. Plain string, not nested dict. Leave empty if story should end NOW."
     )
     action: Literal["continue", "END"] = Field(
         description="Output continue if story not complete, END otherwise"
@@ -114,7 +114,7 @@ class Ingestor:
     def __init__(self, memory_system: StoryMemorySystem):
         self.memory = memory_system
 
-    async def ingest_scene(self, state: StoryState, scene_text: str, director_token_usage: dict, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
+    async def ingest_scene(self, state: StoryState, scene_text: str, scene_word_count: int, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON."""
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
@@ -152,19 +152,19 @@ World Names: {list(worlds.keys())}
             success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, SceneBundle, scene_parser)
             
             if success:
-                new_word_count = StoryHelpers._count_words_split(scene_text)
-                state.current_chapter_word_count += new_word_count
-                state.story_word_count += new_word_count
-                
+                #new_word_count = StoryHelpers._count_words_split(scene_text)
+                state.current_chapter_word_count += scene_word_count
+                state.story_word_count += scene_word_count
+                del scene_word_count
                 await self.memory.update_story_progress(metadata={
                     "latest_chapter_id": state.current_chapter_id, 
                     "continue_scene_id": state.scene_id + 1, 
                     "story_word_count": state.story_word_count,
                     "chapter_word_count": state.current_chapter_word_count,
-                    "director_token_usage": director_token_usage,
+                    #"director_token_usage": director_token_usage,
                     "writer_token_usage": writer_token_usage
                 })
-                await self.memory.update_user_monthly_word_count(word_count=new_word_count)
+                #await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                 del system_prompt, human_prompt
                 return result
             else:
@@ -183,19 +183,19 @@ World Names: {list(worlds.keys())}
                 del fixed_clean
                 
                 if success:
-                    new_word_count = StoryHelpers._count_words_split(scene_text)
-                    state.current_chapter_word_count += new_word_count
-                    state.story_word_count += new_word_count
-
+                    #new_word_count = StoryHelpers._count_words_split(scene_text)
+                    state.current_chapter_word_count += scene_word_count
+                    state.story_word_count += scene_word_count
+                    del scene_word_count
                     await self.memory.update_story_progress(metadata={
                         "latest_chapter_id": state.current_chapter_id, 
                         "continue_scene_id": state.scene_id + 1, 
                         "story_word_count": state.story_word_count,
                         "chapter_word_count": state.current_chapter_word_count,
-                        "director_token_usage": director_token_usage,
+                        #"director_token_usage": director_token_usage,
                         "writer_token_usage": writer_token_usage
                     })
-                    await self.memory.update_user_monthly_word_count(word_count=new_word_count)
+                    #await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                     del system_prompt, human_prompt
                     return result
 
@@ -211,127 +211,160 @@ World Names: {list(worlds.keys())}
                 del system_prompt, human_prompt
                 return {"story_summary": "", "character_details": {}, "world_details": {}}
 
-    async def ingest_chapter(self, state: StoryState, current_chap_summary: str, max_retries: int = 3) -> Dict[str, Any]:
-        """Summarize and extract structured details about a completed chapter."""
+    async def ingest_chapter(self, state: StoryState, current_chap_summary: str, max_retries: int = 3) -> str:
         print("Ingesting chapter...")
 
         world_details = await self.memory.get_long_term_worlds()
         char_details = await self.memory.get_long_term_characters()
+#         system_prompt = f"""
+# You are the Chapter Breakdown Agent.
 
+# Analyze the entire chapter text and generate a structured breakdown.
+
+# Output JSON with:
+# 1. summary - Detailed chapter summary
+# 2. character_summary - Dict of CharacterMemory objects
+# 3. world_summary - Dict of WorldElementMemory objects
+
+# Preserve exact names and only use information provided.
+# No markdown, explanations, or text outside JSON.
+
+# {chapter_parser.get_format_instructions()}
+# """
         system_prompt = f"""
 You are the Chapter Breakdown Agent.
 
 Analyze the entire chapter text and generate a structured breakdown.
 
-Output JSON with:
-1. summary - Detailed chapter summary
-2. character_summary - Dict of CharacterMemory objects
-3. world_summary - Dict of WorldElementMemory objects
+**OUTPUT MUST BE VALID JSON ONLY. NO MARKDOWN. NO EXPLANATION.**
 
-Preserve exact names and only use information provided.
-No markdown, explanations, or text outside JSON.
+**MANDATORY FIELDS**:
+1. "summary": Detailed chapter summary (string)
+2. "character_summary": Dict of CharacterMemory objects (use exact names from story)
+3. "world_summary": Dict of WorldElementMemory objects (MUST INCLUDE ALL WORLD ELEMENTS FROM STORY + MEMORY)
+
+**CRITICAL**: 
+- "world_summary" is REQUIRED. If no new world elements, include known ones from memory.
+- Use EXACT keys from provided Character Details and World Details.
+- For missing fields in memory, set to empty string "" or null as specified.
+- NEVER omit "world_summary" — it will crash the system.
+
+**EXAMPLE STRUCTURE**:
+{{
+  "summary": "Chapter summary here...",
+  "character_summary": {{
+    "Alex Rivera": {{ "name": "Alex Rivera", "chapter_id": "2", ... }}
+  }},
+  "world_summary": {{
+    "Neo-Tokyo": {{ "name": "Neo-Tokyo", "chapter_id": "2", ... }},
+    "Grid": {{ ... }}
+  }}
+}}
+
+Provided Character Details (use these keys):
+{json.dumps(char_details, indent=2)}
+
+Provided World Details (use these keys and expand):
+{json.dumps(world_details, indent=2)}
 
 {chapter_parser.get_format_instructions()}
 """
 
         human_prompt = f"""
-Current Chapter: {state.current_chapter_id}
-Chapter Text:
-{current_chap_summary}
+    Current Chapter: {state.current_chapter_id}
+    Chapter Text:
+    {current_chap_summary}
 
-Character Details:
-{char_details}
+    Character Details:
+    {char_details}
 
-World Details:
-{world_details}        
-"""
+    World Details:
+    {world_details}        
+    """
+
+        def safe_validate(json_str: str):
+            if not json_str or not json_str.strip():
+                return False, None, "Empty input"
+            try:
+                parsed = chapter_parser.parse(json_str)
+                return True, parsed.model_dump() if hasattr(parsed, 'dict') else parsed, None
+            except Exception as e1:
+                try:
+                    validated = ChapterBundle.model_validate_json(json_str)
+                    return True, validated.model_dump(), None
+                except Exception as e2:
+                    return False, None, f"Parse error: {e1}; Validate error: {e2}"
 
         for attempt in range(1, max_retries + 1):
             resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
             raw_text = StoryHelpers._extract_content(resp)
-            clean_resp = StoryHelpers._strip_code_fences(raw_text)
-            #print(clean_resp)
-            del raw_text, resp
-            gc.collect()
-            
+            if not raw_text:
+                print(f"[Attempt {attempt}] raw_text is empty")
+                clean_resp = "{}"
+            else:
+                clean_resp = StoryHelpers._strip_code_fences(raw_text)
+
+            print(f"[Attempt {attempt}] Raw clean_resp: {clean_resp[:300]}...")
+
             if isinstance(clean_resp, dict):
                 clean_resp = json.dumps(clean_resp)
+            elif not isinstance(clean_resp, str):
+                clean_resp = str(clean_resp)
+            if not clean_resp.strip():
+                clean_resp = "{}"
 
-            success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, ChapterBundle, chapter_parser)
-            
+            del raw_text, resp
+            gc.collect()
+
+            success, result, exc = safe_validate(clean_resp)
             if success:
                 await self.memory.add_post_chapter_bundle(
-                    parts=result, 
+                    parts=result,
                     metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "act_id": state.current_act_id}
                 )
-                
-                # Use memory system method for chapter increment
                 await self.memory.increment_chapter(word_count_delta=0, scene_id=1)
-                
                 state.current_chapter_id += 1
                 state.scene_id = 1
-                
                 print("✅ Chapter Complete!")
-                result.update({
-                    "current_chapter_id": state.current_chapter_id,
-                    "scene_id": state.scene_id,
-                    
-                })
-                del system_prompt, human_prompt
-                return result
+                return "success"
             else:
-                print(f"[Attempt {attempt}] Chapter ingestion validation failed:", exc)
+                print(f"[Attempt {attempt}] Validation failed: {exc}")
 
+            # JSON Fixer Fallback
             try:
                 fixed_resp = await StoryHelpers._json_fixer(clean_resp)
+                if not fixed_resp:
+                    print(f"[Attempt {attempt}] json_fixer returned empty")
+                    continue
                 fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
-                del clean_resp, fixed_resp
-                gc.collect()
-                
                 if isinstance(fixed_clean, dict):
                     fixed_clean = json.dumps(fixed_clean)
+                elif not isinstance(fixed_clean, str):
+                    fixed_clean = str(fixed_clean)
+                if not fixed_clean.strip():
+                    fixed_clean = "{}"
 
-                success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, ChapterBundle, chapter_parser)
-                del fixed_clean
-                
+                success, result, exc = safe_validate(fixed_clean)
                 if success:
                     await self.memory.add_post_chapter_bundle(
-                        parts=result, 
+                        parts=result,
                         metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title, "act_id": state.current_act_id}
                     )
-                    
                     await self.memory.increment_chapter(word_count_delta=0, scene_id=1)
-                    
                     state.current_chapter_id += 1
                     state.scene_id = 1
-                    
-                    print("✅ Chapter Complete!")
-                    result.update({
-                        "current_chapter_id": state.current_chapter_id,
-                        "scene_id": state.scene_id,
-                        
-                    })
-                    del system_prompt, human_prompt
-                    return result
+                    print("✅ Chapter Complete! (via json_fixer)")
+                    return "success"
                 else:
-                    print(f"[Attempt {attempt}] json_fixer validation failed:", exc)
-            except Exception as inner_e:
-                print(f"[Attempt {attempt}] json_fixer raised:", inner_e)
+                    print(f"[Attempt {attempt}] json_fixer validation failed: {exc}")
+            except Exception as e:
+                print(f"[Attempt {attempt}] json_fixer exception: {e}")
 
             if attempt < max_retries:
                 print(f"Retrying ingest_chapter... (attempt {attempt+1})")
-                continue
             else:
-                print("All retries exhausted; returning minimal structure.")
-                del system_prompt, human_prompt
-                return {
-                    "summary": "",
-                    "character_summary": {},
-                    "world_summary": {},
-                    "current_chapter_id": state.current_chapter_id,
-                    "scene_id": state.scene_id,
-                    
-                }
+                print("All retries exhausted; returning failure.")
+                return "failure"
 
 
 # ============================================================================
@@ -432,7 +465,7 @@ class DirectorGraph:
         )
 
         print(f"🔍 DEBUG: Calling run_scene for {user_context.user_id}/{user_context.story_id}")
-        scene_text, scene_cluster, status, writer_tokens = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(
+        scene_text, scene_cluster, status, writer_tokens, scene_word_count = await scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE.run_scene(
             user_context=user_context,
             stop_event=self.stop_event
         )
@@ -459,6 +492,7 @@ class DirectorGraph:
             raise RuntimeError(f"Scene planner error: {status}")
         
         elif status == "SUCCESS":
+            await self.memory.update_user_monthly_word_count(word_count=scene_word_count)
             del user_context
             gc.collect()
             print("INSIDE DIRECTOR Writer token usage: ", writer_tokens)
@@ -506,13 +540,14 @@ class DirectorGraph:
                 raise RuntimeError(f"User input error: {e}")
             
             # Ingest scene
+            self.scene_chunk_callback({"type":"status", "message": "saving story"})
             self.writer_token_usage = writer_tokens
             del writer_tokens
             ingestor = Ingestor(self.memory)
             scene_bundle = await ingestor.ingest_scene(
-                state, 
-                scene_text,
-                director_token_usage=self.director_token_usage,
+                state=state, 
+                scene_text=scene_text,
+                scene_word_count=scene_word_count,
                 writer_token_usage=self.writer_token_usage
             )
             del ingestor
@@ -559,21 +594,27 @@ class DirectorGraph:
     async def ingest_chapter(self, state: StoryState):
         """Ingest completed chapter"""
         ingestor = Ingestor(self.memory)
+        self.scene_chunk_callback({"type":"status", "message": "saving chapter"})
         result = await ingestor.ingest_chapter(
             state, 
             self.current_chap_summary
         )
-        try:
-            self.scene_chunk_callback({"chapter_complete": True})
-            await self.memory.update_story_progress({"chapter_word_count": 0})
-        except Exception as e:
-            print(f"❌ ERROR: scene_chunk_callback raised: {e}")
-            import traceback
-            traceback.print_exc()
-        self.current_chap_summary = ""
-        del ingestor
-        gc.collect()
-        return result
+        if result == "success":
+            try:
+                self.scene_chunk_callback({"chapter_complete": True})
+                await self.memory.update_story_progress({"chapter_word_count": 0})
+            except Exception as e:
+                print(f"❌ ERROR: scene_chunk_callback raised: {e}")
+                import traceback
+                traceback.print_exc()
+            self.current_chap_summary = ""
+            del ingestor
+            gc.collect()
+            return result
+        else:
+            del ingestor
+            gc.collect()
+            return "failure"
 
     async def chapter_director_node(self, state: StoryState) -> Dict:
         """
@@ -593,6 +634,7 @@ class DirectorGraph:
                 metadata={
                     'type': 'act_plan',
                     'act_id': state.current_act_id,
+                    
                     'story_title': state.story_title
                 }
             )
@@ -620,12 +662,12 @@ Target Word Count for Act: {act_plan.get('target_word_count', 'N/A')}
         if state.current_chapter_id > 1:
             self.current_chap_summary = await self.memory.search_episodic_scene_summary(
                 chapter_number=state.current_chapter_id - 1,
-                summary_type="scene summary"
+                summary_type="chapter summary"
             )
             director_context = await self.memory.get_director_context(
                 current_chapter_number=state.current_chapter_id,
                 query=self.current_chap_summary if self.current_chap_summary else "",
-                k=5  # Reduced from 5 for efficiency
+                k=5
             )
         else:
             director_context = "Start of Story"
@@ -658,6 +700,9 @@ Your output must be in JSON format and include:
 
 - action - 'continue' to proceed with scenes or 'END' if the story is complete
 
+If the story should end now then 'action' should be set to 'END' and the 'instructions' should be an empty string ''.
+If 'instructions' for this chapter are set then 'action' MUST be 'continue'
+
 CRITICAL for Interactive Stories:
 - Respect user choices that have been made
 - Set up meaningful decision points
@@ -685,6 +730,7 @@ Story Word Count so far: {state.story_word_count}
             metadata={
                 "type": "chapter_plan",
                 "chapter_id": state.current_chapter_id,
+                "act_id": state.current_act_id,
                 "story_title": state.story_title
             }
         )
@@ -701,7 +747,7 @@ Story Word Count so far: {state.story_word_count}
                 print(f"⚠️ Existing chapter plan validation failed: {exc}")
                 scenario = None
 
-        if not scenario:
+        if not existing_plan:
             # Generate new plan
             for attempt in range(1, max_retries + 1):
                 resp, director_tokens = await director_client(
@@ -742,6 +788,7 @@ Story Word Count so far: {state.story_word_count}
                             "story_title": state.story_title
                         }
                     )
+                    await self.memory.update_story_progress({"director_token_usage": self.director_token_usage})
                     print(f"✅ Generated new chapter plan for chapter {state.current_chapter_id}")
                     break
 
@@ -773,6 +820,7 @@ Story Word Count so far: {state.story_word_count}
                                 "story_title": state.story_title
                             }
                         )
+                        await self.memory.update_story_progress({"director_token_usage": self.director_token_usage})
                         break
                         
                     print(f"[Attempt {attempt}] json_fixer validation failed: {exc}")
@@ -795,6 +843,7 @@ Story Word Count so far: {state.story_word_count}
         messages = state.messages or []
         messages.append(AIMessage(content=scenario))
         print("chapter_director_node, next_action: ", action)
+        self.scene_chunk_callback({"type":"act_title", "message": self.act_title})
         return {
             "messages": messages,
             "scene_id": state.scene_id,
@@ -822,6 +871,7 @@ Story Word Count so far: {state.story_word_count}
                 metadata={
                     'type': 'act_plan',
                     'act_id': state.current_act_id,
+                    
                     'story_title': state.story_title
                 }
             )
@@ -858,6 +908,7 @@ Story Word Count so far: {state.story_word_count}
             metadata={
                 "type": "chapter_plan",
                 "chapter_id": state.current_chapter_id,
+                "act_id": state.current_act_id,
                 "story_title": state.story_title
             }
         )
@@ -881,9 +932,11 @@ Story Word Count so far: {state.story_word_count}
         # Calculate target word count for THIS scene
         remaining_chapter_words = chapter_word_target - state.current_chapter_word_count
         # Estimate scenes remaining (assuming sequential scene generation)
-        scenes_remaining = max(1, expected_scenes - (state.scene_id - 1))
-        target_scene_word_count = max(200, int(remaining_chapter_words / scenes_remaining))
+        scenes_remaining = expected_scenes - (state.scene_id - 1)
+        if scenes_remaining <= 0 or remaining_chapter_words < 100:
+            return {"next_action": "END"}
         
+        target_scene_word_count = max(200, int(remaining_chapter_words / scenes_remaining))
         # Cap scene word count to prevent too-long scenes
         target_scene_word_count = min(target_scene_word_count, 800)
         
@@ -1144,7 +1197,7 @@ Story Word Count so far: {state.story_word_count}
             initialized_state = StoryState(
                 current_chapter_id=story_progress.get("latest_chapter_id", 1),
                 scene_id=story_progress.get("continue_scene_id", 1),
-                story_title=story_progress.get("story_title", "None"),
+                story_title=story_progress.get("story_title", "Untitled Story"),
                 story_word_count=story_word_count,
                 current_chapter_word_count=chapter_word_count,
                 current_act_id=story_progress.get("current_act_id", 1),
@@ -1198,64 +1251,3 @@ Story Word Count so far: {state.story_word_count}
         finally:
             print("🎬 DirectorGraph stopped gracefully")
             gc.collect()
-
-
-# ============================================================================
-# USAGE NOTES
-# ============================================================================
-
-"""
-Flow with Act-Based Interactive Director:
-
-1. User starts/continues story
-   ↓
-2. WebSocket calls continue_story_generation()
-   - Checks word count progress
-   - Plans next act if milestone reached
-   - Updates current_act_id in progress
-   ↓
-3. DirectorGraph.run() starts
-   - Loads story progress (includes current_act_id)
-   - Initializes state with current_act_id
-   ↓
-4. chapter_director_node() executes
-   - Gets current act plan
-   - Gets recent context (last 2-3 chapters)
-   - Creates chapter blueprint aligned with act themes
-   - Returns chapter instructions
-   ↓
-5. scene_director_node() executes
-   - Gets act plan for thematic context
-   - Gets chapter plan for chapter goals
-   - Creates detailed scene instructions with decision points
-   - Returns scene instructions
-   ↓
-6. generate_and_ingest_node() executes
-   - Calls Scene Writer via shared scene planner
-   - Scene Writer presents user choices
-   - User makes choice
-   - Ingest scene
-   - Loop back to scene_director_node
-   ↓
-7. ingest_chapter() executes
-   - Summarizes completed chapter
-   - Updates memory
-   - Increments chapter
-   ↓
-8. Loop back to step 2 for next chapter
-
-Act Transition Logic (in continue_story_generation):
-- After each chapter, check word count progress
-- If progress crosses act threshold (e.g., 33%, 66%):
-  - increment_act()
-  - plan next act based on choices made
-- If word count >= target_length:
-  - mark_story_complete()
-
-Key Differences from Classic:
-- No rigid chapter outlines in act plan
-- Act transitions based on word count, not closure conditions
-- Decision points in every scene
-- Story adapts to user choices more dynamically
-- Chapter/scene planning references act themes, not predetermined plot
-"""

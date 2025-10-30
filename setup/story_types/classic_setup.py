@@ -472,7 +472,7 @@ class ClassicStorySetup:
                 print(f"🌱 Creating story seed for: {story_title}")
                 story_seed, seed_tokens = await story_author.create_story_seed(
                     user_context=user_context,
-                    story_title=story_title,
+                    #story_title=story_title,
                     model=model
                 )
                 

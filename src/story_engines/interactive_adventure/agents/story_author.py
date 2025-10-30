@@ -102,8 +102,7 @@ class StoryAuthor:
 
     async def create_story_seed(
         self, 
-        user_context: Dict[str, Any], 
-        story_title: str, 
+        user_context: Dict[str, Any],
         model: str = "None"
     ) -> Tuple[StorySeed, int]:
         """
@@ -149,7 +148,7 @@ class StoryAuthor:
 Create a flexible story foundation - NOT a rigid blueprint. This seed guides act planning, which happens progressively as the user makes choices.
 
 The user has specified:
-- POV: {user_context.get('POV', 'Third-person')}
+- POV: 'Third-person'
 - Tone: {user_context.get('Tone', 'Balanced')}
 - Genres: {genres_str}
 - Setting: {user_context.get('Setting', 'To be determined')}
@@ -173,7 +172,7 @@ CRITICAL for Interactive Stories:
 - Keep it open-ended enough for meaningful user decisions
 
 Output Structure:
-- title: Use "{user_context.get('Title', 'Untitled')}" exactly as given
+- title: Use "{user_context.get("Title", "Untitled Story")}" exactly as given
 - premise: 3-4 sentences establishing setup and initial tension
 - protagonist: Dict with name, core_trait, desire, fear (age-appropriate)
 - world_essentials: Dict with setting, time_period, key_rule
@@ -247,7 +246,7 @@ Generate a compelling foundation that enables meaningful user choices and branch
         
         system_prompt = """You are a professional book marketer specializing in interactive fiction back-cover copy.
 
-Write a captivating blurb (100-200 words) that:
+Write a short captivating blurb (<100 words) that:
 - Hooks readers emotionally
 - Establishes atmosphere and stakes
 - Teases the protagonist's journey
@@ -298,7 +297,7 @@ Note: This is an INTERACTIVE story where user choices matter.
         
         image_prompt = (
             f"Create a simple, evocative cover image for an INTERACTIVE story. "
-            f"Focus on mood and atmosphere with a sense of choice/agency. "
+            f"Focus on mood and atmosphere. "
             f"Do NOT include text or an actual book. "
             f"Style: artistic, professional, engaging.\n\n{blurb}"
         )

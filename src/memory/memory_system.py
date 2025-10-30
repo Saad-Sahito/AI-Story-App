@@ -188,7 +188,21 @@ class StoryMemorySystem:
         chapters_context = await self.search_episodic_chapter(
             query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
         )
+        last_few_chapters = []
+        try:
+            last_few_chapters.append(await self.search_episodic_scene_summary(chapter_number=current_chapter_number-3, summary_type="chapter summary"))
+        except:
+            pass
+        try:
+            last_few_chapters.append(await self.search_episodic_scene_summary(chapter_number=current_chapter_number-2, summary_type="chapter summary"))
+        except:
+            pass
+        try:
+            last_few_chapters.append(await self.search_episodic_scene_summary(chapter_number=current_chapter_number-1, summary_type="chapter summary"))
+        except:
+            pass
         return {
+            "last few chapter summaries": last_few_chapters,
             "characters": char_world_context.get("characters", []),
             "worlds": char_world_context.get("worlds", []),
             "chapters": chapters_context}

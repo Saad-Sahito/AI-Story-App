@@ -12,6 +12,7 @@ langchain-community==0.3.31
 langchain-openai==0.3.28
 langchain-anthropic==0.2.3
 langchain-xai==0.2.5
+langchain-groq==0.2.3
 
 # === LLM orchestration and agent graph ===
 langgraph>=0.3.27

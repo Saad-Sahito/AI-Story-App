@@ -115,7 +115,6 @@ class StoryAuthor:
     async def create_story_seed(
         self, 
         user_context: Dict[str, Any], 
-        story_title: str, 
         model: str = "None"
     ) -> Tuple[StorySeed, int]:
         """
@@ -162,7 +161,7 @@ class StoryAuthor:
 Your goal: Provide a creative seed—NOT a rigid blueprint. This seed guides act planning, which happens progressively as the story unfolds.
 
 The user has specified:
-- POV: {user_context.get('POV', 'Third-person')}
+- POV: 'Third-person'
 - Tone: {user_context.get('Tone', 'Balanced')}
 - Genre: {genres_str}
 - Setting: {user_context.get('Setting', 'To be determined')}
@@ -179,7 +178,7 @@ Create a story foundation that:
 5. Identifies the central dramatic question
 
 Output Structure:
-- title: Use "{user_context.get('Title', 'Untitled Story')}" exactly as given
+- title: Use "{user_context.get("Title", "Untitled Story")}" exactly as given
 - premise: 3-4 sentences establishing setup and conflict
 - protagonist: Dict with name, core_trait, desire, fear (age-appropriate for {user_context.get('target_audience_age', 'general')} audience)
 - world_essentials: Dict with setting (use user's setting), time_period, key_rule
@@ -307,10 +306,13 @@ Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
         print("🎨 Generating cover image...")
         
         image_prompt = (
-            f"Create a simple, evocative book cover image based on this blurb. "
-            f"Focus on mood and atmosphere. Do NOT include text or an actual book. "
-            f"Style: artistic, professional, marketable.\n\n{blurb}"
-        )
+    f"Create a visually striking, professional book cover illustration inspired by the following blurb. "
+    f"Focus on mood, setting, color palette, and atmosphere. "
+    f"Do NOT include any text, titles, signatures, or images of an actual book. "
+    f"The image should feel like a real book cover concept, artistic and marketable, with strong composition and emotional tone. "
+    f"Output should be in 1024x1024 resolution.\n\n{blurb}"
+)
+
         
         image_data = await image_client(image_prompt)
         image_data_base64 = base64.b64encode(image_data).decode('utf-8')

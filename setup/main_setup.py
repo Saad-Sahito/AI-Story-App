@@ -87,6 +87,6 @@ class MainSetup:
             res_int = await setup_interactive.cleanup_inactive_sessions()
             setup_classic = await get_shared_classic_setup()
             res_cls = await setup_classic.cleanup_inactive_sessions()
-            return {"interactive sessions cleaned: ", res_int}, {"classic sessions cleaned: ", res_cls}
+            return res_cls + res_int
         except:
             return {"error": "One of or both sessions uninitialized"}

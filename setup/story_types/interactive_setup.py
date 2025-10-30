@@ -457,7 +457,7 @@ class InteractiveStorySetup:
                 print(f"🌱 Creating {story_type} story seed for: {story_title}")
                 story_seed, seed_tokens = await story_author.create_story_seed(
                     user_context=user_context,
-                    story_title=story_title,
+                    #story_title=story_title,
                     model=model
                 )
 
@@ -582,7 +582,7 @@ class InteractiveStorySetup:
             }
 
 
-    async def continue_story_generation(self, user_id: str, story_id: str):
+    async def continue_story_generation(self, user_id: str, story_id: str, chunk_queue: Optional[asyncio.Queue] = None):
         """
         Continue story generation - works for BOTH classic and interactive.
         
@@ -651,6 +651,7 @@ class InteractiveStorySetup:
 
         if expected_act > current_act:
             # Time to transition to next act
+            
             story_author = StoryAuthor(memory_system=memory_system)
             
             try:
@@ -659,7 +660,9 @@ class InteractiveStorySetup:
                     act_number=expected_act,
                     model=progress.get('model', 'None')
                 )
-                
+                await memory_system.increment_chapter(word_count_delta=0, scene_id=1)
+                if chunk_queue:
+                    await chunk_queue.put({"chapter_complete": True})
                 await memory_system.increment_act(new_act_number=expected_act)
                 
                 # Update token usage
@@ -704,14 +707,14 @@ class InteractiveStorySetup:
         ws_key = f"{BASE_SESSION_KEY}_active_ws:{user_id}:{story_id}"
         director_key = f"director_running:{user_id}:{story_id}"
         SESSION_TTL = 3600
-
+        queue = asyncio.Queue()
         disconnect_event = asyncio.Event()
 
         try:
             # Lock WebSocket connection
             async with redis_lock(client, f"lock:{ws_key}", timeout=30, retries=10, retry_delay=1.0):
                 if await client.get(ws_key):
-                    await websocket.send_json({"error": "Another connection is active for this story"})
+                    await queue.put({"error": "Another connection is active for this story"})
                     await websocket.close(code=1000)
                     return
                 await client.set(ws_key, "1", ex=SESSION_TTL)
@@ -720,7 +723,7 @@ class InteractiveStorySetup:
             try:
                 init_data = await asyncio.wait_for(websocket.receive_json(), timeout=10.0)
             except asyncio.TimeoutError:
-                await websocket.send_json({"error": "Timeout waiting for initial data"})
+                await queue.put({"error": "Timeout waiting for initial data"})
                 await websocket.close(code=1001)
                 return
 
@@ -728,7 +731,7 @@ class InteractiveStorySetup:
             received_user_id = init_data.get("user_id")
             received_story_id = init_data.get("story_id")
             if not received_user_id or not received_story_id or received_user_id != user_id or received_story_id != story_id:
-                await websocket.send_json({"error": "Invalid or mismatched user_id/story_id"})
+                await queue.put({"error": "Invalid or mismatched user_id/story_id"})
                 await websocket.close(code=1000)
                 return
 
@@ -739,20 +742,20 @@ class InteractiveStorySetup:
             
             async with redis_lock(client, user_lock_key, timeout=30, retries=10, retry_delay=1.0):
                 if not user_data:
-                    await websocket.send_json({"error": "Invalid user ID"})
+                    await queue.put({"error": "Invalid user ID"})
                     await websocket.close(code=1000)
                     return
                 
                 story_data = user_data["stories"].get(story_id)
                 if not story_data:
-                    await websocket.send_json({"error": "Invalid story ID"})
+                    await queue.put({"error": "Invalid story ID"})
                     await websocket.close(code=1000)
                     return
 
                 # Lock director to prevent concurrent runs
                 async with redis_lock(client, f"lock:{director_key}", timeout=30, retries=10, retry_delay=1.0):
                     if await client.get(director_key):
-                        await websocket.send_json({"error": "Story progression already active"})
+                        await queue.put({"error": "Story progression already active"})
                         await websocket.close(code=1000)
                         return
                     await client.set(director_key, "1", ex=SESSION_TTL)
@@ -785,20 +788,22 @@ class InteractiveStorySetup:
             # Check act status and plan next act if needed
             print(f"🔍 Checking story continuation status...")
             try:
-                act_status = await self.continue_story_generation(user_id, story_id)
+                
+                act_status = await self.continue_story_generation(user_id=user_id, story_id=story_id, chunk_queue=queue)
                 
                 if act_status['status'] == 'story_complete':
-                    await websocket.send_json({
+                    await queue.put({
                         "type": "story_complete",
-                        "message": act_status.get('message', 'Story is complete'),
+                        "message": act_status.get('message'),
                         "current_act_id": act_status.get('current_act_id'),
                         "total_acts": act_status.get('total_acts')
                     })
+                    await queue.put(None)  # ← Stop send_loop
                     await websocket.close(code=1000)
                     return
                 
                 elif act_status['status'] == 'act_transition':
-                    await websocket.send_json({
+                    await queue.put({
                         "type": "act_transition",
                         "message": act_status.get('message'),
                         "current_act_id": act_status.get('current_act_id'),
@@ -810,7 +815,7 @@ class InteractiveStorySetup:
                     print(f"✅ {act_status['message']}")
                 
                 elif act_status['status'] == 'continue_act':
-                    await websocket.send_json({
+                    await queue.put({
                         "type": "act_status",
                         "message": act_status.get('message'),
                         "current_act_id": act_status.get('current_act_id'),
@@ -821,7 +826,7 @@ class InteractiveStorySetup:
                     print(f"▶️ {act_status['message']}")
                 
                 elif act_status['status'] == 'error':
-                    await websocket.send_json({
+                    await queue.put({
                         "type": "error",
                         "message": act_status.get('message', 'Unknown error')
                     })
@@ -832,7 +837,7 @@ class InteractiveStorySetup:
                 print(f"❌ Error checking act status: {e}")
                 import traceback
                 traceback.print_exc()
-                await websocket.send_json({
+                await queue.put({
                     "type": "error",
                     "message": f"Failed to check story status: {str(e)}"
                 })
@@ -840,7 +845,7 @@ class InteractiveStorySetup:
                 return
 
             # Continue with normal Director execution
-            queue = asyncio.Queue()
+            #queue = asyncio.Queue()
 
             def scene_chunk_callback(chunk: dict):
                 queue.put_nowait(chunk)
@@ -863,10 +868,10 @@ class InteractiveStorySetup:
                         if item is None:
                             break
                         await websocket.send_json(item)
-                except asyncio.CancelledError:
-                    return
                 except Exception as e:
-                    print(f"❌ send_loop error: {e}")
+                    print(f"send_loop error: {e}")
+                finally:
+                    disconnect_event.set()
 
             async def recv_loop():
                 try:
@@ -944,7 +949,7 @@ class InteractiveStorySetup:
             import traceback
             traceback.print_exc()
             try:
-                await websocket.send_json({"error": f"Server error: {str(e)}"})
+                await queue.put({"error": f"Server error: {str(e)}"})
             except Exception:
                 pass
         finally:

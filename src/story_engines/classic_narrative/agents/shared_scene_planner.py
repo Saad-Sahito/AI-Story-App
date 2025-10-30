@@ -45,7 +45,7 @@ class SceneState(BaseModel):
 
 
 class SceneWriterOutput(BaseModel):
-    scene: str = Field(description="One paragraph of narrative text (80-130 words).")
+    scene: str = Field(description="One paragraph of continuing narrative text (80-130 words).")
     next_action: str = Field(description="'Continue' to write more paragraphs, 'End' if scene is complete.")
 
 
@@ -102,9 +102,8 @@ class SharedScenePlannerService:
         
         self.writer_system_prompt = """You are the Scene Writer Agent for a classic narrative story. You write paragraphs AND decide when the scene is complete.
 
-⚙️ CRITICAL RULES:
+CRITICAL RULES:
 - Write ONLY one paragraph per turn (80-130 words)
-- Monitor word count STRICTLY - you must decide when to end the scene
 - Follow the Director's blueprint exactly (characters, location, emotional beats, style guide)
 - Do NOT invent new elements or resolve the scene prematurely
 - Create smooth, flowing narrative prose
@@ -114,14 +113,14 @@ WORD COUNT DISCIPLINE (HIGHEST PRIORITY):
 2. If current word count >= 90% of target → set next_action: "End"
 3. If current word count > 110% of target → FORCE next_action: "End" (override everything)
 4. If remaining words < 150 → This MUST be final paragraph, set next_action: "End"
-5. Only set next_action: "Continue" if word count < 80% of target AND major story beats remain
+5. Only set next_action: "Continue" if major story beats remain
 
 Output Format:
 - Valid JSON only, no markdown or extra text
 - 'next_action': MUST be exactly "Continue" or "End" (case-sensitive)
 - Check current word count before writing AND deciding next_action
 
-CRITICAL: Better to have a complete scene at target length than to exceed it by adding more content."""
+"""
 
         self.graph = StateGraph(SceneState)
         self.graph.add_node("Initializer", self._initializer)
@@ -257,48 +256,45 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             print(f"🛑 FORCE END: Scene at {current_word_count}/{target_word_count} words (120% exceeded)")
             state.next_node = "End"
             return state
-        
+        urgency_note = ""
         # Determine urgency level
         if remaining_words < 150:
-            urgency_note = f"\n\n🚨 CRITICAL: Only {remaining_words} words remaining! This MUST be the FINAL paragraph. Set next_action: 'End'."
+            urgency_note = f"\n\nCRITICAL: Only {remaining_words} words remaining! This MUST be the FINAL paragraph. Set next_action: 'End'."
         elif remaining_words < 300:
-            urgency_note = f"\n\n⚠️ WARNING: Only {remaining_words} words remaining. Prepare to end scene. Set next_action: 'End' after this paragraph."
+            pass
+            #urgency_note = f"\n\nWARNING: Only {remaining_words} words remaining. Prepare to end scene. Set next_action: 'End' after this paragraph."
         elif completion_pct >= 90:
-            urgency_note = f"\n\n⚠️ Scene at {completion_pct:.1f}% completion. Consider setting next_action: 'End' soon."
-        else:
-            urgency_note = ""
+            urgency_note = f"\n\nScene at {completion_pct:.1f}% completion. Consider setting next_action: 'End' soon."
 
         human_prompt = f"""
-╔═══════════════════════════════════════════════════════════╗
-║ WORD COUNT STATUS (CRITICAL - YOU DECIDE WHEN TO END)     ║
-╠═══════════════════════════════════════════════════════════╣
-║ Target Word Count:  {target_word_count:>5} words           ║
-║ Current Word Count: {current_word_count:>5} words          ║
-║ Remaining:          {remaining_words:>5} words             ║
-║ Progress:           {completion_pct:>5.1f}%                ║
-║ Iteration:          {state.iteration_count:>5}             ║
-╚═══════════════════════════════════════════════════════════╝
-{urgency_note}
-
-Director's Instructions (Blueprint):
+        Scene so far (continue from here):
+{scene_memory.scene_so_far if scene_memory.scene_so_far else "[Scene starting now]"}
+        
+        Director's Instructions (Blueprint):
 {scene_memory.DirectorInstructions}
 
-Scene so far (continue from here):
-{scene_memory.scene_so_far if scene_memory.scene_so_far else "[Scene starting now]"}
-
-DECISION RULES FOR next_action:
-1. Set 'End' if current_word_count >= {target_word_count} (at/over target)
-2. Set 'End' if current_word_count >= {int(target_word_count * 0.9)} (within 10%, acceptable)
-3. Set 'End' if remaining_words < 150 (not enough room for another paragraph)
-4. Set 'End' if iteration_count > 12 (prevent infinite loops)
-5. Set 'Continue' ONLY if current_word_count < {int(target_word_count * 0.8)} AND major story beats remain
+╔═══════════════════════════════════════════════════════════╗
+║ WORD COUNT STATUS (YOU DECIDE WHEN TO END)                ║
+╠═══════════════════════════════════════════════════════════╣
+║ Target Word Count:  {target_word_count:>5} words          ║
+║ Current Word Count: {current_word_count:>5} words         ║
+║ Remaining:          {remaining_words:>5} words            ║
+║ Progress:           {completion_pct:>5.1f}%               ║
+║ Iteration:          {state.iteration_count:>5}            ║
+╚═══════════════════════════════════════════════════════════╝
+{urgency_note}
 
 {self.writer_schema}
 
 Write the NEXT paragraph (80-130 words) and decide if scene should continue or end.
 Output ONLY valid JSON, no extra text or markdown.
 """
-
+# DECISION RULES FOR next_action:
+# 1. Set 'End' if current_word_count >= {target_word_count} (at/over target)
+# 2. Set 'End' if current_word_count >= {int(target_word_count * 0.9)} (within 10%, acceptable)
+# 3. Set 'End' if remaining_words < 150 (not enough room for another paragraph)
+# 4. Set 'End' if iteration_count > 12 (prevent infinite loops)
+# 5. Set 'Continue' ONLY if current_word_count < {int(target_word_count * 0.8)} AND major story beats remain
         try:
             timeout = 60.0
             llm_response, tokens = await asyncio.wait_for(

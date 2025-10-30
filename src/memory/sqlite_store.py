@@ -43,8 +43,6 @@ class SQLiteStore:
                     age INTEGER,
                     tier INTEGER,
                     monthly_word_count INTEGER DEFAULT 0,
-                    no_genre TEXT,
-                    no_themes TEXT,
                     stories TEXT DEFAULT '[]',
                     signup_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     last_reset_date TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
@@ -299,8 +297,7 @@ class SQLiteStore:
             row = await cursor.fetchone()
             return dict(row) if row else None
 
-    async def add_user(self, nickname: str, age: Optional[int], user_id: str, tier: int,
-                       no_genre: List[str] = [], no_themes: List[str] = [], stories: List[Dict] = None):
+    async def add_user(self, nickname: str, age: Optional[int], user_id: str, tier: int, stories: List[Dict] = None):
         stories = stories or []
         try:
             async with self._get_connection() as conn:
@@ -309,10 +306,9 @@ class SQLiteStore:
                     return {"status": "error", "message": f"❌ user_id '{user_id}' already exists!"}
 
                 await conn.execute("""
-                    INSERT INTO users (user_id, nickname, age, tier, no_genre, no_themes, stories)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                """, (user_id, nickname, age, tier,
-                      json.dumps(no_genre), json.dumps(no_themes), json.dumps(stories)))
+                    INSERT INTO users (user_id, nickname, age, tier, stories)
+                    VALUES (?, ?, ?, ?, ?)
+                """, (user_id, nickname, age, tier, json.dumps(stories)))
                 await conn.commit()
                 return {"status": "success", "user_id": user_id, "nickname": nickname}
         except aiosqlite.Error as e:
@@ -350,41 +346,42 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
     async def update_user(self, user_id: str, updates: Dict[str, Any]):
+        #print(f"\n[UPDATE_USER] user_id={user_id}, updates={updates}, db_path={self.db_path}")
         try:
             async with self._get_connection() as conn:
-                cursor = await conn.execute(
-                    "SELECT user_id FROM users WHERE user_id = ?",
-                    (user_id,)
-                )
-                row = await cursor.fetchone()
-                if not row:
-                    return {"status": "error", "message": f"❌ user_id '{user_id}' not found!"}
+                # Pre-check
+                pre = await conn.execute("SELECT * FROM users WHERE user_id = ?", (user_id,))
+                pre_row = await pre.fetchone()
+                #print(f"[PRE] User exists: {bool(pre_row)} | Data: {dict(pre_row) if pre_row else None}")
 
-                fields = []
-                values = []
-                for field in ["nickname", "age", "tier", "no_genre", "no_themes"]:
-                    if field in updates:
-                        if field in ["no_genre", "no_themes"]:
-                            values.append(json.dumps(updates[field]))
-                        else:
-                            values.append(updates[field])
-                        fields.append(f"{field} = ?")
+                allowed = {"nickname", "age", "tier"}
+                to_update = {k: v for k, v in updates.items() if k in allowed}
+                if not to_update:
+                    return {"status": "error", "message": "No valid fields"}
 
-                if not fields:
-                    return {"status": "error", "message": "❌ No valid fields provided for update"}
+                set_parts = [f"{k} = ?" for k in to_update]
+                values = list(to_update.values()) + [user_id]
+                query = f"UPDATE users SET {', '.join(set_parts)} WHERE user_id = ?"
 
-                query = f"""
-                    UPDATE users
-                    SET {', '.join(fields)}
-                    WHERE user_id = ?
-                """
-                values.append(user_id)
+                #print(f"[EXEC] {query} | {values}")
 
-                await conn.execute(query, values)
+                cursor = await conn.execute(query, values)
                 await conn.commit()
-                return {"status": "success", "message": f"User '{user_id}' updated successfully"}
-        except aiosqlite.Error as e:
-            return {"status": "error", "message": f"❌ Database error: {str(e)}"}
+                #print(f"[COMMIT] rowcount={cursor.rowcount}")
+
+                # Post-check
+                post = await conn.execute("SELECT nickname, age, tier FROM users WHERE user_id = ?", (user_id,))
+                post_row = await post.fetchone()
+                #print(f"[POST] Updated row: {dict(post_row) if post_row else None}")
+
+                if cursor.rowcount == 0:
+                    return {"status": "error", "message": "User not found or no changes"}
+                return {"status": "success", "updated": list(to_update.keys())}
+        except Exception as e:
+            print(f"[EXCEPTION update_user] {e}")
+            import traceback
+            traceback.print_exc()
+            return {"status": "error", "message": str(e)}
 
     async def delete_story(self, user_id: str, story_title: str, story_id: str):
         try:
@@ -446,8 +443,6 @@ class SQLiteStore:
                     return {"status": "error", "message": "❌ User not found"}
 
                 user_data = dict(row)
-                user_data["no_genre"] = json.loads(user_data["no_genre"]) if user_data["no_genre"] else []
-                user_data["no_themes"] = json.loads(user_data["no_themes"]) if user_data["no_themes"] else []
                 user_data["stories"] = json.loads(user_data["stories"]) if user_data["stories"] else []
 
                 return {"status": "success", "profile": user_data}
@@ -642,7 +637,7 @@ class SQLiteStore:
 
                     # Get shared story data
                     shared_data = await self._get_shared_story_data(story_id)
-
+                    story_progress = int((progress_row["story_word_count"]/shared_data["target_length"]) * 100)
                     story_data = {
                         "title": title,
                         "story_id": story_id,
@@ -665,6 +660,7 @@ class SQLiteStore:
                         "themes": [],
                         #"tone_temp": None,
                         "total_acts": 3,
+                        "story_progress": story_progress,
                         #"target_length": 0
                     }
 
@@ -814,17 +810,25 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
-    async def get_text(self, chapter_id: str) -> List[dict]:
+    async def get_text(self, chapter_id: str) -> Dict[str, Any]:
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                f"SELECT text FROM {self.table} WHERE user_id = ? AND story_id = ? AND chapter_id = ?",
+                f"SELECT text, metadata FROM {self.table} WHERE user_id = ? AND story_id = ? AND chapter_id = ?",
                 (self.user_id, self.story_id, chapter_id)
             )
             row = await cursor.fetchone()
             
             if row and row['text']:
-                return json.loads(row['text'])
-            return []
+                return {
+                    "text": json.loads(row['text']),
+                    "metadata": json.loads(row['metadata'] or '{}')
+                }
+        
+        # Return default empty structure if not found or text is empty
+        return {
+            "text": [],
+            "metadata": {}
+        }
     
     async def get_from_director_notes(self, metadata: dict):
         chapter_id = metadata.get("chapter_id", 0)

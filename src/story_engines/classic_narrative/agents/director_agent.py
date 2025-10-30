@@ -107,7 +107,7 @@ class Ingestor:
     def __init__(self, memory_system: StoryMemorySystem):
         self.memory = memory_system
 
-    async def ingest_scene(self, state: StoryState, scene_text: str, director_token_usage: dict, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
+    async def ingest_scene(self, state: StoryState, scene_text: str, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
         chars = await self.memory.get_long_term_characters()
         worlds = await self.memory.get_long_term_worlds()
         
@@ -153,10 +153,9 @@ World Names: {list(worlds.keys())}
                     "continue_scene_id": state.scene_id + 1, 
                     "story_word_count": state.story_word_count,
                     "chapter_word_count": state.current_chapter_word_count,
-                    "director_token_usage": director_token_usage,
+                    #"director_token_usage": director_token_usage,
                     "writer_token_usage": writer_token_usage
                 })
-                await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                 del system_prompt, human_prompt, new_word_count
                 return result
             else:
@@ -184,10 +183,10 @@ World Names: {list(worlds.keys())}
                         "continue_scene_id": state.scene_id + 1, 
                         "story_word_count": state.story_word_count,
                         "chapter_word_count": state.current_chapter_word_count,
-                        "director_token_usage": director_token_usage,
+                        #"director_token_usage": director_token_usage,
                         "writer_token_usage": writer_token_usage
                     })
-                    await self.memory.update_user_monthly_word_count(word_count=new_word_count)
+                    #await self.memory.update_user_monthly_word_count(word_count=new_word_count)
                     del system_prompt, human_prompt, new_word_count
                     return result
 
@@ -352,7 +351,7 @@ class DirectorGraph:
         
         def route_after_generate(state: StoryState):
             if state.next_action == "END":
-                return "story_complete"
+                return "END"
             if state.next_action == "ERROR":
                 return "error_termination"
             return "ingest_chapter"
@@ -362,11 +361,12 @@ class DirectorGraph:
             route_after_generate,
             {
                 "ingest_chapter": "ingest_chapter",
-                "story_complete": "story_complete",
+                "END": END,
                 "error_termination": "error_termination",
             }
         )
         
+        #self.graph.add_edge("generate_and_ingest", END)
         self.graph.add_edge("ingest_chapter", END)
         self.graph.add_edge("story_complete", END)
         self.graph.add_edge("error_termination", END)
@@ -403,6 +403,7 @@ class DirectorGraph:
                 metadata={
                     'type': 'act_plan',
                     'act_id': state.current_act_id,
+                    
                     'story_title': state.story_title
                 }
             )
@@ -414,7 +415,7 @@ class DirectorGraph:
             act_plan = json.loads(act_plan_json)
             chapter_outlines = act_plan.get('chapter_outlines', [])
             self.act_title = act_plan.get('act_title', 'Unknown')
-            
+            self.scene_chunk_callback({"type":"act_title", "message": self.act_title})
             for chapter_outline in chapter_outlines:
                 if chapter_outline.get('chapter_number') == state.current_chapter_id:
                     print(f"✅ Found chapter outline for chapter {state.current_chapter_id}")
@@ -607,40 +608,56 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
 
     async def director_node(self, state: StoryState) -> Dict:
         print(f"\n🎬 Director Node: Chapter {state.current_chapter_id}, Act {state.current_act_id}")
-        
         # Check if story is complete
         try:
-            act_plan_json = await self.memory.get_long_term_document(
-                metadata={
-                    'type': 'act_plan',
-                    'act_id': state.current_act_id,
-                    'story_title': state.story_title
-                }
-            )
-            if not act_plan_json:
+            len_acts_chapters = 0
+            # To get total chapter outlines length
+            try:
+                act_plan_json = await self.memory.get_long_term_document(
+                    metadata={'type': 'act_plan', 'act_id': state.current_act_id, 'story_title': state.story_title}
+                )
+                act_plan = json.loads(act_plan_json)
+                chapter_outlines = act_plan.get('chapter_outlines', [])
+                len_acts_chapters += len(chapter_outlines)
+            except:
                 state.error_message = f"No act plan found for act {state.current_act_id}"
                 state.next_action = "ERROR"
                 return state.__dict__
+            
+            if state.current_act_id > 1:
+                for i in range(1, state.current_act_id):
+                    try:
+                        act_plan_json = await self.memory.get_long_term_document(
+                            metadata={'type': 'act_plan', 'act_id': i, 'story_title': state.story_title}
+                        )
+                        act_plan = json.loads(act_plan_json)
+                        chapter_outlines = act_plan.get('chapter_outlines', [])
+                        len_acts_chapters += len(chapter_outlines)
+                    except:
+                        state.error_message = f"No act plan found for act {state.current_act_id}"
+                        state.next_action = "ERROR"
+                        return state.__dict__
 
-            act_plan = json.loads(act_plan_json)
-            chapter_outlines = act_plan.get('chapter_outlines', [])
-            if not chapter_outlines or state.current_chapter_id > len(chapter_outlines):
+            print("len_acts_chapters: ",len_acts_chapters)
+            if not chapter_outlines or state.current_chapter_id > len_acts_chapters:
                 # Check if there's a next act
-                next_act_plan = await self.memory.get_long_term_document(
-                    metadata={
-                        'type': 'act_plan',
-                        'act_id': state.current_act_id + 1,
-                        'story_title': state.story_title
-                    }
-                )
-                if not next_act_plan:
-                    print("✅ No more chapters or acts; story is complete")
-                    state.next_action = "END"
-                    return state.__dict__
-                else:
-                    state.current_act_id += 1
-                    state.current_chapter_id = 1
-                    print(f"🎬 Advancing to Act {state.current_act_id}, Chapter 1")
+                len_acts_chapters = 0
+                # next_act_plan = await self.memory.get_long_term_document(
+                #     metadata={
+                #         'type': 'act_plan',
+                #         'act_id': state.current_act_id + 1,
+                #         'story_title': state.story_title
+                #     }
+                # )
+                # if not next_act_plan:
+                print("✅ No more chapters or acts; story is complete")
+                state.next_action = "END"
+                return state.__dict__
+                # else:
+                #     state.current_act_id += 1
+                #     state.current_chapter_id = 1
+                #     print(f"🎬 Advancing to Act {state.current_act_id}, Chapter 1")
+
         except Exception as e:
             state.error_message = f"Error checking story completion: {str(e)}"
             state.next_action = "ERROR"
@@ -650,6 +667,7 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
         existing_plan = await self.memory.get_long_term_document(
             metadata={
                 "type": "chapter_plan",
+                "act_id": state.current_act_id,
                 "chapter_id": state.current_chapter_id,
                 "story_title": state.story_title
             }
@@ -697,8 +715,8 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             return state.__dict__
         
         self.current_chap_summary = await self.memory.search_episodic_scene_summary(
-            chapter_number=state.current_chapter_id,
-            summary_type="scene summary"
+            chapter_number=state.current_chapter_id - 1,
+            summary_type="chapter summary"
         )
         
         director_context = await self.memory.get_director_context(
@@ -728,7 +746,7 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
                 "story_title": state.story_title
             }
         )
-        
+        await self.memory.update_story_progress({"director_token_usage": self.director_token_usage})
         print(f"✅ Saved {len(scene_plans)} scene plans for chapter {state.current_chapter_id}")
         
         del director_context
@@ -815,7 +833,9 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
                 return state.__dict__
 
             print(f"✅ Scene {scene.scene_id} completed successfully")
-
+            new_word_count = StoryHelpers._count_words_split(scene_text)
+            await self.memory.update_user_monthly_word_count(word_count=new_word_count)
+            del new_word_count
             if redis_client:
                 try:
                     queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
@@ -838,7 +858,7 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
                         await asyncio.sleep(1.0)
 
                     if not user_choice:
-                        print("🛑 Ending story after this scene per user choice")
+                        #print("🛑 Ending story after this scene per user choice")
                         state.next_action = "END"
                         return state.__dict__
 
@@ -848,10 +868,11 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             self.writer_token_usage = writer_tokens
             del writer_tokens
             ingestor = Ingestor(self.memory)
+            self.scene_chunk_callback({"type":"status", "message": "saving story"})
             scene_bundle = await ingestor.ingest_scene(
                 state=state,
                 scene_text=scene_text,
-                director_token_usage=self.director_token_usage,
+                #director_token_usage=self.director_token_usage,
                 writer_token_usage=self.writer_token_usage
             )
             del ingestor
@@ -893,6 +914,7 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
         print(f"📚 Ingesting chapter {state.current_chapter_id}...")
         
         ingestor = Ingestor(self.memory)
+        self.scene_chunk_callback({"type":"status", "message": "saving chapter"})
         await ingestor.ingest_chapter(
             state=state,
             current_chap_summary=self.current_chap_summary

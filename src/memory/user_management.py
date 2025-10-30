@@ -1,12 +1,12 @@
 from typing import List, Dict, Optional, Any
 from .shared_resources import get_sqlite_store
 
-async def add_user(nickname: str, age: Optional[int], no_genre: List[str], no_themes: List[str], user_id: str, tier: int, stories: List[Dict] = None):
+async def add_user(nickname: str, age: Optional[int], user_id: str, tier: int, stories: List[Dict] = None):
     """
     Add a new user to the users table.
     """
     store = await get_sqlite_store(table="users", user_id=user_id, story_id=None)
-    result = await store.add_user(nickname=nickname, age=age, tier=tier, no_genre=no_genre, no_themes=no_themes,user_id=user_id, stories=stories)
+    result = await store.add_user(nickname=nickname, age=age, tier=tier, user_id=user_id, stories=stories)
     await store.close()
     return result
 

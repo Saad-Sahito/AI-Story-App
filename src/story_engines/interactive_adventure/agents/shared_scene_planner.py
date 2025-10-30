@@ -1,5 +1,3 @@
-# src/interactive_adventure/agents/shared_scene_planner.py
-
 import json
 import re
 import gc
@@ -20,11 +18,13 @@ class SceneMemory(BaseModel):
     DirectorInstructions: str = Field(description="Director's instructions for this scene.")
     ai_question: Optional[str] = Field(default="", description="Most recent decision point question, if any.")
     UserInput: Optional[str] = Field(default="", description="Latest user input choice, if any.")
-    scene_so_far_for_scene_planner: str = Field(default="", description="Accumulated scene text, questions, and user responses.")
+    scene_so_far: str = Field(default="", description="Accumulated scene text, questions, and user responses.")
     number_of_options: Optional[int] = Field(default=0, description="Number of options at the decision point.")
     scene_cluster: List = Field(default=[], description="Scene text, questions, and user choices as dicts.")
     story_id: Optional[str] = Field(default="", description="Story ID for this scene.")
     word_count: int = Field(default=0, description="Word count of the scene so far.")
+    questions_asked: List[str] = Field(default=[], description="List of all questions already asked to prevent duplicates.")
+    scene_texts_written: List[str] = Field(default=[], description="List of all scene texts already written to prevent duplicates.")
 
 
 class SceneState(BaseModel):
@@ -42,13 +42,14 @@ class SceneState(BaseModel):
     token_usage: dict = Field(default_factory=lambda: {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, description="Token usage tracking")
     target_length: int = Field(default=500, description="Target length for the story")
     scene_target_length: int = Field(default=500, description="Target length for the scene")
+    decision_in_progress: bool = Field(default=False, description="Flag to prevent duplicate decision handling")
 
     class Config:
         extra = "allow"
 
 
 class SceneWriterOutput(BaseModel):
-    scene: str = Field(description="One paragraph of narrative text (80-130 words).")
+    scene: str = Field(description="One paragraph of continuing narrative text (80-130 words).")
     question: str = Field(
         description='Decision prompt WITH options included. Format: "Prompt text (A) option (B) option (C) option". Empty string "" if no decision point.'
     )
@@ -79,7 +80,9 @@ class UserSceneContext:
         scene_memory = SceneMemory(
             DirectorInstructions=director_instructions.strip(),
             story_id=story_id,
-            word_count=0
+            word_count=0,
+            questions_asked=[],
+            scene_texts_written=[]
         )
         
         scene_state = SceneState(
@@ -92,7 +95,8 @@ class UserSceneContext:
             model=model,
             token_usage=token_usage,
             target_length=target_length,
-            scene_target_length=scene_target_length
+            scene_target_length=scene_target_length,
+            decision_in_progress=False
         )
         
         return cls(
@@ -111,13 +115,17 @@ class SharedScenePlannerService:
         # Cache static prompt components
         self.writer_schema = self.scene_writer_parser.get_format_instructions()
         
-        self.writer_system_prompt = """You are the Scene Writer Agent for an interactive story. You write paragraphs AND decide when the scene is complete.
+        self.writer_system_prompt = """You are the Scene Writer Agent for an interactive story. 
+        You write paragraphs AND decide when the scene is complete.
+        ZERO TOLERANCE FOR REPEATED TEXTS OR QUESTIONS. 
 
-⚙️ CRITICAL RULES:
+CRITICAL RULES:
 - Write ONLY one paragraph per turn (80-130 words)
-- Monitor word count STRICTLY - you must decide when to end the scene
+- You must decide when to end the scene
 - Follow the Director's blueprint exactly (characters, location, emotional beats, style guide)
-- If a decision point is specified AND word count allows, the question field MUST include the prompt text PLUS 2-4 labeled options in format: "(A) option text (B) option text (C) option text"
+- If a decision point is specified AND word count allows, the question field MUST include the question that contains 2-4 labeled options in format: "(A) option text (B) option text (C) option text"
+- IMPORTANT: Do NOT repeat scene text or decision points that have already been presented. Check the "Scene so far" section above - if you see "(The scene writer asked: ...)" followed by "(The user chose: ...)", that decision has already been handled. Move the story forward with NEW content.
+- Make the descision points meaningful to the story direction.
 - Do NOT invent new elements or resolve the scene prematurely
 
 WORD COUNT DISCIPLINE (HIGHEST PRIORITY):
@@ -131,10 +139,16 @@ DECISION POINT RULES:
 - If decision point pending AND word count < 80% of target → Continue writing
 - If word count >= 80% of target → Skip decision points and wrap up scene
 
+FORBIDDEN (DO NOT GENERATE):
+- Repeat/rephrase ANY prior text
+- Re-ask ANY prior questions
+- Recap/summarize past
+- Generic decisions
+- Decisions at >=80% word count
+
 QUESTION FIELD FORMAT:
 - If no decision point: question = ""
 - If decision point: question = "What do you do? (A) First option (B) Second option (C) Third option"
-- The question field MUST contain both the prompt AND the labeled options together
 - Do NOT put just the prompt without options
 - Do NOT put options in a separate field
 
@@ -144,7 +158,7 @@ Output Format:
 - 'next_action': MUST be exactly "Continue" or "End" (case-sensitive)
 - Check current word count before writing AND deciding next_action
 
-CRITICAL: Better to have a complete scene at target length than to exceed it by adding more content."""
+"""
         
         self.graph = StateGraph(SceneState)
         self.graph.add_node("Initializer", self._initializer)
@@ -158,9 +172,10 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             if getattr(state, "fatal", False) or getattr(state, "next_node", None) == "FATAL_ERROR":
                 return "FATAL_ERROR"
             
-            # Check if there's a pending decision
+            # Check if there's a pending decision (and not already in progress)
             scene_memory = state.scene_memory
-            if scene_memory and scene_memory.ai_question and scene_memory.ai_question.strip():
+            if (scene_memory and scene_memory.ai_question and scene_memory.ai_question.strip() 
+                and not state.decision_in_progress):
                 return "DecisionHandler"
             
             # Check writer's decision
@@ -212,6 +227,49 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
         traceback.print_exc()
         return state
 
+    def _is_duplicate_text(self, new_text: str, existing_texts: List[str], threshold: float = 0.85) -> bool:
+        """
+        Check if new_text is a duplicate of any existing text using similarity comparison.
+        
+        Args:
+            new_text: The new scene text to check
+            existing_texts: List of already written scene texts
+            threshold: Similarity threshold (0.0-1.0) - default 0.85 means 85% similar
+        
+        Returns:
+            True if duplicate found, False otherwise
+        """
+        if not new_text.strip() or not existing_texts:
+            return False
+        
+        new_text_normalized = new_text.strip().lower()
+        new_text_words = set(new_text_normalized.split())
+        
+        for existing_text in existing_texts:
+            existing_normalized = existing_text.strip().lower()
+            
+            # Exact match check
+            if new_text_normalized == existing_normalized:
+                print(f"🚫 EXACT DUPLICATE DETECTED")
+                return True
+            
+            # Similarity check using Jaccard similarity
+            existing_words = set(existing_normalized.split())
+            
+            if len(new_text_words) == 0 or len(existing_words) == 0:
+                continue
+                
+            intersection = len(new_text_words.intersection(existing_words))
+            union = len(new_text_words.union(existing_words))
+            
+            similarity = intersection / union if union > 0 else 0
+            
+            if similarity >= threshold:
+                print(f"🚫 SIMILAR DUPLICATE DETECTED (similarity: {similarity:.2%})")
+                return True
+        
+        return False
+
     async def run_scene(self, user_context: UserSceneContext, stop_event: asyncio.Event | None = None) -> Tuple[str, list, str, dict]:
         print(f"🎭 Starting run_scene for {user_context.user_id}/{user_context.story_id}")
         
@@ -221,7 +279,7 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             print(f"❌ Failed to set user_context_id: {e}")
             import traceback
             traceback.print_exc()
-            return "", [], f"EXCEPTION: {type(e).__name__}: {e}", user_context.scene_state.token_usage
+            return "", [], f"EXCEPTION: {type(e).__name__}: {e}", user_context.scene_state.token_usage, 0
 
         try:
             task = asyncio.create_task(
@@ -236,7 +294,7 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
                         await task
                     except asyncio.CancelledError:
                         print("✅ SceneGraph task cancelled cleanly")
-                    return "", [], "CANCELLED", user_context.scene_state.token_usage
+                    return "", [], "CANCELLED", user_context.scene_state.token_usage, 0
 
                 await asyncio.sleep(0.2)
 
@@ -254,28 +312,28 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             if getattr(result, "fatal", False) or next_node == "FATAL_ERROR":
                 fatal_msg = error_message or "Unknown fatal error"
                 print(f"❌ Scene aborted due to fatal error: {fatal_msg}")
-                return "", [], f"FATAL: {fatal_msg}", user_context.scene_state.token_usage
+                return "", [], f"FATAL: {fatal_msg}", user_context.scene_state.token_usage, 0
 
             if scene_memory is None:
                 print("⚠️ Warning: LangGraph returned with no scene_memory.")
-                return "", [], "EXCEPTION: No scene_memory returned", user_context.scene_state.token_usage
+                return "", [], "EXCEPTION: No scene_memory returned", user_context.scene_state.token_usage, 0
 
-            scene_so_far = getattr(scene_memory, "scene_so_far_for_scene_planner", "") if not isinstance(scene_memory, dict) else scene_memory.get("scene_so_far_for_scene_planner", "")
+            scene_so_far = getattr(scene_memory, "scene_so_far", "") if not isinstance(scene_memory, dict) else scene_memory.get("scene_so_far", "")
             scene_cluster = getattr(scene_memory, "scene_cluster", []) if not isinstance(scene_memory, dict) else scene_memory.get("scene_cluster", [])
-
+            scene_word_count = getattr(scene_memory, "word_count", 0) if not isinstance(scene_memory, dict) else scene_memory.get("word_count", 0)
             print("✅ Scene completed normally")
             print("SCENE WRITER Token usage: ", user_context.scene_state.token_usage)
 
-            return scene_so_far, scene_cluster, "SUCCESS", user_context.scene_state.token_usage
+            return scene_so_far, scene_cluster, "SUCCESS", user_context.scene_state.token_usage, scene_word_count
 
         except asyncio.CancelledError:
             print("🛑 SceneGraph CancelledError caught")
-            return "", [], "CANCELLED", user_context.scene_state.token_usage
+            return "", [], "CANCELLED", user_context.scene_state.token_usage, 0
         except Exception as e:
             print(f"❌ ERROR in run_scene: {e}")
             import traceback
             traceback.print_exc()
-            return "", [], f"EXCEPTION: {type(e).__name__}: {e}", user_context.scene_state.token_usage
+            return "", [], f"EXCEPTION: {type(e).__name__}: {e}", user_context.scene_state.token_usage, 0
         finally:
             print("🎭 SceneGraph stopped gracefully")
             gc.collect()
@@ -295,11 +353,19 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             print("🛑 DecisionHandler skipping because fatal flag is set.")
             return state
 
+        # Prevent re-entry
+        if state.decision_in_progress:
+            print("⚠️ DecisionHandler already in progress, skipping duplicate call")
+            state.next_node = "End"
+            return state
+        
+        state.decision_in_progress = True
         scene_memory: SceneMemory = state.scene_memory
         user_context_id = state.user_context_id
         
         if not scene_memory.ai_question or not scene_memory.ai_question.strip():
             print("⚠️ DecisionHandler called but no question pending")
+            state.decision_in_progress = False
             state.next_node = "End"
             return state
 
@@ -307,13 +373,18 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             from setup.shared_redis_pool import get_redis_client
             redis_client = await get_redis_client()
             queue_key = f"input_queue:{user_context_id}:{scene_memory.story_id}"
+            
+            current_question = scene_memory.ai_question.strip()
+            
             decision_payload = {
                 "type": "decision",
-                "question": scene_memory.ai_question.strip(),
+                "question": current_question,
                 "options": scene_memory.number_of_options,
                 "user_choice": ""
             }
             state.scene_chunk_callback(decision_payload)
+            print(f"📤 Sent decision to frontend: {current_question[:50]}...")
+            
             print(f"🔍 DEBUG: Waiting for user input from Redis queue {queue_key}")
             
             user_choice = None
@@ -328,20 +399,21 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
                 print(f"✅ Received user choice: {user_choice}")
                 scene_memory.scene_cluster.append({
                     "type": "decision",
-                    "question": scene_memory.ai_question.strip(),
+                    "question": current_question,
                     "options": scene_memory.number_of_options,
                     "user_choice": user_choice
                 })
                 scene_memory.UserInput = user_choice
-                scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {user_choice})\n"
+                scene_memory.scene_so_far += f"\n(The user chose: {user_choice})\n"
             else:
                 print(f"❌ TIMEOUT: No user input received within 600 seconds")
                 scene_memory.UserInput = "default_choice"
-                scene_memory.scene_so_far_for_scene_planner += "(No user input; continuing with default choice)\n"
+                scene_memory.scene_so_far += "\n(No user input; continuing with default choice)\n"
             
-            # Clear the question after handling
+            # CRITICAL: Clear the question and flag IMMEDIATELY after handling
             scene_memory.ai_question = ""
             scene_memory.number_of_options = 0
+            state.decision_in_progress = False
             
             # Check if scene should continue after decision
             target_word_count = state.scene_target_length
@@ -361,8 +433,10 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             import traceback
             traceback.print_exc()
             scene_memory.UserInput = "default_choice"
-            scene_memory.scene_so_far_for_scene_planner += "(No user input; continuing with default choice)\n"
+            scene_memory.scene_so_far += "\n(No user input; continuing with default choice)\n"
             scene_memory.ai_question = ""
+            scene_memory.number_of_options = 0
+            state.decision_in_progress = False
             state.next_node = "End"
             state.scene_memory = scene_memory
         
@@ -395,49 +469,52 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             state.next_node = "End"
             return state
         
+        urgency_note = ""
         # Determine urgency level
         if remaining_words < 150:
-            urgency_note = f"\n\n🚨 CRITICAL: Only {remaining_words} words remaining! This MUST be the FINAL paragraph. Set next_action: 'End'. Do NOT add decision points."
-        elif remaining_words < 300:
-            urgency_note = f"\n\n⚠️ WARNING: Only {remaining_words} words remaining. Prepare to end scene. Set next_action: 'End' after this paragraph."
+            urgency_note = f"\n\nCRITICAL: Only {remaining_words} words remaining! This MUST be the FINAL paragraph. Set next_action: 'End'. Do NOT add decision points."
         elif completion_pct >= 90:
-            urgency_note = f"\n\n⚠️ Scene at {completion_pct:.1f}% completion. Consider setting next_action: 'End' soon."
+            urgency_note = f"\n\nScene at {completion_pct:.1f}% completion. Consider setting next_action: 'End' soon."
+
+# Scene so far (continue from here, DO NOT REPEAT):
+# {scene_memory.scene_so_far if scene_memory.scene_so_far else "[Scene starting now]"}
+        if scene_memory.scene_so_far:
+            # Add a clear marker showing where new content should start
+            scene_context = f"""SCENE SO FAR (CONTINUE FROM END):
+{scene_memory.scene_so_far}
+
+        [ WRITE NEW CONTENT FROM THIS POINT - Everything above has already been written, including questions - DO NOT REPEAT ]
+        """
         else:
-            urgency_note = ""
-
+            scene_context = "[Scene starting now]"
         human_prompt = f"""
-    ╔════════════════════════════════════════════════════════════╗
-    ║ WORD COUNT STATUS (CRITICAL - YOU DECIDE WHEN TO END)     ║
-    ╠════════════════════════════════════════════════════════════╣
-    ║ Target Word Count:  {target_word_count:>5} words           ║
-    ║ Current Word Count: {current_word_count:>5} words          ║
-    ║ Remaining:          {remaining_words:>5} words             ║
-    ║ Progress:           {completion_pct:>5.1f}%                ║
-    ║ Iteration:          {state.iteration_count:>5}             ║
-    ╚════════════════════════════════════════════════════════════╝
-    {urgency_note}
+Director's Instructions (Blueprint):
+{scene_memory.DirectorInstructions}
 
-    Director's Instructions (Blueprint):
-    {scene_memory.DirectorInstructions}
 
-    Scene so far (continue from here):
-    {scene_memory.scene_so_far_for_scene_planner if scene_memory.scene_so_far_for_scene_planner else "[Scene starting now]"}
+{scene_context}
 
-    DECISION RULES FOR next_action:
-    1. Set 'End' if current_word_count >= {target_word_count} (at/over target)
-    2. Set 'End' if current_word_count >= {int(target_word_count * 0.9)} (within 10%, acceptable)
-    3. Set 'End' if remaining_words < 150 (not enough room for another paragraph)
-    4. Set 'End' if iteration_count > 12 (prevent infinite loops)
-    5. Set 'Continue' ONLY if current_word_count < {int(target_word_count * 0.8)} AND major story beats remain
+╔════════════════════════════════════════════════════════════╗
+║ WORD COUNT STATUS (YOU DECIDE WHEN TO END)                 ║
+╠════════════════════════════════════════════════════════════╣
+║ Target Word Count:  {target_word_count:>5} words           ║
+║ Current Word Count: {current_word_count:>5} words          ║
+║ Remaining:          {remaining_words:>5} words             ║
+║ Progress:           {completion_pct:>5.1f}%                ║
+║ Iteration:          {state.iteration_count:>5}             ║
+╚════════════════════════════════════════════════════════════╝
+{urgency_note}
 
-    {self.writer_schema}
+IMPORTANT: Do NOT repeat scene texts or decision points that have already been presented. Check the "Scene so far" section above - if you see "(The scene writer asked: ...)" followed by "(The user chose: ...)", that decision has already been handled. Move the story forward with NEW content.
 
-    Write the NEXT paragraph (80-130 words) and decide if scene should continue or end.
-    Output ONLY valid JSON, no extra text or markdown.
-    """
+{self.writer_schema}
+
+Write the NEXT paragraph (80-130 words) and decide if scene should continue or end.
+Output ONLY valid JSON, no extra text or markdown.
+"""
 
         try:
-            timeout = 60.0 if state.model in ["gpt-4", "large_model"] else 30.0
+            timeout = 60.0
             llm_response, tokens = await asyncio.wait_for(
                 writer_client(system_prompt=self.writer_system_prompt, human_prompt=human_prompt, llm_temp=state.llm_temp, model=state.model),
                 timeout=timeout
@@ -472,20 +549,42 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
                     number_of_options = 0
                     next_action = "End"
 
-            # Add previous user input if exists
-            if scene_memory.UserInput:
-                scene_memory.scene_so_far_for_scene_planner += f"(The user chose: {scene_memory.UserInput})\n"
-                scene_memory.UserInput = ""  # Clear after adding
+            # Check for duplicate scene text
+            if self._is_duplicate_text(scene_text, scene_memory.scene_texts_written):
+                print(f"🚫 REJECTED: LLM produced duplicate scene text")
+                print(f"   Duplicate text preview: {scene_text[:100]}...")
+                
+                # Don't add to scene_cluster or scene_so_far
+                # Don't send to frontend
+                # Don't update word count
+                
+                # Force the writer to try again if we haven't exceeded iteration limit
+                if state.iteration_count < 15:
+                    print("🔄 Forcing retry with Continue action")
+                    state.next_node = "Continue"
+                else:
+                    print("🛑 Max iterations reached, ending scene")
+                    state.next_node = "End"
+                
+                state.iteration_count += 1
+                del llm_response, clean_resp, tokens
+                gc.collect()
+                return state
 
             # Update word count and scene content
             new_word_count = StoryHelpers._count_words_split(scene_text)
             scene_memory.word_count += new_word_count
+            
+            # Add to tracking list BEFORE adding to scene_cluster
+            scene_memory.scene_texts_written.append(scene_text)
+            
+            # Add to scene_cluster
             scene_memory.scene_cluster.append({
                 "type": "text",
                 "scene_text": scene_text,
                 "word_count": new_word_count
             })
-            scene_memory.scene_so_far_for_scene_planner += scene_text + "\n"
+            scene_memory.scene_so_far += scene_text + "\n"
             
             print(f"📝 Written: {new_word_count} words | Total: {scene_memory.word_count}/{target_word_count} ({(scene_memory.word_count/target_word_count*100):.1f}%)")
             print(f"🎯 Writer decision: next_action='{next_action}'")
@@ -499,14 +598,21 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
                     print(f"⚠️ OVERRIDE: Changing 'Continue' to 'End' - at 90% of target")
                 next_action = "End"
 
-            # Handle decision points
-            if question_text.strip() and scene_memory.word_count < target_word_count * 0.8:
-                scene_memory.scene_so_far_for_scene_planner += f"(The scene writer asked: {question_text.strip()})\n"
-                scene_memory.ai_question = question_text.strip()
-                scene_memory.number_of_options = number_of_options if isinstance(number_of_options, int) and 2 <= number_of_options <= 4 else 2
-                print(f"❓ Decision point added: {number_of_options} options")
+            # Handle decision points - verify it's not a duplicate
+            if question_text.strip() and scene_memory.word_count < target_word_count * 0.9:
+                # Check if this exact question was already asked
+                if question_text.strip() not in scene_memory.questions_asked:
+                    scene_memory.scene_so_far += f"\n(The scene writer asked: {question_text.strip()})\n"
+                    scene_memory.ai_question = question_text.strip()
+                    scene_memory.questions_asked.append(question_text.strip())
+                    scene_memory.number_of_options = number_of_options if isinstance(number_of_options, int) and 2 <= number_of_options <= 4 else 2
+                    print(f"❓ Decision point added: {number_of_options} options")
+                else:
+                    print(f"🚫 REJECTED: LLM tried to repeat a previously asked question")
+                    scene_memory.ai_question = ""
+                    scene_memory.number_of_options = 0
             else:
-                if question_text.strip() and scene_memory.word_count >= target_word_count * 0.8:
+                if question_text.strip() and scene_memory.word_count >= target_word_count * 0.9:
                     print(f"⚠️ Skipping decision point - too close to word count target")
                 scene_memory.ai_question = ""
                 scene_memory.number_of_options = 0
@@ -515,7 +621,7 @@ CRITICAL: Better to have a complete scene at target length than to exceed it by 
             state.iteration_count += 1
             state.next_node = next_action
 
-            # Send text to frontend
+            # Send text to frontend (only if not duplicate)
             if user_context_id and state.scene_chunk_callback:
                 try:
                     state.scene_chunk_callback({

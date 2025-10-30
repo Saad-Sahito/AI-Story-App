@@ -44,7 +44,7 @@ async def cleanup_sessions_periodically():
     while True:
         try:
             await asyncio.sleep(3600)  # 1 hour
-            cleaned_count = mainsetup.cleanup_inactive_sessions()
+            cleaned_count = await mainsetup.cleanup_inactive_sessions()
             if cleaned_count > 0:
                 print(f"✅ Cleaned up {cleaned_count} inactive sessions")
         except asyncio.CancelledError:
@@ -437,8 +437,6 @@ class UserCreate(BaseModel):
     nickname: str
     age: int
     tier: int = 1
-    no_genre: List[str]
-    no_themes: List[str]
     stories: list = []
     user_id: str | None = None
 
@@ -457,8 +455,6 @@ async def api_add_user(user: UserCreate, request: Request):
         age=user.age,
         tier=user.tier,
         user_id=supabase_user_id,
-        no_genre=user.no_genre,
-        no_themes=user.no_themes,
         stories=user.stories
     )
     print(f"User added: {result}")
