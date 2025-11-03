@@ -1,4 +1,4 @@
-# src/classic_adventure/agents/director_agent.py
+# src/story_engines/classic_adventure/agents/director_agent.py
 
 import json
 import asyncio
@@ -51,20 +51,26 @@ class ScenePlan(BaseModel):
     word_count: int = Field(..., description="Target word count for the scene")
     style_guide: str = Field(..., description="prose_style, pov, tense, narrative_voice that the writer must follow")
 
-
 class DirectorOutput(BaseModel):
     scenes: List[ScenePlan] = Field(..., description="List of detailed scene plans for Scene Writer")
     action: Literal["generate_and_ingest", "END"] = Field(description="'generate_and_ingest' to continue, 'END' if story complete")
 
-
 director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
 
 
+class EntityDetails(BaseModel):
+    old_name: str = Field(description="Previous or current name of the character or world element")
+    new_name: str = Field(description="New name if changed, otherwise same as old_name")
+    details: str = Field(description="Scene-relevant summary details")
+
 class SceneBundle(BaseModel):
     story_summary: str = Field(description="Detailed summary of the scene")
-    character_details: Dict[str, str] = Field(description="Dictionary: {character_name: inline details}")
-    world_details: Dict[str, str] = Field(description="Dictionary: {world_element: inline details}")
-
+    character_details: Dict[str, EntityDetails] = Field(
+        description="Dictionary: {character_key: {old_name, new_name, details}}"
+    )
+    world_details: Dict[str, EntityDetails] = Field(
+        description="Dictionary: {world_key: {old_name, new_name, details}}"
+    )
 
 scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
 
@@ -79,7 +85,6 @@ class CharacterMemory(BaseModel):
     goals: Optional[str] = None
     status_changes: Optional[str] = None
 
-
 class WorldElementMemory(BaseModel):
     name: str
     chapter_id: str
@@ -89,12 +94,10 @@ class WorldElementMemory(BaseModel):
     events: Optional[str] = None
     connections: Union[Dict[str, str], str] = Field(default_factory=dict)
 
-
 class ChapterBundle(BaseModel):
     summary: str = Field(description="Detailed summary of the entire chapter")
     character_summary: Dict[str, CharacterMemory]
     world_summary: Dict[str, WorldElementMemory]
-
 
 chapter_parser = PydanticOutputParser(pydantic_object=ChapterBundle)
 
@@ -108,27 +111,33 @@ class Ingestor:
         self.memory = memory_system
 
     async def ingest_scene(self, state: StoryState, scene_text: str, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
-        chars = await self.memory.get_long_term_characters()
-        worlds = await self.memory.get_long_term_worlds()
+        chars = await self.memory.get_long_term_characters_names()
+        worlds = await self.memory.get_long_term_worlds_names()
         
         system_prompt = f"""
-You are the Scene Breakdown Agent. Extract structured info from the scene.
-Always include chapter and scene id inside individual character and world details.
-Make sure character and world names match the keys provided.
-If any need to be changed, create a new entry mentioning the previous name.
+You are the Scene Breakdown Agent. Extract structured information from the scene.
 
-Respond ONLY in JSON with this schema:
+Always include:
+- `chapter_id` and `scene_id` in each entity's details.
+- Both `old_name` and `new_name` fields for every character and world element:
+    - If no rename occurred, keep both the same.
+    - If renamed, set `old_name` to the previous name and `new_name` to the new one.
+
+Only include relevant character and world names that appear or are mentioned.
+If a name change occurs, clearly indicate it through old_name/new_name instead of creating extra keys.
+
+Respond ONLY in JSON matching this schema:
 {scene_parser.get_format_instructions()}
 """
-
+        
         human_prompt = f"""
 Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
 
 Scene:
 {scene_text}
 
-Character Names: {list(chars.keys())}
-World Names: {list(worlds.keys())}
+Character Names: {chars}
+World Names: {worlds}
 """
 
         for attempt in range(1, max_retries + 1):
@@ -205,8 +214,8 @@ World Names: {list(worlds.keys())}
     async def ingest_chapter(self, state: StoryState, current_chap_summary: str, max_retries: int = 3) -> Dict[str, Any]:
         print("Ingesting chapter...")
 
-        world_details = await self.memory.get_long_term_worlds()
-        char_details = await self.memory.get_long_term_characters()
+        world_details = await self.memory.get_long_term_recent_worlds(state.current_chapter_id)
+        char_details = await self.memory.get_long_term_recent_characters(state.current_chapter_id)
 
         system_prompt = f"""
 You are the Chapter Breakdown Agent.
@@ -460,11 +469,11 @@ You have received a chapter outline from the Act Plan. Your job is to break it i
 Chapter Outline:
 {json.dumps(chapter_outline, indent=2)}
 
-Story Context (Recent):
-{director_context}
-
-Story Style Guidelines:
+Story Style Guidelines (to be passed to scene writer):
 - POV: {story_seed.get('style_guide', {}).get('pov', 'Third-person')}
+- Prose Style: {story_seed.get('style_guide', {}).get('prose_style', '')}
+- Tense: {story_seed.get('style_guide', {}).get('tense', '')}
+- Narrative Voice: {story_seed.get('style_guide', {}).get('narrative_voice', '')}
 - Tone: {story_seed.get('tone', 'Balanced')}
 - Genre: {story_seed.get('genre', 'Fiction')}
 
@@ -507,9 +516,12 @@ Set action to "generate_and_ingest" unless the story is complete.
 
         human_prompt = f"""
 Chapter Number: {state.current_chapter_id}
-Chapter Title: {chapter_outline.get('chapter_title', 'Untitled Story')}
+Chapter Title: {chapter_outline.get('chapter_title', 'Untitled Chapter')}
 Chapter Goal: {chapter_outline.get('chapter_goal', 'Continue story')}
 Current Story Word Count: {state.story_word_count}
+
+Story Context (Recent):
+{director_context}
 
 Create {expected_scenes} scene plans that bring this chapter to life, with each scene targeting approximately {target_words_per_scene} words.
 """
@@ -714,12 +726,14 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             state.next_action = "ERROR"
             return state.__dict__
         
-        self.current_chap_summary = await self.memory.search_episodic_scene_summary(
+        self.current_chap_summary = await self.memory.search_single_episodic_story(
+            act_number=state.current_act_id,
             chapter_number=state.current_chapter_id - 1,
             summary_type="chapter summary"
         )
         
         director_context = await self.memory.get_director_context(
+            current_act_number=state.current_act_id,
             current_chapter_number=state.current_chapter_id,
             query=self.current_chap_summary if self.current_chap_summary else "",
             k=5
@@ -858,7 +872,6 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
                         await asyncio.sleep(1.0)
 
                     if not user_choice:
-                        #print("🛑 Ending story after this scene per user choice")
                         state.next_action = "END"
                         return state.__dict__
 
@@ -1023,64 +1036,3 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
         finally:
             print("🎬 DirectorGraph stopped gracefully")
 
-
-# ============================================================================
-# USAGE NOTES
-# ============================================================================
-
-"""
-Flow with Act-Based Director + Word Count Strictness:
-
-1. User starts story (or continues)
-   ↓
-2. WebSocket calls continue_story_generation()
-   - Checks if current act complete
-   - Plans next act if needed
-   - Updates current_act_id in progress
-   ↓
-3. DirectorGraph.run() starts
-   - Loads story progress (includes current_act_id)
-   - Initializes state with current_act_id
-   ↓
-4. director_node() executes
-   - Checks if story is complete (no more chapters/acts)
-   - Gets current act plan
-   - Extracts chapter outline for current chapter
-   - Converts chapter outline → scene plans WITH WORD COUNT TARGETS
-   - Distributes chapter word count evenly across scenes
-   - Returns scene plans or ERROR if failed
-   ↓
-5. generate_and_ingest_node() executes
-   - For each scene plan:
-     * Extracts scene target word count
-     * Passes to Scene Writer via shared scene planner
-     * Scene Writer enforces word count limits strictly
-   - Ingests each scene
-   - User can pause/continue between scenes
-   ↓
-6. ingest_chapter() executes
-   - Summarizes completed chapter
-   - Updates memory
-   - Increments chapter
-   ↓
-7. Loop back to director_node for next chapter
-   ↓
-8. On error: route to error_termination
-   ↓
-9. On story completion: route to story_complete
-
-Word Count Enforcement:
-- Chapter outlines specify target_word_count
-- Director calculates words-per-scene distribution
-- Each scene plan gets specific word_count target
-- Scene Writer receives scene_target_length parameter
-- Scene Planner checks progress against target
-- Circuit breakers force completion at 120% overage
-- Urgency warnings at 150/300 words remaining
-- Progress tracking sent to frontend
-
-Act Transition Logic (in continue_story_generation):
-- After chapter completion, check if act closure condition met
-- If yes: increment_act(), plan next act
-- If story complete: mark_story_complete()
-"""

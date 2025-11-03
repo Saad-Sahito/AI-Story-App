@@ -3,8 +3,10 @@ import json
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
-from src.llm_client.llm_client import author_client, utility_client, image_client
+from src.llm_client.llm_client import author_client, utility_client, image_client, ingestor_client
+from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
+import gc
 
 
 # ============================================================================
@@ -17,7 +19,7 @@ class StorySeed(BaseModel):
     premise: str = Field(..., description="Core story concept in 3-4 sentences")
     protagonist: Dict[str, str] = Field(
         ..., 
-        description="Main character with keys: name, core_trait, desire, fear"
+        description="Main character relevant description"
     )
     world_essentials: Dict[str, str] = Field(
         ...,
@@ -84,6 +86,8 @@ class ActPlan(BaseModel):
         description="Condition that signals this act is complete"
     )
 
+class ActSummary(BaseModel):
+    act_summary: str = Field(description="Detailed summary of the entire Act")
 
 # ============================================================================
 # OUTPUT PARSERS
@@ -91,7 +95,7 @@ class ActPlan(BaseModel):
 
 story_seed_parser = PydanticOutputParser(pydantic_object=StorySeed)
 act_plan_parser = PydanticOutputParser(pydantic_object=ActPlan)
-
+act_ingestor_parser = PydanticOutputParser(pydantic_object=ActSummary)
 
 # ============================================================================
 # STORY AUTHOR CLASS
@@ -156,54 +160,93 @@ class StoryAuthor:
         genres_str = ", ".join(genres)
         themes = user_context.get('Additional Themes', [''])
         themes_str = ", ".join(themes)
+        title = user_context.get('Title')
+        if title in [None, "None", "", "Untitled Story", "Unitled story", "untitled story", "Null", "NULL", "Nill", "NILL", "null", "nill"]:
+            title_str = """- title: Create a fitting Story Title for the Story"""
+        else:
+            title_str = f"""- title: Use "{user_context.get("Title")}" exactly as given"""
+        protagonist_specs = {
+            'name': user_context.get('protagonist_name'),
+            'age': user_context.get('protagonist_age'),
+            'gender': user_context.get('protagonist_gender'),
+            'archetype': user_context.get('protagonist_archetype'),
+            'core_trait': user_context.get('protagonist_core_trait'),
+            'background': user_context.get('protagonist_background'),
+            'desire': user_context.get('protagonist_desire'),
+            'fear': user_context.get('protagonist_fear'),
+            'relationships': user_context.get('protagonist_relationships'),
+            'physical description': user_context.get('protagonist_physical_description')
+        }
+
+        # Filter out None values
+        protagonist_specs = {k: v for k, v in protagonist_specs.items() if v}
+
+        # Build protagonist specification string
+        if protagonist_specs:
+            protagonist_spec_str = "\n".join([f"  - {k.replace('_', ' ').title()}: {v}" 
+                                            for k, v in protagonist_specs.items()])
+            protagonist_instruction = f"""- Protagonist Specifications (MUST USE):
+        {protagonist_spec_str}
+        For any unspecified traits, create details that complement the given specifications."""
+        else:
+            protagonist_instruction = "- Protagonist: Create from scratch (age-appropriate) Keep gender limited to male or female"
+
+        # Then update the system_prompt:
         system_prompt = f"""You are the Story Architect. Create a flexible story foundation for a classic narrative.
 
-Your goal: Provide a creative seed—NOT a rigid blueprint. This seed guides act planning, which happens progressively as the story unfolds.
+        Your goal: Provide a creative seed—NOT a rigid blueprint. This seed guides act planning, which happens progressively as the story unfolds.
 
-The user has specified:
-- POV: 'Third-person'
-- Tone: {user_context.get('Tone', 'Balanced')}
-- Genre: {genres_str}
-- Setting: {user_context.get('Setting', 'To be determined')}
-- Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
-- Themes: {themes_str}
-- Target Audience: {user_context.get('target_audience_age', 'General')} years old
-- Target Length: {target_length} words ({act_count} acts recommended)
+        The user has specified:
+        - POV: {user_context.get('POV', 'Third-person')}
+        - Tone: {user_context.get('Tone', 'Balanced')}
+        - Genre: {genres_str}
+        - Setting: {user_context.get('Setting', 'To be determined')}
+        - Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
+        - Themes: {themes_str}
+        - Target Audience: {user_context.get('target_audience_age', 'General')} years old
+        - Target Length: {target_length} words ({act_count} acts recommended)
+        {protagonist_instruction}
 
-Create a story foundation that:
-1. Respects ALL user specifications above (POV, tone, genre are fixed)
-2. Develops a premise that fits the setting and themes
-3. Creates a compelling protagonist appropriate for the target audience
-4. Establishes world rules that enable interesting conflict
-5. Identifies the central dramatic question
+        Create a story foundation that:
+        1. Respects ALL user specifications above (POV, tone, genre are FIXED)
+        2. STRICTLY follows any protagonist specifications provided - these are MANDATORY
+        3. Develops a premise that fits the setting, themes, and protagonist
+        4. For unspecified protagonist details, create age-appropriate traits that complement given specs
+        5. Establishes world rules that enable interesting conflict
+        6. Identifies the central dramatic question
 
-Output Structure:
-- title: Use "{user_context.get("Title", "Untitled Story")}" exactly as given
-- premise: 3-4 sentences establishing setup and conflict
-- protagonist: Dict with name, core_trait, desire, fear (age-appropriate for {user_context.get('target_audience_age', 'general')} audience)
-- world_essentials: Dict with setting (use user's setting), time_period, key_rule
-- central_conflict: What's at stake
-- themes: Use exactly if any: {themes}
-- genre: Use exactly: {genres}
-- tone: Use exactly: {user_context.get('Tone', 'Balanced')}
-- style_guide: Dict with prose_style (from Prose Style), pov (from POV), tense, narrative_voice
-- target_length: {target_length}
-- act_count: {act_count}
+        Output Structure:
+        {title_str}
+        - premise: 3-4 sentences establishing setup and conflict (featuring the specified protagonist)
+        - protagonist: Dict with name, age, gender, core_trait, desire, fear, background
+        * Use EXACT values for any user-specified protagonist details
+        * Generate only the missing details to complete the character
+        * Ensure all traits are age-appropriate for {user_context.get('target_audience_age', 'general')} audience
+        * Maintain internal consistency between specified and generated traits
+        - world_essentials: Dict with setting (use user's setting), time_period, key_rule
+        - central_conflict: What's at stake (must relate to protagonist's desire/fear)
+        - themes: Use exactly if any: {themes}
+        - genre: Use exactly: {genres}
+        - tone: Use exactly: {user_context.get('Tone', 'Balanced')}
+        - style_guide: Dict with prose_style (from Prose Style), pov (from POV), tense, narrative_voice
+        - target_length: {target_length}
+        - act_count: {act_count}
 
-Rules:
-- Strict adherence to user's POV, tone, genre, setting, prose style
-- Age-appropriate content for {user_context.get('target_audience_age', 'general')} year old audience
-- Be concise—this is a seed, not full planning
-- Focus on emotional core and world rules, not detailed plot
-- Internal consistency is critical
+        Rules:
+        - CRITICAL: User-specified protagonist details are MANDATORY and CANNOT be changed
+        - Strict adherence to user's POV, tone, genre, setting, prose style
+        - Age-appropriate content for {user_context.get('target_audience_age', 'general')} year old audience
+        - Be concise—this is a seed, not full planning
+        - Focus on emotional core and world rules, not detailed plot
+        - Internal consistency is critical (especially protagonist traits must align)
 
-{story_seed_parser.get_format_instructions()}
-"""
+        {story_seed_parser.get_format_instructions()}
+        """
+
         
         # Format user context for prompt
         human_prompt = f"""Create a story seed with these specifications:
 
-Title: {user_context.get('Title', 'Untitled')}
 Setting: {user_context.get('Setting', 'Create an appropriate setting')}
 Genre: {genres_str}
 POV: {user_context.get('POV', 'Third-person')}
@@ -225,6 +268,9 @@ Generate a compelling story foundation that brings these elements together."""
         # Parse into Pydantic model
         story_seed = story_seed_parser.parse(response.content.strip())
         
+        print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
+        return story_seed, tokens
+
         # # Store both original user context and parsed seed
         # await self.memory.add_long_term_document(
         #     text=json.dumps(user_context, indent=2),
@@ -241,10 +287,6 @@ Generate a compelling story foundation that brings these elements together."""
         #         "story_title": story_title
         #     }
         # )
-        
-        print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
-        return story_seed, tokens
-
 
     async def generate_blurb(self, story_seed: StorySeed) -> str:
         """
@@ -277,7 +319,7 @@ Title: {story_seed.title}
 Genre: {genres_str}
 Tone: {story_seed.tone}
 Premise: {story_seed.premise}
-Protagonist: {story_seed.protagonist['name']} - {story_seed.protagonist['core_trait']}
+Protagonist: {story_seed.protagonist}
 Central Conflict: {story_seed.central_conflict}
 Themes: {', '.join(story_seed.themes)}
 Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
@@ -434,7 +476,7 @@ Guidelines:
 
 This is Act 1. Your goals:
 - Establish the world and its rules (setting: {story_seed['world_essentials'].get('setting', 'TBD')})
-- Introduce {story_seed['protagonist']['name']} in their ordinary world
+- Introduce the protagonist in their ordinary world, from the description: {story_seed['protagonist']}
 - Present the inciting incident that disrupts normalcy
 - Set up the central conflict: {story_seed['central_conflict']}
 - End when the protagonist commits to their journey
@@ -475,6 +517,7 @@ Suggested chapter count: {max(2, act_1_target // 3000)} chapters (~3000 words ea
         latest_chapter = progress.get('latest_chapter_id', 0)
         
         rolling_summary = await self.memory.get_director_context(
+            current_act_number=act_number,
             current_chapter_number=latest_chapter + 1,  # +1 to include latest chapter
             query="",  # Empty query gets general context
             k=5  # Last 5 relevant pieces
@@ -502,10 +545,10 @@ Suggested chapter count: {max(2, act_1_target // 3000)} chapters (~3000 words ea
         return f"""Story Seed:
 {json.dumps(story_seed, indent=2)}
 
-Previous Acts Planned:
+Previous Acts Plans:
 {previous_acts_text}
 
-Story So Far (Rolling Summary):
+Story So Far (Rolling Summary) + Relevant Context:
 {rolling_summary}
 
 Current Story Stats:
@@ -559,6 +602,7 @@ Suggested chapter count: {suggested_chapters} chapters (~3000 words each)
         
         # Get rolling summary
         rolling_summary = await self.memory.get_director_context(
+            current_act_number=act_number,
             current_chapter_number=latest_chapter + 1,
             query="",
             k=5
@@ -619,3 +663,84 @@ Has the closure condition been met?"""
                 'confidence': 'low',
                 'next_action': 'CONTINUE_CURRENT_ACT'
             }
+        
+    async def ingest_act(self, current_act: int, chapters: int, story_title: str, max_retries: int = 3):
+        """
+        Ingests entire act using act chapter summaries.
+        """
+        text = self.memory.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=chapters)
+        combined_text = '\n'.join(text)
+
+        system_prompt = f"""
+You are the Act Breakdown Agent. Extract relevant and absolutely important info from the Act.
+Always include chapter number reference alongside relevant text.
+
+Respond ONLY in JSON with this schema:
+{act_ingestor_parser.get_format_instructions()}
+"""
+
+        human_prompt = f"""
+Current Act: {current_act}
+
+Act Chapters Summaries:
+{combined_text}
+"""
+
+        for attempt in range(1, max_retries + 1):
+            resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
+            raw_text = StoryHelpers._extract_content(resp)
+            clean_resp = StoryHelpers._strip_code_fences(raw_text)
+            del raw_text, resp
+            gc.collect()
+
+            if isinstance(clean_resp, dict):
+                clean_resp = json.dumps(clean_resp)
+
+            success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, ActSummary, act_ingestor_parser)
+            
+            if success:
+                await self.memory.add_post_act_bundle(
+                    scene_bundle=result,
+                    metadata={
+                        "act_id": current_act,
+                        "story_title": story_title,
+                        "type": "act summary"
+                    }
+                )
+                return "success"
+
+            else:
+                print(f"[Attempt {attempt}] Scene ingestion validation failed:", exc)
+            
+            try:
+                fixed_resp = await StoryHelpers._json_fixer(clean_resp)
+                fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
+                del fixed_resp, clean_resp
+                gc.collect()
+                
+                if isinstance(fixed_clean, dict):
+                    fixed_clean = json.dumps(fixed_clean)
+
+                success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, ActSummary, act_ingestor_parser)
+                del fixed_clean
+                
+                if success:
+                    await self.memory.add_post_act_bundle(
+                        scene_bundle=result,
+                        metadata={
+                            "act_id": current_act,
+                            "story_title": story_title,
+                            "type": "act summary"
+                        }
+                    )
+                    return "success"
+            except Exception as inner_e:
+                print(f"[Attempt {attempt}] json_fixer raised:", inner_e)
+            
+            if attempt < max_retries:
+                print(f"Retrying ingest_scene... (attempt {attempt+1})")
+                continue
+            else:
+                print("All retries exhausted; returning minimal structure.")
+                del system_prompt, human_prompt
+                return "failed"

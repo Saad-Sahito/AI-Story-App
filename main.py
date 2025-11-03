@@ -398,10 +398,9 @@ async def websocket_next_chapter(websocket: WebSocket, user_id: str, story_id: s
 @app.post("/stories/initialize_story")
 async def api_initialize_story(
     user_id: str = Query(...),
-    story_type: str = Query(...),
-    story_title: str = Query("")
+    story_type: str = Query(...)
 ):
-    return await mainsetup.initialize_story(user_id=user_id, story_title=story_title, story_type=story_type)
+    return await mainsetup.initialize_story(user_id=user_id, story_type=story_type)
 
 class ContinueStoryRequest(BaseModel):
     user_id: str

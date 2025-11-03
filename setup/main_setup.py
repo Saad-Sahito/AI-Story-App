@@ -4,20 +4,21 @@ from fastapi import WebSocket
 from setup.story_types.interactive_setup import get_shared_interactive_setup
 from setup.story_types.classic_setup import get_shared_classic_setup
 
-SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
+#SESSION_TTL = 3600  # 1 hour expiration for inactive sessions
 
 load_dotenv()
 
 
 
 class MainSetup:
-    async def initialize_story(self, user_id: str, story_type: str, story_title: str = ""):
+    
+    async def initialize_story(self, user_id: str, story_type: str):
         if story_type == 'interactive':
             setup = await get_shared_interactive_setup()
-            return await setup.initialize_story(user_id=user_id, story_title=story_title)
+            return await setup.initialize_story(user_id=user_id)
         elif story_type == 'classic':
             setup = await get_shared_classic_setup()
-            return await setup.initialize_story(user_id=user_id, story_title=story_title)
+            return await setup.initialize_story(user_id=user_id)
 
     async def continue_story(self, user_id: str, story_id: str, story_type: str) -> dict:
         if story_type == 'interactive':

@@ -159,14 +159,14 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
-            # model = "grok-4-fast-reasoning"
-            # llm = ChatXAI(xai_api_key=self.xai_api_key, temperature=llm_temp, model=model)
-            # token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
-            # usage_key = "token_usage"
-            model = "claude-haiku-4-5-20251001"
-            llm = ChatAnthropic(model_name=model, temperature=llm_temp, api_key=self.claude_api_key)
-            token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": None}
-            usage_key = "usage"
+            model = "grok-4-fast-reasoning"
+            llm = ChatXAI(xai_api_key=self.xai_api_key, temperature=llm_temp, model=model)
+            token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
+            usage_key = "token_usage"
+            # model = "claude-haiku-4-5-20251001"
+            # llm = ChatAnthropic(model_name=model, temperature=llm_temp, api_key=self.claude_api_key)
+            # token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": None}
+            # usage_key = "usage"
             async with self.sem:
                     response = await llm.ainvoke([
                         SystemMessage(content=system_prompt),
@@ -206,14 +206,14 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
-            # model = "grok-4-fast-reasoning"
-            # llm = ChatXAI(xai_api_key=self.xai_api_key, temperature=llm_temp, model=model)
-            # token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
-            # usage_key = "token_usage"
-            model = "claude-haiku-4-5-20251001"
-            llm = ChatAnthropic(model_name=model, temperature=llm_temp, api_key=self.claude_api_key)
-            token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": None}
-            usage_key = "usage"
+            model = "grok-4-fast-reasoning"
+            llm = ChatXAI(xai_api_key=self.xai_api_key, temperature=llm_temp, model=model)
+            token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
+            usage_key = "token_usage"
+            # model = "claude-haiku-4-5-20251001"
+            # llm = ChatAnthropic(model_name=model, temperature=llm_temp, api_key=self.claude_api_key)
+            # token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": None}
+            # usage_key = "usage"
             async with self.sem:
                     response = await llm.ainvoke([
                         SystemMessage(content=system_prompt),
@@ -254,13 +254,14 @@ class LLMClient:
         ):
         try:
             #model = "claude-3-haiku-20240307"
-            model = "openai/gpt-oss-120b"
+            
             #llm = ChatXAI(xai_api_key=self.xai_api_key, temperature=llm_temp, model=model)
             #token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
             #usage_key = "token_usage"
             # llm = ChatAnthropic(model_name=model, temperature=llm_temp, api_key=self.claude_api_key)
             # token_keys = {"prompt": "input_tokens", "completion": "output_tokens", "total": None}
             # usage_key = "usage"
+            model = "openai/gpt-oss-120b"
             llm = ChatGroq(model=model, temperature=llm_temp, groq_api_key=self.groq_api_key)
             token_keys = {"prompt": "prompt_tokens", "completion": "completion_tokens", "total": "total_tokens"}
             usage_key = "token_usage"

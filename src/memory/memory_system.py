@@ -149,7 +149,7 @@ class StoryMemorySystem:
                 if last_error:
                     raise last_error
 
-    # ---------- Episodic methods ----------
+    # ---------- Episodic Add methods ----------
     async def add_story_summary(self, summary: str, metadata: dict = None):
         await self.episodic_story.put(summary, metadata=metadata or {})
 
@@ -160,52 +160,80 @@ class StoryMemorySystem:
 
     async def add_world_summary(self, summary: Dict[str, dict], metadata: dict[str, Any] = None):
         await self.episodic_worlds.put_dict_replace_world(data=summary, metadata=metadata or {})
-    
+
     # ---------- Episodic search methods ----------
-    async def search_episodic_scene(self, query: str, metadata: dict = None, k: int = 5):
+    async def get_entire_act_chapters_for_act_ingestion_episodic_story(self, current_act: int, chapters: int = 0) -> list:
+        act_chapter_text = []
+        for i in range(1, chapters + 1):
+            text = await self.search_single_episodic_story(act_number=current_act, chapter_number=i, summary_type = "chapter summary")
+            text_extract = f"Chapter number: {i}\n{text[0]}"
+            act_chapter_text.append(text_extract)
+        return act_chapter_text
+
+
+    async def search_episodic_chars_worlds(self, query: str, metadata: dict = None, k: int = 5) -> dict:
         return {
-            #"story": await self.episodic_story.search(query, metadata=metadata, k=k),
             "characters": await self.episodic_characters.search(query, metadata=metadata, k=k),
             "worlds": await self.episodic_worlds.search(query, metadata=metadata, k=k),
         }
     
-    async def search_episodic_chapter(self, query: str, metadata: dict = None, k: int = 5):
+    async def search_multiple_episodic_story(self, query: str, metadata: dict = None, k: int = 5) -> str:
         hits = await self.episodic_story.search(query, metadata=metadata, k=k)
         return "\n".join(hits)
 
-    async def search_episodic_scene_summary(self, chapter_number, summary_type = "scene summary"):
-        hits = await self.episodic_story.get_chapter_content(metadata={"chapter_number":chapter_number, "type": summary_type})
+    async def search_single_episodic_story(self, act_number, chapter_number, summary_type = "scene summary"):
+        hits = await self.episodic_story.get_chapter_content(metadata={"act_number": act_number, "chapter_number": chapter_number, "type": summary_type})
         return "\n".join(hits)
 
-    async def get_char_world_context_for_scene(self, current_chapter_number, query: str, k: int = 10):
-        episodic_raw = await self.search_episodic_scene(
+    async def get_char_world_context_for_scene(self, current_chapter_number, query: str, k: int = 10) -> dict:
+        episodic_raw = await self.search_episodic_chars_worlds(
             query, metadata={"chapter_id": current_chapter_number}, k=k
         )
         return episodic_raw
 
-    async def get_director_context(self, current_chapter_number, query: str, k: int = 5):
+    async def get_director_context(self, current_act_number: int, current_chapter_number: int, query: str, k: int = 5) -> dict:
         char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, k)
-        chapters_context = await self.search_episodic_chapter(
+        chapters_context = await self.search_multiple_episodic_story(
             query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
         )
-        last_few_chapters = []
-        try:
-            last_few_chapters.append(await self.search_episodic_scene_summary(chapter_number=current_chapter_number-3, summary_type="chapter summary"))
-        except:
-            pass
-        try:
-            last_few_chapters.append(await self.search_episodic_scene_summary(chapter_number=current_chapter_number-2, summary_type="chapter summary"))
-        except:
-            pass
-        try:
-            last_few_chapters.append(await self.search_episodic_scene_summary(chapter_number=current_chapter_number-1, summary_type="chapter summary"))
-        except:
-            pass
+
+        prev_act_summaries = []
+        last_few_chapters_summaries = []
+
+        # --- Collect summaries of all previous acts (from 1 to current - 1) ---
+        if current_act_number > 1:
+            for act_num in range(1, current_act_number):
+                act_text = await self.search_single_episodic_story(
+                    act_number=act_num,
+                    summary_type="act summary"
+                )
+                if act_text:
+                    text_extract = f"Act number: {act_num}\n{act_text[0]}"
+                    prev_act_summaries.append(text_extract)
+                del act_text, text_extract
+
+        # --- Collect summaries for the past 3 chapters only (relative to current act) ---
+        for offset in range(3, 0, -1):  # 3, 2, 1
+            if current_chapter_number > offset:
+                chapt_num = current_chapter_number - offset
+                chapt_text = await self.search_single_episodic_story(
+                    act_number=current_act_number,
+                    chapter_number=chapt_num,
+                    summary_type="chapter summary"
+                )
+                if chapt_text:
+                    text_extract = f"Chapter number: {chapt_num}\n{chapt_text[0]}"
+                    last_few_chapters_summaries.append(text_extract)
+                del chapt_text, text_extract
+
+        chapters_combined_string = '\n'.join(last_few_chapters_summaries)
+        acts_combined_string = '\n'.join(prev_act_summaries)
         return {
-            "last few chapter summaries": last_few_chapters,
-            "characters": char_world_context.get("characters", []),
-            "worlds": char_world_context.get("worlds", []),
-            "chapters": chapters_context}
+            "previous act summaries":acts_combined_string,
+            "last few chapter summaries from current act": chapters_combined_string,
+            "relevant characters": char_world_context.get("characters", []),
+            "relevant worlds": char_world_context.get("worlds", []),
+            "relevant chapter context": chapters_context}
     
     # ---------- Long-Term (SQLite) operations ----------
     async def add_story_scene_cluster(self, text: list, metadata: dict[str, Any] = None):
@@ -225,13 +253,21 @@ class StoryMemorySystem:
         store = await self.long_term_story()
         return await store.get_text(chapter_id)
 
-    async def get_long_term_characters(self):
+    async def get_long_term_recent_characters(self, current_chapter_number):
         store = await self.long_term_characters_raw()
-        return await store.get_all_characters_or_worlds()
-
-    async def get_long_term_worlds(self):
+        return await store.get_all_characters_or_worlds_by_chapter(chapter_number=current_chapter_number)
+    
+    async def get_long_term_recent_worlds(self, current_chapter_number):
         store = await self.long_term_worlds_raw()
-        return await store.get_all_characters_or_worlds()
+        return await store.get_all_characters_or_worlds_by_chapter(chapter_number=current_chapter_number)
+
+    async def get_long_term_characters_names(self):
+        store = await self.long_term_characters_raw()
+        return await store.get_all_character_or_world_names()
+
+    async def get_long_term_worlds_names(self):
+        store = await self.long_term_worlds_raw()
+        return await store.get_all_character_or_world_names()
 
     # ---------- Director Docs (Long-Term) ----------
     async def add_long_term_document(self, text: Any, metadata: dict = None):
@@ -308,6 +344,10 @@ class StoryMemorySystem:
             await self.add_character_summary(parts["character_summary"], metadata)
         if parts.get("world_summary"):
             await self.add_world_summary(parts["world_summary"], metadata)
+
+    async def add_post_act_bundle(self, act_bundle: Dict[str, str], metadata: Dict[str, Any]):
+        if act_bundle.get("act_summary"):
+            await self.add_story_summary(act_bundle["act_summary"], metadata={"type": "act summary", "act_id": metadata.get("act_id", 0)})
 
     #---------------User Management------------------
     async def update_user_monthly_word_count(self, word_count):

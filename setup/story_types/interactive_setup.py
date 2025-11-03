@@ -345,10 +345,11 @@ class InteractiveStorySetup:
         await self._set_session(user_id, data=user_session)
         await self._set_session(user_id, story_id, data=story_session)
 
-    async def initialize_story(self, user_id: str, story_title: str = ""):
+    async def initialize_story(self, user_id: str):
         """Initialize a new story and store session in Redis."""
-        story_title_normalized = story_title.lower().replace(" ", "_").replace(":", "_")
-        story_id = f"{story_title_normalized}_{user_id}"
+        #story_title_normalized = story_title.lower().replace(" ", "_").replace(":", "_")
+        timestamp = int(time.time())  # current Unix timestamp, integer
+        story_id = f"{user_id}_{timestamp}"
         memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
         await memory_system.qdrant_initialize()
         await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
@@ -450,30 +451,29 @@ class InteractiveStorySetup:
                 if k not in ["story_id", "user_id", "story_type"]
             }
             
-            story_title = user_context.get("Title", "Untitled Story")
+            #story_title = user_context.get("Title", "Untitled Story")
             
             try:
                 # Step 1: Create story seed
-                print(f"🌱 Creating {story_type} story seed for: {story_title}")
+                print(f"🌱 Creating {story_type} story seed")
                 story_seed, seed_tokens = await story_author.create_story_seed(
                     user_context=user_context,
-                    #story_title=story_title,
                     model=model
                 )
 
                 # Step 2: Generate blurb
-                print(f"📖 Generating blurb for: {story_title}")
+                print(f"📖 Generating blurb for: {story_seed.title}")
                 blurb = await story_author.generate_blurb(story_seed)
                 
                 # Step 3: Generate cover image
-                print(f"🎨 Generating cover image for: {story_title}")
+                print(f"🎨 Generating cover image for: {story_seed.title}")
                 image_data_base64 = await story_author.generate_cover_image(blurb)
                 # Store both original user context and parsed seed
                 await story_data['memory_system'].add_long_term_document(
                     text=json.dumps(user_context, indent=2),
                     metadata={
                         "type": "story_user_context",
-                        "story_title": story_title
+                        "story_title": story_seed.title
                     }
                 )
                 
@@ -481,15 +481,15 @@ class InteractiveStorySetup:
                     text=story_seed.model_dump_json(indent=2),
                     metadata={
                         "type": "story_seed",
-                        "story_title": story_title
+                        "story_title": story_seed.title
                     }
                 )
                 
                 
                 # Step 4: Plan Act 1
-                print(f"📋 Planning Act 1 for: {story_title}")
+                print(f"📋 Planning Act 1 for: {story_seed.title}")
                 act_1_plan, act_tokens = await story_author.plan_act(
-                    story_title=story_title,
+                    story_title=story_seed.title,
                     act_number=1,
                     model=model
                 )
@@ -499,7 +499,7 @@ class InteractiveStorySetup:
                 tokens_usage["total_tokens"] = act_tokens["total_tokens"] + seed_tokens["total_tokens"]
 
                 story_info = {
-                    "title": story_title,
+                    "title": story_seed.title,
                     "act_count": story_seed.act_count,
                     "target_length": story_seed.target_length,
                     "act_1_title": act_1_plan.act_title,
@@ -509,7 +509,7 @@ class InteractiveStorySetup:
                     "story_type": "interactive"
                 }
                 del user_context
-                print(f"✅ Story initialization complete: {story_title}")
+                print(f"✅ Story initialization complete: {story_seed.title}")
                 print(f"   - Type: {story_type}")
                 print(f"   - Acts planned: {story_seed.act_count}")
                 print(f"   - Target length: {story_seed.target_length} words")
@@ -532,7 +532,7 @@ class InteractiveStorySetup:
                 metadata={
                     "latest_chapter_id": 1,
                     "continue_scene_id": 1,
-                    "story_title": story_title,
+                    "story_title": story_seed.title,
                     "story_word_count": 0,
                     "chapter_word_count": 0,
                     "current_act_id": 1,
@@ -568,7 +568,7 @@ class InteractiveStorySetup:
             from src.memory.user_management import append_story
             await append_story(
                 user_id=user_id, 
-                story_title=story_title, 
+                story_title=story_seed.title, 
                 story_id=story_id, 
                 story_type=story_type
             )
@@ -653,7 +653,14 @@ class InteractiveStorySetup:
             # Time to transition to next act
             
             story_author = StoryAuthor(memory_system=memory_system)
-            
+            ingested = await story_author.ingest_act(current_act=current_act, chapters=latest_chapter-1, story_title=story_title)
+            if ingested == "failed":
+                print("Act Ingestion failed.")
+                return {
+                    "status": "error",
+                    "message": f"Act ingestion failed, for act {current_act}",
+                    "current_act_id": current_act
+                }
             try:
                 act_plan, tokens = await story_author.plan_act(
                     story_title=story_title,

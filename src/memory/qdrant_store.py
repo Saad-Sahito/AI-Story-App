@@ -334,7 +334,7 @@ class QdrantStore:
         async with self.request_semaphore:
             vec = await self._embed_text(query)
 
-            # Base conditions (always required)
+            # --- Base required filters ---
             must_conds = [
                 models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                 models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
@@ -342,24 +342,34 @@ class QdrantStore:
             ]
             must_not_conds = []
 
-            # Optional filters based on metadata
+            # --- Dynamic metadata filters ---
             if metadata:
-                # If "type" exists — include it as a positive filter
-                if "type" in metadata:
+                type_val = metadata.get("type")
+                chapter_id = metadata.get("chapter_id")
+
+                # Positive filter for "type"
+                if type_val is not None:
                     must_conds.append(
-                        models.FieldCondition(key="type", match=models.MatchValue(value=metadata["type"]))
+                        models.FieldCondition(key="type", match=models.MatchValue(value=type_val))
                     )
 
-                # If "chapter_id" exists — exclude it (avoid current chapter)
-                if "chapter_id" in metadata:
+                # Exclude current and recent chapters if episodic story
+                if chapter_id is not None:
                     must_not_conds.append(
-                        models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_id"]))
+                        models.FieldCondition(key="chapter_id", match=models.MatchValue(value=chapter_id))
                     )
 
-            # Build final filter
+                    if self.namespace == "episodic_story":
+                        for offset in range(1, 4):  # Exclude last 3 chapters
+                            if chapter_id - offset >= 1:
+                                must_not_conds.append(
+                                    models.FieldCondition(key="chapter_id", match=models.MatchValue(value=chapter_id - offset))
+                                )
+
+            # --- Build final filter ---
             search_filter = models.Filter(must=must_conds, must_not=must_not_conds)
 
-            # Execute the vector search
+            # --- Execute the vector search ---
             results = await self.client.search(
                 collection_name=self.collection,
                 query_vector=vec,
@@ -367,24 +377,25 @@ class QdrantStore:
                 query_filter=search_filter
             )
 
-            # Format results
+            # --- Format and return results ---
             hits = []
+            ignore_keys = {"text", "value", "key", "user_id", "story_id", "namespace"}
+            if metadata:
+                ignore_keys.update(metadata.keys())
+
             for r in results:
                 payload = r.payload or {}
                 base_text = payload.get("value") or payload.get("text") or ""
                 merged = f"{payload.get('key', '')}: {base_text}" if "key" in payload else base_text
 
-                ignore_keys = {"text", "value", "key", "user_id", "story_id", "namespace"}
-                if metadata:
-                    ignore_keys.update(metadata.keys())
-
                 meta_parts = [f"{k}={v}" for k, v in payload.items() if k not in ignore_keys]
                 if meta_parts:
                     merged = f"{merged} | {'; '.join(meta_parts)}"
-                merged = f"{merged} (score={r.score:.3f})"
-                hits.append(merged)
+
+                hits.append(f"{merged} (score={r.score:.3f})")
 
             return hits
+
 
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
@@ -396,6 +407,7 @@ class QdrantStore:
             # Build base must conditions
             must_conds = [
                 models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_number"])),
+                models.FieldCondition(key="act_id", match=models.MatchValue(value=metadata["act_number"])),
                 models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                 models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                 models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),

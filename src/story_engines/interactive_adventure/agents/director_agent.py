@@ -17,7 +17,7 @@ from .shared_scene_planner import UserSceneContext
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import director_client, ingestor_client
 
-INTERACTIVE_DIRECTOR_AGENT = None
+#INTERACTIVE_DIRECTOR_AGENT = None
 
 
 # ============================================================================
@@ -36,18 +36,21 @@ class StoryState:
     next_action: str = ""
 
 
+class EntityDetails(BaseModel):
+    old_name: str = Field(description="Previous or current name of the character or world element")
+    new_name: str = Field(description="New name if changed, otherwise same as old_name")
+    details: str = Field(description="Scene-relevant summary details")
+
 class SceneBundle(BaseModel):
     story_summary: str = Field(description="Detailed summary of the scene")
-    character_details: Dict[str, str] = Field(
-        description="Dictionary: {character_name: inline details with chapter/scene number}"
+    character_details: Dict[str, EntityDetails] = Field(
+        description="Dictionary: {character_key: {old_name, new_name, details}}"
     )
-    world_details: Dict[str, str] = Field(
-        description="Dictionary: {world_element: inline details with chapter/scene number}"
+    world_details: Dict[str, EntityDetails] = Field(
+        description="Dictionary: {world_key: {old_name, new_name, details}}"
     )
-
 
 scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
-
 
 class CharacterMemory(BaseModel):
     name: str
@@ -96,7 +99,7 @@ scene_director_parser = PydanticOutputParser(pydantic_object=SceneDirectorOutput
 
 class ChapterDirectorOutput(BaseModel):
     instructions: str = Field(
-        description="Detailed chapter instructions including style guide for the story. Plain string, not nested dict. Leave empty if story should end NOW."
+        description="Detailed chapter instructions including style guide for the story. Plain string, not nested dict. Include chapter word count target as 'word count: ' Leave empty if story should end NOW."
     )
     action: Literal["continue", "END"] = Field(
         description="Output continue if story not complete, END otherwise"
@@ -116,19 +119,23 @@ class Ingestor:
 
     async def ingest_scene(self, state: StoryState, scene_text: str, scene_word_count: int, writer_token_usage: dict, max_retries: int = 3) -> Dict[str, str]:
         """Ingest scene text and extract structured JSON."""
-        chars = await self.memory.get_long_term_characters()
-        worlds = await self.memory.get_long_term_worlds()
-        
-        system_prompt = (
-            "You are the Scene Breakdown Agent. Extract structured info from the scene, "
-            "including indicated references to user choices, to prompted questions. Label the user as the character's name mentioned in the story text. "
-            "Always include chapter and scene id in character and world details. "
-            "Make sure character and world names match the keys provided. "
-            "If any need to be changed, create a new entry mentioning the previous name. "
-            "If not present, create new names as needed. "
-            "Respond ONLY in JSON with this schema: "
-            f"{scene_parser.get_format_instructions()}"
-        )
+        chars = await self.memory.get_long_term_characters_names()
+        worlds = await self.memory.get_long_term_worlds_names()
+        system_prompt = f"""
+You are the Scene Breakdown Agent. Extract structured information from the scene.
+Including indicated references to user choices, to prompted questions. Label the user as the character's name mentioned in the story text. 
+Always include:
+- `chapter_id` and `scene_id` in each entity's details.
+- Both `old_name` and `new_name` fields for every character and world element:
+    - If no rename occurred, keep both the same.
+    - If renamed, set `old_name` to the previous name and `new_name` to the new one.
+
+Only include relevant character and world names that appear or are mentioned.
+If a name change occurs, clearly indicate it through old_name/new_name instead of creating extra keys.
+
+Respond ONLY in JSON matching this schema:
+{scene_parser.get_format_instructions()}
+"""
 
         human_prompt = f"""
 Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
@@ -136,8 +143,8 @@ Current Chapter: {state.current_chapter_id}, Current Scene: {state.scene_id}
 Scene:
 {scene_text}
 
-Character Names: {list(chars.keys())}
-World Names: {list(worlds.keys())}
+Character Names: {chars}
+World Names: {worlds}
 """
         
         for attempt in range(1, max_retries + 1):
@@ -214,8 +221,8 @@ World Names: {list(worlds.keys())}
     async def ingest_chapter(self, state: StoryState, current_chap_summary: str, max_retries: int = 3) -> str:
         print("Ingesting chapter...")
 
-        world_details = await self.memory.get_long_term_worlds()
-        char_details = await self.memory.get_long_term_characters()
+        world_details = await self.memory.get_long_term_recent_worlds(state.current_chapter_id)
+        char_details = await self.memory.get_long_term_recent_characters(state.current_chapter_id)
 #         system_prompt = f"""
 # You are the Chapter Breakdown Agent.
 
@@ -234,7 +241,7 @@ World Names: {list(worlds.keys())}
         system_prompt = f"""
 You are the Chapter Breakdown Agent.
 
-Analyze the entire chapter text and generate a structured breakdown.
+Analyze the entire chapter text, keeping indicated references to user decisions wherever indicated and generate a structured breakdown.
 
 **OUTPUT MUST BE VALID JSON ONLY. NO MARKDOWN. NO EXPLANATION.**
 
@@ -660,7 +667,7 @@ Target Word Count for Act: {act_plan.get('target_word_count', 'N/A')}
         
         # Get recent context (last 2-3 chapters)
         if state.current_chapter_id > 1:
-            self.current_chap_summary = await self.memory.search_episodic_scene_summary(
+            self.current_chap_summary = await self.memory.search_single_episodic_story(
                 chapter_number=state.current_chapter_id - 1,
                 summary_type="chapter summary"
             )
@@ -679,9 +686,6 @@ You design a compact blueprint that the Scene Director will follow scene-by-scen
 
 Act Context:
 {act_context}
-
-Recent Story Context:
-{director_context}
 
 Use the story so far and the user's most recent choice to determine how this chapter should develop emotionally, thematically, and narratively.
 
@@ -716,6 +720,13 @@ Keep this concise but detailed enough that a Scene Director can plan and execute
 """
 
         context = f"""
+Recent Story Context:-
+context:
+{director_context}
+
+last chapter:
+{self.current_chap_summary}
+
 Current Chapter Number: {state.current_chapter_id}
 Current Act: {state.current_act_id}
 Story Word Count so far: {state.story_word_count}
@@ -812,7 +823,7 @@ Story Word Count so far: {state.story_word_count}
                         scenario = result.get("instructions")
                         action = result.get("action")
                         await self.memory.add_long_term_document(
-                            text=json.dumps(result.dict()),
+                            text=json.dumps(result.model_dump()),
                             metadata={
                                 "chapter_id": state.current_chapter_id,
                                 "act_id": state.current_act_id,
@@ -892,7 +903,7 @@ Story Word Count so far: {state.story_word_count}
             act_context = "Act context unavailable"
         
         # Get current chapter summary and director context
-        self.current_chap_summary = await self.memory.search_episodic_scene_summary(
+        self.current_chap_summary = await self.memory.search_single_episodic_story(
             chapter_number=state.current_chapter_id,
             summary_type="scene summary"
         )
@@ -948,6 +959,9 @@ Story Word Count so far: {state.story_word_count}
         print(f"   Scenes remaining: {scenes_remaining}")
         print(f"   → Target for THIS scene: {target_scene_word_count} words")
 
+        story_seed = await self.memory.get_long_term_document(
+            metadata={'type': 'story_seed', 'story_title': state.story_title}
+        )
         system_prompt = f"""You are the Scene Director for an interactive story.
     You work under a Chapter Blueprint that defines the chapter's purpose, emotional arc, and closure condition.
 
@@ -979,19 +993,28 @@ Story Word Count so far: {state.story_word_count}
     - Prioritize essential story beats over lengthy descriptions
     - If a decision point would exceed word count, save it for next scene
 
+    Story Style Guidelines (to be passed to scene writer):
+    - POV: {story_seed.get('style_guide', {}).get('pov', 'Third-person')}
+    - Prose Style: {story_seed.get('style_guide', {}).get('prose_style', '')}
+    - Tense: {story_seed.get('style_guide', {}).get('tense', '')}
+    - Narrative Voice: {story_seed.get('style_guide', {}).get('narrative_voice', '')}
+    - Tone: {story_seed.get('tone', 'Balanced')}
+    - Genre: {story_seed.get('genre', 'Fiction')}
+
     Your output must be in JSON format with:
     - instructions: A string containing:
-    - chapter_id: {state.current_chapter_id}
-    - scene_id: {state.scene_id}
-    - recap - A short recap of events so far relevant to this scene (max 100 words)
-    - characters - Detailed character list with traits, motivations, and current emotions
-    - detailed_scene_blueprint - A numbered, beat-by-beat breakdown of the scene's structure (actions, dialogue, setting, etc.)
-        * Keep blueprint CONCISE - this scene has only {target_scene_word_count} words to work with
-        * Each beat should be 80-130 words of prose
-    - user_decision_points - 1 or more explicit decision moments (dialogue or actions) that the Scene Writer must present as choices
-        * ONLY include if word count allows (current words + 150 < {target_scene_word_count})
-    - screenplay_notes - Strict creative constraints (e.g., 'include one metaphor about light and shadow')
-    
+        - chapter_id: {state.current_chapter_id}
+        - scene_id: {state.scene_id}
+        - recap - A short recap of events so far relevant to this scene (max 100 words)
+        - narrative style guide - Relevant guide prose for this scene
+        - characters - Detailed character list with traits, motivations, and current emotions
+        - detailed_scene_blueprint - A numbered, beat-by-beat breakdown of the scene's structure (actions, dialogue, setting, etc.)
+            * Keep blueprint CONCISE - this scene has only {target_scene_word_count} words to work with
+            * Each beat should be 80-130 words of prose
+        - user_decision_points - 1 or more explicit decision moments (dialogue or actions) that the Scene Writer must present as choices
+            * ONLY include if word count allows (current words + 150 < {target_scene_word_count})
+        - screenplay_notes - Strict creative constraints (e.g., 'include one metaphor about light and shadow')
+        
     - target_scene_word_count: {target_scene_word_count} (THIS IS MANDATORY - Scene Writer will enforce this strictly)
 
     - action: 'generate_and_ingest' to continue or 'END' if the chapter closure_condition is fulfilled.
@@ -1013,7 +1036,7 @@ Story Word Count so far: {state.story_word_count}
         context = f"""
     Chapter Number: {state.current_chapter_id}
     Scene Number: {state.scene_id}
-    Act: {state.current_act_id}
+    Act Number: {state.current_act_id}
 
     Chapter Blueprint:
     {chapter_plan_text}

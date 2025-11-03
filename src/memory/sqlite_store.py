@@ -75,7 +75,9 @@ class SQLiteStore:
                     story_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     details TEXT,
-                    metadata TEXT,
+                    chapter_id INTEGER NOT NULL,
+                    act_id INTEGER NOT NULL,
+                    scene_id INTEGER NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id, name)
@@ -89,7 +91,9 @@ class SQLiteStore:
                     story_id TEXT NOT NULL,
                     name TEXT NOT NULL,
                     details TEXT,
-                    metadata TEXT,
+                    chapter_id INTEGER NOT NULL,
+                    act_id INTEGER NOT NULL,
+                    scene_id INTEGER NOT NULL,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id, name)
@@ -779,36 +783,103 @@ class SQLiteStore:
                 ))
                 await conn.commit()
 
-    async def put_characters_or_world(self, details_dict: Dict[str, str], metadata: Dict[str, Any]):
+    async def put_characters_or_world(self, details_dict: Dict[str, Any], metadata: Dict[str, Any]):
         async with self._get_connection() as conn:
-            for name, details in details_dict.items():
-                cursor = await conn.execute(
-                    f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
-                    (self.user_id, self.story_id, name)
-                )
-                row = await cursor.fetchone()
-                old_details = row['details'] if row else ""
-                
-                if isinstance(details, dict):
-                    details = " ".join(f"{k}: {v}" for k, v in details.items())
-                
-                new_details = (old_details + " " + details).strip()
-                
-                await conn.execute(f"""
-                    INSERT INTO {self.table} (user_id, story_id, name, details, metadata)
-                    VALUES (?, ?, ?, ?, ?)
-                    ON CONFLICT(user_id, story_id, name) DO UPDATE SET
-                    details = excluded.details,
-                    metadata = excluded.metadata,
-                    updated_at = CURRENT_TIMESTAMP
-                """, (
-                    self.user_id,
-                    self.story_id,
-                    name,
-                    new_details,
-                    json.dumps(metadata)
-                ))
-                await conn.commit()
+            for _, entry in details_dict.items():
+                old_name = entry.get("old_name")
+                new_name = entry.get("new_name")
+                details = entry.get("details", "")
+
+                act_id = metadata.get("act_id", 0)
+                chapter_id = metadata.get("chapter_id", 0)
+                scene_id = metadata.get("scene_id", 0)
+
+                # --- Case 1: Renamed ---
+                if old_name != new_name:
+                    # Fetch old details (if any)
+                    cursor = await conn.execute(
+                        f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
+                        (self.user_id, self.story_id, old_name)
+                    )
+                    old_row = await cursor.fetchone()
+                    old_details = old_row['details'] if old_row else ""
+
+                    # Fetch new details (if already exists)
+                    cursor = await conn.execute(
+                        f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
+                        (self.user_id, self.story_id, new_name)
+                    )
+                    new_row = await cursor.fetchone()
+                    existing_new_details = new_row['details'] if new_row else ""
+
+                    # Merge all three sources
+                    merged_details = " ".join(
+                        part.strip() for part in [old_details, existing_new_details, details] if part
+                    )
+
+                    # Delete old record (rename migration)
+                    await conn.execute(
+                        f"DELETE FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
+                        (self.user_id, self.story_id, old_name)
+                    )
+
+                    # Upsert merged under new name
+                    await conn.execute(f"""
+                        INSERT INTO {self.table} 
+                        (user_id, story_id, name, details, act_id, chapter_id, scene_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, story_id, name) DO UPDATE SET
+                            details = excluded.details,
+                            act_id = excluded.act_id,
+                            chapter_id = excluded.chapter_id,
+                            scene_id = excluded.scene_id,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (
+                        self.user_id,
+                        self.story_id,
+                        new_name,
+                        merged_details,
+                        act_id,
+                        chapter_id,
+                        scene_id
+                    ))
+
+                # --- Case 2: Same name, just append ---
+                else:
+                    cursor = await conn.execute(
+                        f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
+                        (self.user_id, self.story_id, new_name)
+                    )
+                    row = await cursor.fetchone()
+                    old_details = row['details'] if row else ""
+
+                    new_details = " ".join(
+                        part.strip() for part in [old_details, details] if part
+                    )
+
+                    await conn.execute(f"""
+                        INSERT INTO {self.table} 
+                        (user_id, story_id, name, details, act_id, chapter_id, scene_id)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                        ON CONFLICT(user_id, story_id, name) DO UPDATE SET
+                            details = excluded.details,
+                            act_id = excluded.act_id,
+                            chapter_id = excluded.chapter_id,
+                            scene_id = excluded.scene_id,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (
+                        self.user_id,
+                        self.story_id,
+                        new_name,
+                        new_details,
+                        act_id,
+                        chapter_id,
+                        scene_id
+                    ))
+
+            await conn.commit()
+
+
 
     async def get_text(self, chapter_id: str) -> Dict[str, Any]:
         async with self._get_connection() as conn:
@@ -1215,18 +1286,41 @@ class SQLiteStore:
     async def get_character_or_world(self, name: str) -> Optional[Dict[str, Any]]:
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                f"SELECT name, details, metadata FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
+                f"""
+                SELECT name, details, act_id, chapter_id, scene_id
+                FROM {self.table}
+                WHERE user_id = ? AND story_id = ? AND name = ?
+                """,
                 (self.user_id, self.story_id, name)
             )
             row = await cursor.fetchone()
-            
+
             if row:
                 return {
                     "name": row["name"],
                     "details": row["details"],
-                    "metadata": json.loads(row["metadata"]) if row["metadata"] else {}
+                    "act_id": row["act_id"],
+                    "chapter_id": row["chapter_id"],
+                    "scene_id": row["scene_id"]
                 }
+
             return None
+
+    async def get_all_characters_or_worlds_by_chapter(self, chapter_number: int) -> Dict[str, str]:
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT name, details
+                FROM {self.table}
+                WHERE user_id = ? AND story_id = ? AND chapter_id = ?
+                """,
+                (self.user_id, self.story_id, chapter_number)
+            )
+            rows = await cursor.fetchall()
+
+            # Return dictionary mapping name → details
+            return {row["name"]: row["details"] for row in rows} if rows else {}
+
 
     async def get_all_characters_or_worlds(self) -> Dict[str, Any]:
         async with self._get_connection() as conn:
@@ -1236,6 +1330,20 @@ class SQLiteStore:
             )
             rows = await cursor.fetchall()
             return {row["name"]: row["details"] for row in rows}
+    
+    async def get_all_character_or_world_names(self) -> List[str]:
+        async with self._get_connection() as conn:
+            cursor = await conn.execute(
+                f"""
+                SELECT name 
+                FROM {self.table}
+                WHERE user_id = ? AND story_id = ?
+                """,
+                (self.user_id, self.story_id)
+            )
+            rows = await cursor.fetchall()
+            return [row["name"] for row in rows] if rows else []
+
 
     async def close(self):
         pass
