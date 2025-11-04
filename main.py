@@ -427,9 +427,13 @@ async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapte
 async def api_put_story_public(user_id: str, story_id: str, public: bool = True):
     return await update_user_story_public_status(user_id=user_id, story_id=story_id, public=public)
 
+
+class ImageRequest(BaseModel):
+    story_type: str
+
 @app.post("/stories/image-gen/{user_id}/{story_id}")
-async def api_gen_story_image_cover(user_id: str, story_id: str, story_type: str):
-    return await mainsetup.get_book_cover_image(user_id=user_id, story_id=story_id, story_type=story_type)
+async def api_gen_story_image_cover(user_id: str, story_id: str, request_body: ImageRequest):
+    return await mainsetup.get_book_cover_image(user_id=user_id, story_id=story_id, story_type=request_body.story_type)
 
 #-----------------User Session Management Routes--------------------------
 @app.patch("/users/{user_id}/session")

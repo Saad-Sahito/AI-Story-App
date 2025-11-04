@@ -101,7 +101,7 @@ class LLMClient:
                 output = await loop.run_in_executor(
                     None,
                     lambda: replicate.run(
-                        "ideogram-ai/ideogram-v3-turbo",
+                        "stability-ai/stable-diffusion-3.5-medium",
                         input={
                             "prompt": prompt,
                             #"num_outputs": 1,  # Match DALL-E's n=1
@@ -110,9 +110,9 @@ class LLMClient:
                             # "width": 1024,
                             #"num_inference_steps": 4,  # Fast inference for schnell
                             #"guidance_scale": 7.5,    # Default for FLUX
-                            #"negative_prompt": "text, typography, letters, title, logo, signature, watermark, words, book object, frame, collage"
+                            "negative_prompt": "text, typography, letters, title, logo, signature, watermark, words, book object, frame, collage",
 
-                            #"output_format": "png"    # Ensure PNG output
+                            "output_format": "png"    # Ensure PNG output
                         }
                     )
                 )

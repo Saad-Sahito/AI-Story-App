@@ -878,14 +878,14 @@ Story Word Count so far: {state.story_word_count}
         print(f"\n🎬 Scene Director: Scene {state.scene_id}, Chapter {state.current_chapter_id}, Act {state.current_act_id}")
 
         # Ensure user monthly word count compatibility
-        monthly_wc_data = self.memory.get_monthly_word_count()
-        if monthly_wc_data['tier'] == 1:
-            if monthly_wc_data['monthly_word_count'] >= 100000:
+        monthly_wc_data = await self.memory.get_monthly_word_count()
+        if monthly_wc_data.get('tier') == 1:
+            if monthly_wc_data.get('monthly_word_count')  >= 100000:
                 status="User monthly word count limit reached for tier 'free'"
                 state.next_action = "ERROR"
                 raise RuntimeError(status)
-        elif monthly_wc_data['tier'] == 2:
-            if monthly_wc_data['monthly_word_count'] >= 200000:
+        elif monthly_wc_data.get('tier') == 2:
+            if monthly_wc_data.get('monthly_word_count')  >= 200000:
                 status="User monthly word count limit reached for tier 'scribe'"
                 state.next_action = "ERROR"
                 raise RuntimeError(status)

@@ -176,7 +176,7 @@ class StoryAuthor:
         {protagonist_spec_str}
         For any unspecified traits, create details that complement the given specifications."""
         else:
-            protagonist_instruction = "- Protagonist: Create from scratch (age-appropriate) Keep gender limited to male or female"
+            protagonist_instruction = "- Protagonist: Create from scratch (age-appropriate), keep gender limited to male or female"
 
         # Then update the system_prompt:
         system_prompt = f"""

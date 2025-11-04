@@ -1,6 +1,7 @@
 import aiosqlite
 import json
 import asyncio
+import ast
 import base64
 from datetime import datetime, timedelta, UTC
 from typing import Dict, Any, Optional, List
@@ -497,7 +498,7 @@ class SQLiteStore:
                 return {
                     # "status": "success",
                     "tier": row["tier"],
-                    "word_count": row["monthly_word_count"],
+                    "monthly_word_count": row["monthly_word_count"],
                     "last_reset_date": row["last_reset_date"]
                 }
 
@@ -1349,6 +1350,7 @@ class SQLiteStore:
     async def close(self):
         pass
 
+#----------- Analytics Only Calls --------------
     async def get_all_users(self):
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM users")
@@ -1377,13 +1379,22 @@ class SQLiteStore:
         async with self._get_connection() as conn:
             cursor = await conn.execute("SELECT * FROM director_notes")
             rows = await cursor.fetchall()
-            return [dict(row) for row in rows]
+            notes = [dict(row) for row in rows]
+            for note in notes:
+                try:
+                    note['text'] = json.loads(note['text'])
+                except json.JSONDecodeError:
+                    try:
+                        note['text'] = ast.literal_eval(note['text'])
+                    except (ValueError, SyntaxError):
+                        pass  # leave as string if both fail
+            return notes
 
     async def get_all_story_progress(self):
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
                 SELECT id, user_id, story_id, current_act_id, latest_chapter_id, 
-                       continue_scene_id, word_count, complete, author_token_usage, director_token_usage, writer_token_usage, 
+                       continue_scene_id, story_word_count, complete, author_token_usage, director_token_usage, writer_token_usage, 
                        created_at, updated_at
                 FROM story_progress
             """)
@@ -1426,6 +1437,7 @@ class SQLiteStore:
             "feedback": feedback
         }
 
+# ---------- Feedback --------------------
     async def insert_feedback(self, feedback: Dict[str, Any]):
         try:
             async with self._get_connection() as conn:

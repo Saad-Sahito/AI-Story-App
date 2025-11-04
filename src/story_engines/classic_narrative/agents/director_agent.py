@@ -798,15 +798,15 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
 
         for scene_dict in scenes_list:
             # Ensure user monthly word count compatibility
-            monthly_wc_data = self.memory.get_monthly_word_count()
-            if monthly_wc_data['tier'] == 1:
-                if monthly_wc_data['monthly_word_count'] >= 100000:
+            monthly_wc_data = await self.memory.get_monthly_word_count()
+            if monthly_wc_data.get('tier') == 1:
+                if monthly_wc_data.get('monthly_word_count')  >= 100000:
                     status="User monthly word count limit reached for tier free"
                     state.error_message = f"Scene {scene.scene_id} failed: {status}"
                     state.next_action = "ERROR"
                     return state.__dict__
-            elif monthly_wc_data['tier'] == 2:
-                if monthly_wc_data['monthly_word_count'] >= 200000:
+            elif monthly_wc_data.get('tier') == 2:
+                if monthly_wc_data.get('monthly_word_count')  >= 200000:
                     status="User monthly word count limit reached for tier scribe"
                     state.error_message = f"Scene {scene.scene_id} failed: {status}"
                     state.next_action = "ERROR"

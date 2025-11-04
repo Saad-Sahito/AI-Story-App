@@ -429,12 +429,12 @@ class InteractiveStorySetup:
                 raise HTTPException(status_code=405, detail="Invalid story ID")
             
             # Ensure user monthly word count compatibility
-            monthly_wc_data = story_data['memory_system'].get_monthly_word_count()
-            if monthly_wc_data['tier'] == 1:
-                if monthly_wc_data['monthly_word_count'] >= 100000:
+            monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
+            if monthly_wc_data.get('tier') == 1:
+                if monthly_wc_data.get('monthly_word_count')  >= 100000:
                     raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'free'")
-            elif monthly_wc_data['tier'] == 2:
-                if monthly_wc_data['monthly_word_count'] >= 200000:
+            elif monthly_wc_data.get('tier')== 2:
+                if monthly_wc_data.get('monthly_word_count') >= 200000:
                     raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'scribe'")
             del monthly_wc_data
             story_author = StoryAuthor(memory_system=story_data['memory_system'])
@@ -792,14 +792,14 @@ class InteractiveStorySetup:
                     story_data["memory_system_initialized"] = True
 
                     # Ensure user monthly word count compatibility
-                    monthly_wc_data = story_data['memory_system'].get_monthly_word_count()
-                    if monthly_wc_data['tier'] == 1:
-                        if monthly_wc_data['monthly_word_count'] >= 100000:
+                    monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
+                    if monthly_wc_data.get('tier') == 1:
+                        if monthly_wc_data.get('monthly_word_count')  >= 100000:
                             await websocket.send_json({"error": "User monthly word count limit reached for tier 'free'"})
                             await websocket.close(code=1000)
                             return
-                    elif monthly_wc_data['tier'] == 2:
-                        if monthly_wc_data['monthly_word_count'] >= 200000:
+                    elif monthly_wc_data.get('tier') == 2:
+                        if monthly_wc_data.get('monthly_word_count')  >= 200000:
                             await websocket.send_json({"error": "User monthly word count limit reached for tier 'scribe'"})
                             await websocket.close(code=1000)
                             return
@@ -1026,21 +1026,34 @@ class InteractiveStorySetup:
             return {"status": "error"}
     
     async def get_book_cover_image(self, user_id: str, story_id: str):
-        user_data = await self._get_session(user_id)
-        if not user_data:
-            raise HTTPException(status_code=403, detail="Invalid user ID")
-        story_data = user_data["stories"].get(story_id)
-        if not story_data:
-            raise HTTPException(status_code=405, detail="Invalid story ID")
-        try:
-            progress = await story_data['memory_system'].get_story_progress()
-            if progress["image_data"] == None:
-                image = await generate_cover_image(progress["blurb"])
-                return {"status": "success", "data": image}
-            else:
-                return {"status": "success", "message": "image already generated"}
-        except:
-            return {"status": "error", "message": "error generating image"}
+        res = await self.continue_story(user_id=user_id, story_id=story_id)
+        if res.get("status") == "success":
+            user_data = await self._get_session(user_id)
+            if not user_data:
+                raise HTTPException(status_code=403, detail="Invalid user ID")
+            story_data = user_data["stories"].get(story_id)
+            if not story_data:
+                raise HTTPException(status_code=405, detail="Invalid story ID")
+            try:
+                progress = await story_data['memory_system'].get_story_progress()
+                # Update Redis session
+                serializable_story_data = {
+                    "memory_system_params": story_data.get("memory_system_params", {}),
+                    "last_active": time.time(),
+                }
+                user_data["stories"][story_id] = serializable_story_data
+                
+                
+                if progress["image_data"] == None:
+                    image = await generate_cover_image(progress["blurb"])
+                    await story_data['memory_system'].update_story_progress(metadata={'image_data': image})
+                    await self._set_session(user_id, story_id, serializable_story_data)
+                    await self._set_session(user_id, data=user_data)
+                    return {"status": "success", "data": image}
+                else:
+                    return {"status": "success", "message": "image already generated"}
+            except:
+                return {"status": "error", "message": "error generating image"}
         
     async def close(self):
         try:
