@@ -4,11 +4,13 @@ import time
 import redis.asyncio as redis
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
+from better_profanity import profanity
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from src.story_engines.interactive_adventure.agents.story_author import StoryAuthor
 from src.story_engines.interactive_adventure.agents.director_agent import DirectorGraph
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
+from src.utilities.image_generation import generate_cover_image
 from asyncio import Lock
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -376,11 +378,18 @@ class InteractiveStorySetup:
         )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
 
+    def has_profanity(self, text: str) -> bool:
+        return profanity.contains_profanity(text)
+    
     async def create_premise(self, initial_story_data: dict, model: str):
         """
         Create story seed, blurb, and cover image at story initialization.
         Works for BOTH classic and interactive stories.
         """
+        flagged = [k for k, v in initial_story_data.items() if self.has_profanity(str(v))]
+        if flagged:
+            print("Inappropriate content found in:", flagged)
+            raise HTTPException(status_code=390, detail="Inappropriate words found in user context")
         client = await get_redis_client()
         
         # Mapping dictionaries
@@ -419,6 +428,15 @@ class InteractiveStorySetup:
             if not story_data:
                 raise HTTPException(status_code=405, detail="Invalid story ID")
             
+            # Ensure user monthly word count compatibility
+            monthly_wc_data = story_data['memory_system'].get_monthly_word_count()
+            if monthly_wc_data['tier'] == 1:
+                if monthly_wc_data['monthly_word_count'] >= 100000:
+                    raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'free'")
+            elif monthly_wc_data['tier'] == 2:
+                if monthly_wc_data['monthly_word_count'] >= 200000:
+                    raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'scribe'")
+            del monthly_wc_data
             story_author = StoryAuthor(memory_system=story_data['memory_system'])
             
             # Map tone integer to string and get temperature
@@ -455,7 +473,7 @@ class InteractiveStorySetup:
             
             try:
                 # Step 1: Create story seed
-                print(f"🌱 Creating {story_type} story seed")
+                #print(f"🌱 Creating {story_type} story seed")
                 story_seed, seed_tokens = await story_author.create_story_seed(
                     user_context=user_context,
                     model=model
@@ -466,8 +484,9 @@ class InteractiveStorySetup:
                 blurb = await story_author.generate_blurb(story_seed)
                 
                 # Step 3: Generate cover image
-                print(f"🎨 Generating cover image for: {story_seed.title}")
-                image_data_base64 = await story_author.generate_cover_image(blurb)
+                #print(f"🎨 Generating cover image for: {story_seed.title}")
+                #image_data_base64 = await story_author.generate_cover_image(blurb)
+                image_data_base64 = None
                 # Store both original user context and parsed seed
                 await story_data['memory_system'].add_long_term_document(
                     text=json.dumps(user_context, indent=2),
@@ -771,7 +790,21 @@ class InteractiveStorySetup:
                 if not story_data.get("memory_system_initialized", False):
                     await story_data["memory_system"].qdrant_initialize()
                     story_data["memory_system_initialized"] = True
-                    
+
+                    # Ensure user monthly word count compatibility
+                    monthly_wc_data = story_data['memory_system'].get_monthly_word_count()
+                    if monthly_wc_data['tier'] == 1:
+                        if monthly_wc_data['monthly_word_count'] >= 100000:
+                            await websocket.send_json({"error": "User monthly word count limit reached for tier 'free'"})
+                            await websocket.close(code=1000)
+                            return
+                    elif monthly_wc_data['tier'] == 2:
+                        if monthly_wc_data['monthly_word_count'] >= 200000:
+                            await websocket.send_json({"error": "User monthly word count limit reached for tier 'scribe'"})
+                            await websocket.close(code=1000)
+                            return
+                    del monthly_wc_data
+
                     # Initialize correct Director based on story type
                     #progress = await story_data["memory_system"].get_story_progress()
                     #story_type = progress.get('story_type', 'interactive')
@@ -992,6 +1025,23 @@ class InteractiveStorySetup:
         except:
             return {"status": "error"}
     
+    async def get_book_cover_image(self, user_id: str, story_id: str):
+        user_data = await self._get_session(user_id)
+        if not user_data:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=405, detail="Invalid story ID")
+        try:
+            progress = await story_data['memory_system'].get_story_progress()
+            if progress["image_data"] == None:
+                image = await generate_cover_image(progress["blurb"])
+                return {"status": "success", "data": image}
+            else:
+                return {"status": "success", "message": "image already generated"}
+        except:
+            return {"status": "error", "message": "error generating image"}
+        
     async def close(self):
         try:
             from setup.shared_redis_pool import REDIS_POOL

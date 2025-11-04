@@ -36,8 +36,12 @@ python-dotenv
 python-jose
 replicate
 
+
+# === Others ===
+better-profanity
+
 # === Optional / debugging ===
-memory-profiler
+#memory-profiler
 
 # === Commented out (enable if needed) ===
 # streamlit

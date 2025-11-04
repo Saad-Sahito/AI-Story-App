@@ -3,7 +3,7 @@ import json
 from typing import Any, Dict, List, Literal, Optional, Tuple
 from pydantic import BaseModel, Field
 from langchain_core.output_parsers import PydanticOutputParser
-from src.llm_client.llm_client import author_client, utility_client, image_client, ingestor_client
+from src.llm_client.llm_client import author_client, utility_client, ingestor_client
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 import gc
@@ -302,7 +302,7 @@ Generate a compelling story foundation that brings these elements together."""
         
         system_prompt = """You are a professional book marketer specializing in back-cover copy.
 
-Write a captivating blurb (100-200 words) that:
+Write a captivating blurb (<50 words) that:
 - Hooks readers emotionally
 - Establishes atmosphere and stakes
 - Teases the protagonist's journey
@@ -335,32 +335,7 @@ Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
         return blurb
 
 
-    async def generate_cover_image(self, blurb: str) -> str:
-        """
-        Generate cover image based on blurb.
-        
-        Args:
-            blurb: Book blurb text
-            
-        Returns:
-            Base64-encoded image data
-        """
-        print("🎨 Generating cover image...")
-        
-        image_prompt = (
-    f"Create a visually striking, professional book cover illustration inspired by the following blurb. "
-    f"Focus on mood, setting, color palette, and atmosphere. "
-    f"Do NOT include any text, titles, signatures, or images of an actual book. "
-    f"The image should feel like a real book cover concept, artistic and marketable, with strong composition and emotional tone. "
-    f"Output should be in 1024x1024 resolution.\n\n{blurb}"
-)
-
-        
-        image_data = await image_client(image_prompt)
-        image_data_base64 = base64.b64encode(image_data).decode('utf-8')
-        
-        print("✅ Cover image generated")
-        return image_data_base64
+    
 
 
     async def plan_act(

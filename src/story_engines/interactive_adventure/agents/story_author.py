@@ -1,10 +1,10 @@
-import base64
+
 import json
 from typing import Any, Dict, List, Optional, Tuple
 from pydantic import BaseModel, Field
 import gc
 from langchain_core.output_parsers import PydanticOutputParser
-from src.llm_client.llm_client import author_client, utility_client, image_client, ingestor_client
+from src.llm_client.llm_client import author_client, utility_client, ingestor_client
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 
@@ -288,7 +288,7 @@ Generate a compelling foundation that enables meaningful user choices and branch
         
         system_prompt = """You are a professional book marketer specializing in interactive fiction back-cover copy.
 
-Write a short captivating blurb (<100 words) that:
+Write a short captivating blurb (<50 words) that:
 - Hooks readers emotionally
 - Establishes atmosphere and stakes
 - Teases the protagonist's journey
@@ -325,31 +325,7 @@ Note: This is an INTERACTIVE story where user choices matter.
         return blurb
 
 
-    async def generate_cover_image(self, blurb: str) -> str:
-        """
-        Generate cover image based on blurb.
-        
-        Args:
-            blurb: Book blurb text
-            
-        Returns:
-            Base64-encoded image data
-        """
-        print("🎨 Generating cover image...")
-        
-        image_prompt = (
-            f"Create a simple, evocative cover image for an INTERACTIVE story. "
-            f"Focus on mood and atmosphere. "
-            f"Do NOT include text or an actual book. "
-            f"Style: artistic, professional, engaging.\n\n{blurb}"
-        )
-        
-        image_data = await image_client(image_prompt)
-        image_data_base64 = base64.b64encode(image_data).decode('utf-8')
-        
-        print("✅ Cover image generated")
-        return image_data_base64
-
+    
 
     async def plan_act(
         self, 

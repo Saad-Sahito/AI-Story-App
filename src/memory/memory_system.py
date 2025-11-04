@@ -192,7 +192,7 @@ class StoryMemorySystem:
         return episodic_raw
 
     async def get_director_context(self, current_act_number: int, current_chapter_number: int, query: str, k: int = 5) -> dict:
-        char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, k)
+        char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, k+int(k/2))
         chapters_context = await self.search_multiple_episodic_story(
             query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
         )
@@ -354,6 +354,10 @@ class StoryMemorySystem:
         store = await self.long_term_users()
         return await store.increment_monthly_word_count(words_added=word_count)
 
+    async def get_monthly_word_count(self):
+        store = await self.long_term_users()
+        return await store.get_monthly_word_count()
+    
     # ---------- Cleanup ----------
     async def close(self):
         """Close all storage connections."""

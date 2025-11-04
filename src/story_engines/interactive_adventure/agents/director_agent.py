@@ -405,6 +405,7 @@ class DirectorGraph:
             {
                 "generate_and_ingest": "generate_and_ingest",
                 "END": "ingest_chapter",
+                "ERROR": END
             },
         )
         
@@ -421,7 +422,7 @@ class DirectorGraph:
                 END: END
             }
         )
-        
+
         self.graph.add_edge("ingest_chapter", END)
         self.graph.add_edge("story_complete", END)
         self.compiled = self.graph.compile()
@@ -875,7 +876,21 @@ Story Word Count so far: {state.story_word_count}
         5. Calculate and enforce target scene word count
         """
         print(f"\n🎬 Scene Director: Scene {state.scene_id}, Chapter {state.current_chapter_id}, Act {state.current_act_id}")
-        
+
+        # Ensure user monthly word count compatibility
+        monthly_wc_data = self.memory.get_monthly_word_count()
+        if monthly_wc_data['tier'] == 1:
+            if monthly_wc_data['monthly_word_count'] >= 100000:
+                status="User monthly word count limit reached for tier 'free'"
+                state.next_action = "ERROR"
+                raise RuntimeError(status)
+        elif monthly_wc_data['tier'] == 2:
+            if monthly_wc_data['monthly_word_count'] >= 200000:
+                status="User monthly word count limit reached for tier 'scribe'"
+                state.next_action = "ERROR"
+                raise RuntimeError(status)
+        del monthly_wc_data
+
         # Get act plan for thematic context
         try:
             act_plan_json = await self.memory.get_long_term_document(

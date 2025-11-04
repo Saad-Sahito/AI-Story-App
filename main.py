@@ -25,8 +25,9 @@ from setup.story_types.classic_setup import get_shared_classic_setup, close_shar
 from src.story_engines.interactive_adventure.agents import shared_scene_planner as interactive_scene_planner_module
 from src.story_engines.classic_narrative.agents import shared_scene_planner as classic_scene_planner_module
 from src.memory.sqlite_store import SQLiteStore
-from src.utilities.model_suggestor import user_context_extractor_model
-from src.utilities.story_title_generator import user_context_extractor_title
+from src.utilities.image_generation import generate_cover_image
+# from src.utilities.model_suggestor import user_context_extractor_model
+# from src.utilities.story_title_generator import user_context_extractor_title
 
 # Initialize MainSetup
 #print("🟡 Initializing APIBackend...")
@@ -152,7 +153,7 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=[
         "https://whimsera.com",
-        "https://www.whimsera.com",
+        "https://pre-alpha.whimsera.com",
         "http://localhost:3000",
         "http://127.0.0.1:3000",
         "http://localhost:4000",
@@ -352,14 +353,14 @@ async def root():
 #--------------Story Management API Routes------------------
 class PremiseRequest(BaseModel):
     initial_story_data: dict
-    model: str  # ← Add model to the request body
+    model: str
 
 @app.post("/premise")
 async def api_create_premise(request: PremiseRequest):
     print(request.initial_story_data)
     return await mainsetup.create_premise(
         initial_story_data=request.initial_story_data, 
-        model=request.model  # ← Get model from body
+        model=request.model
     )
 
 @app.websocket("/ws/next_chapter/{user_id}/{story_id}")
@@ -414,9 +415,9 @@ async def api_continue_story(story_id: str, request: ContinueStoryRequest):
 async def api_get_story_progress(user_id: str, story_id: str, story_type: str):
     return await mainsetup.get_story_progress_for_user(user_id=user_id, story_id=story_id, story_type=story_type)
 
-@app.patch("/stories/logout/{user_id}/{story_id}")
-async def api_logout_story(user_id: str, story_id: str, story_type: str):
-    return await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
+# @app.patch("/stories/logout/{user_id}/{story_id}")
+# async def api_logout_story(user_id: str, story_id: str, story_type: str):
+#     return await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=story_type)
 
 @app.get("/stories/cluster/{user_id}/{story_id}")
 async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapter_number: int):
@@ -425,6 +426,10 @@ async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapte
 @app.post("/stories/progress/{user_id}/{story_id}/public")
 async def api_put_story_public(user_id: str, story_id: str, public: bool = True):
     return await update_user_story_public_status(user_id=user_id, story_id=story_id, public=public)
+
+@app.post("/stories/image-gen/{user_id}/{story_id}")
+async def api_gen_story_image_cover(user_id: str, story_id: str, story_type: str):
+    return await mainsetup.get_book_cover_image(user_id=user_id, story_id=story_id, story_type=story_type)
 
 #-----------------User Session Management Routes--------------------------
 @app.patch("/users/{user_id}/session")
@@ -496,12 +501,12 @@ async def api_update_user_settings(user_id: str, user_data: Dict[str, Any]):
 # async def api_model_suggestor(request: ModelSuggestorRequest, tier: int):
 #     return await user_context_extractor_model(user_context=request.initial_story_data, tier=tier)
 
-class TitleGeneratorRequest(BaseModel):
-    initial_story_data: dict
+# class TitleGeneratorRequest(BaseModel):
+#     initial_story_data: dict
 
-@app.post("/utility/title_generator")
-async def api_title_generator(request: TitleGeneratorRequest):
-    return await user_context_extractor_title(user_context=request.initial_story_data)
+# @app.post("/utility/title_generator")
+# async def api_title_generator(request: TitleGeneratorRequest):
+#     return await user_context_extractor_title(user_context=request.initial_story_data)
 
 
 #------------------------Analytics Calls-----------------------
@@ -537,38 +542,9 @@ async def api_get_all_feedback(_: dict = Depends(require_admin)):
 async def api_get_all_data(_: dict = Depends(require_admin)):
     return await get_all_data()
 
-#---------------Feedback------------------
-@app.post("/feedback")
-async def api_post_feedback(
-    form: Dict[str, Any],
-    request: Request
-):
-    try:
-        # ✅ Get authenticated user from middleware
-        supabase_user = request.state.supabase_user
-        if not supabase_user:
-            raise HTTPException(status_code=401, detail="Authentication required")
-        
-        user_id = supabase_user.get("sub")
-        
-        # ✅ Call the feedback function (add user_id if needed)
-        result = await post_user_feedback(form, user_id=user_id)
-        
-        if result["status"] == "success":
-            return {"message": "Feedback submitted successfully!", "status": "success"}
-        else:
-            raise HTTPException(status_code=400, detail=result["message"])
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        print(f"❌ Feedback error: {e}")
-        raise HTTPException(status_code=500, detail="Internal server error")
-
-
 #gets all active users in redis pool (for app manager use)
 @app.get("/users/active")
-async def api_get_active_users():
+async def api_get_active_users(_: dict = Depends(require_admin)):
     """Retrieve all session data for active users from Redis (classic + interactive)."""
     try:
         client = await get_redis_client()
@@ -632,3 +608,30 @@ async def api_get_active_users():
         import gc
         gc.collect()
 
+#---------------Feedback------------------
+@app.post("/feedback")
+async def api_post_feedback(
+    form: Dict[str, Any],
+    request: Request
+):
+    try:
+        # ✅ Get authenticated user from middleware
+        supabase_user = request.state.supabase_user
+        if not supabase_user:
+            raise HTTPException(status_code=401, detail="Authentication required")
+        
+        user_id = supabase_user.get("sub")
+        
+        # ✅ Call the feedback function (add user_id if needed)
+        result = await post_user_feedback(form, user_id=user_id)
+        
+        if result["status"] == "success":
+            return {"message": "Feedback submitted successfully!", "status": "success"}
+        else:
+            raise HTTPException(status_code=400, detail=result["message"])
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        print(f"❌ Feedback error: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")

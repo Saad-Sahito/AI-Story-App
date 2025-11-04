@@ -61,6 +61,14 @@ class MainSetup:
             setup = await get_shared_classic_setup()
             return await setup.get_story_cluster(user_id=user_id, story_id=story_id, chapter_number=chapter_number)
 
+    async def get_book_cover_image(self, user_id: str, story_id: str, story_type: str = "classic"):
+        if story_type == 'interactive':
+            setup = await get_shared_interactive_setup()
+            return await setup.get_book_cover_image(user_id=user_id, story_id=story_id)
+        elif story_type == 'classic':
+            setup = await get_shared_classic_setup()
+            return await setup.get_book_cover_image(user_id=user_id, story_id=story_id)
+        
     async def logout(self, user_id: str):
         """Clear all sessions for a user from Redis."""
         try:
@@ -72,14 +80,14 @@ class MainSetup:
         except:
             return {"error": "One of or both sessions uninitialized"}
 
-    async def logout_story(self, user_id: str, story_id: str, story_type: str):
-        """Clear a specific story session for a user from Redis."""
-        if story_type == "interactive":
-            setup_interactive = await get_shared_interactive_setup()
-            return await setup_interactive.logout_story(user_id=user_id, story_id=story_id)
-        elif story_type == "classic":
-            setup_classic = await get_shared_classic_setup()
-            return await setup_classic.logout_story(user_id=user_id, story_id=story_id)
+    # async def logout_story(self, user_id: str, story_id: str, story_type: str):
+    #     """Clear a specific story session for a user from Redis."""
+    #     if story_type == "interactive":
+    #         setup_interactive = await get_shared_interactive_setup()
+    #         return await setup_interactive.logout_story(user_id=user_id, story_id=story_id)
+    #     elif story_type == "classic":
+    #         setup_classic = await get_shared_classic_setup()
+    #         return await setup_classic.logout_story(user_id=user_id, story_id=story_id)
             
     async def cleanup_inactive_sessions(self):
         """Clean up inactive sessions from Redis using SCAN."""

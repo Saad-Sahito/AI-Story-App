@@ -170,7 +170,7 @@ class SQLiteStore:
                     story_quality INTEGER, 
                     story_like TEXT, 
                     story_improve TEXT, 
-                    interactivity_naturalness INTEGER, 
+                    interactivity_meaningfulness INTEGER, 
                     story_pacing TEXT, 
                     ease_of_use INTEGER, 
                     buggy_or_confusing TEXT, 
@@ -482,20 +482,21 @@ class SQLiteStore:
         except aiosqlite.Error as e:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
 
-    async def get_monthly_word_count(self, user_id: str):
+    async def get_monthly_word_count(self):
         try:
             async with self._get_connection() as conn:
                 cursor = await conn.execute("""
-                    SELECT monthly_word_count, last_reset_date
+                    SELECT tier, monthly_word_count, last_reset_date
                     FROM users
                     WHERE user_id = ?
-                """, (user_id,))
+                """, (self.user_id,))
                 row = await cursor.fetchone()
                 if not row:
                     return {"status": "error", "message": "❌ User not found"}
 
                 return {
-                    "status": "success",
+                    # "status": "success",
+                    "tier": row["tier"],
                     "word_count": row["monthly_word_count"],
                     "last_reset_date": row["last_reset_date"]
                 }
@@ -1430,7 +1431,7 @@ class SQLiteStore:
             async with self._get_connection() as conn:
                 columns = [
                     "usage_mode", "story_quality", "story_like", "story_improve",
-                    "interactivity_naturalness", "story_pacing", "ease_of_use", 
+                    "interactivity_meaningfulness", "story_pacing", "ease_of_use", 
                     "buggy_or_confusing", "additional_feedback", "nps_score", "reuse_likelihood"
                 ]
                 
