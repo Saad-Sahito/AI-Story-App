@@ -136,10 +136,10 @@ class SQLiteStore:
                     tone_temp FLOAT,
                     image_data BLOB,
                     public BOOLEAN,
+                    min_age INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(story_id),
-                    min_age INTEGER,
+                    UNIQUE(story_id)
                 )
             """)
             
@@ -199,7 +199,7 @@ class SQLiteStore:
             cursor = await conn.execute("""
                 SELECT story_id, story_title, story_type, total_acts, target_length, genre_list, themes_list,
                        pov, narrative_voice, tense, prose_style,
-                       blurb, tone_temp, image_data, public,  created_at, updated_at, min_age
+                       blurb, tone_temp, image_data, public, min_age, created_at, updated_at
                 FROM shared_story_data
                 WHERE story_id = ?
             """, (story_id,))
