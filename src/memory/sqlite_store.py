@@ -136,10 +136,10 @@ class SQLiteStore:
                     tone_temp FLOAT,
                     image_data BLOB,
                     public BOOLEAN,
-                    min_age INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    UNIQUE(story_id)
+                    UNIQUE(story_id),
+                    min_age INTEGER,
                 )
             """)
             

@@ -295,7 +295,7 @@ World Details:
                 if success:
                     await self.memory.add_post_chapter_bundle(
                         parts=result, 
-                        metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title}
+                        metadata={"chapter_id": state.current_chapter_id, "story_title": state.story_title,"act_id": state.current_act_id}
                     )
                     
                     await self.memory.increment_chapter(word_count_delta=0, scene_id=1)

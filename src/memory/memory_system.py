@@ -164,7 +164,7 @@ class StoryMemorySystem:
     # ---------- Episodic search methods ----------
     async def get_entire_act_chapters_for_act_ingestion_episodic_story(self, current_act: int, chapters: int = 0) -> list:
         act_chapter_text = []
-        for i in range(1, chapters + 1):
+        for i in range(0, chapters + 1):
             print(i)
             print(current_act)
             text = await self.search_single_episodic_story(act_number=current_act, chapter_number=i, summary_type = "chapter summary")
