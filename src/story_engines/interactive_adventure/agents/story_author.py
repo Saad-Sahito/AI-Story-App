@@ -253,22 +253,16 @@ Generate a compelling foundation that enables meaningful user choices and branch
         # Parse into Pydantic model
         story_seed = story_seed_parser.parse(response.content.strip())
         
-        # Store both original user context and parsed seed
-        # await self.memory.add_long_term_document(
-        #     text=json.dumps(user_context, indent=2),
-        #     metadata={
-        #         "type": "story_user_context",
-        #         "story_title": story_title
-        #     }
-        # )
-        
-        # await self.memory.add_long_term_document(
-        #     text=story_seed.model_dump_json(indent=2),
-        #     metadata={
-        #         "type": "story_seed",
-        #         "story_title": story_title
-        #     }
-        # )
+        del response
+        response = await utility_client(
+            system_prompt="Check if the user context matches the story_seed produced generally, " \
+            "important things to check are the protagonist vital details like name, age, etc. " \
+            f"Output the same seed back if correct, if not make changes and output accordingly:  {story_seed_parser.get_format_instructions()}",
+            human_prompt=f"user context: {user_context} " \
+            f"story seed: {story_seed}"
+        )
+        story_seed = story_seed_parser.parse(response.content.strip())
+        del response
         
         print(f"✅ Interactive story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
         return story_seed, tokens
