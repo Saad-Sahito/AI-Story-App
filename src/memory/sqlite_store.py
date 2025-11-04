@@ -136,6 +136,7 @@ class SQLiteStore:
                     tone_temp FLOAT,
                     image_data BLOB,
                     public BOOLEAN,
+                    min_age INTEGER,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(story_id)
@@ -198,7 +199,7 @@ class SQLiteStore:
             cursor = await conn.execute("""
                 SELECT story_id, story_title, story_type, total_acts, target_length, genre_list, themes_list,
                        pov, narrative_voice, tense, prose_style,
-                       blurb, tone_temp, image_data, public, created_at, updated_at
+                       blurb, tone_temp, image_data, public, min_age, created_at, updated_at
                 FROM shared_story_data
                 WHERE story_id = ?
             """, (story_id,))
@@ -232,7 +233,8 @@ class SQLiteStore:
                     "tone_temp": metadata.get("tone_temp") if metadata.get("tone_temp") is not None else existing["tone_temp"],
                     #"model": metadata.get("model") if metadata.get("model") is not None else existing["model"],
                     "image_data": metadata.get("image_data") if metadata.get("image_data") is not None else existing["image_data"],
-                    "public": metadata.get("public") if metadata.get("public") is not None else existing["public"]
+                    "public": metadata.get("public") if metadata.get("public") is not None else existing["public"],
+                    "min_age": metadata.get("min_age") if metadata.get("min_age") is not None else existing["min_age"]
                 }
             else:
                 # Creating new record - use provided values or defaults
@@ -251,14 +253,15 @@ class SQLiteStore:
                     "tone_temp": metadata.get("tone_temp"),
                     #"model": metadata.get("model"),
                     "image_data": metadata.get("image_data"),
-                    "public": metadata.get("public", False)
+                    "public": metadata.get("public", False),
+                    "min_age": metadata.get("min_age", 15)
                 }
 
             await conn.execute("""
             INSERT INTO shared_story_data (
                 story_id, story_title, story_type, total_acts, target_length, genre_list, themes_list, pov, tense, narrative_voice, prose_style,
-                blurb, tone_temp, image_data, public
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                blurb, tone_temp, image_data, public, min_age
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(story_id) DO UPDATE SET
                 story_title = excluded.story_title,
                 story_type = excluded.story_type,
@@ -274,6 +277,7 @@ class SQLiteStore:
                 tone_temp = excluded.tone_temp,
                 image_data = excluded.image_data,
                 public = excluded.public,
+                min_age = excluded.min_age,
                 updated_at = CURRENT_TIMESTAMP
         """, (
                 story_id,
@@ -291,7 +295,8 @@ class SQLiteStore:
                 merged_data["tone_temp"],
                 #merged_data["model"],
                 merged_data["image_data"],
-                merged_data["public"]
+                merged_data["public"],
+                merged_data["min_age"]
             ))
             await conn.commit()
 
@@ -658,6 +663,7 @@ class SQLiteStore:
                         "blurb": "",
                         "image_data": None,
                         "public": False,
+                        "min_age": 15,
                         "pov": None,
                         "narrative_voice": None,
                         "prose_style": None,
@@ -686,6 +692,7 @@ class SQLiteStore:
                             "blurb": shared_data["blurb"] or "",
                             "image_data": shared_data["image_data"],
                             "public": bool(shared_data["public"]),
+                            "min_age": shared_data["min_age"],
                             "pov": shared_data["pov"],
                             "tense": shared_data["tense"],
                             "prose_style": shared_data["prose_style"],
@@ -964,7 +971,8 @@ class SQLiteStore:
             "blurb": metadata.get("blurb"),
             "tone_temp": metadata.get("tone_temp"),
             "image_data": metadata.get("image_data"),
-            "public": metadata.get("public")
+            "public": metadata.get("public"),
+            "min_age": metadata.get("min_age")
         }
 
         async with self._get_connection() as conn:
@@ -1165,7 +1173,8 @@ class SQLiteStore:
                     #"model": None,
                     "blurb": None,
                     "image_data": None,
-                    "public": False
+                    "public": False,
+                    "min_age": 15
                 }
                 
                 if progress_row:
@@ -1197,7 +1206,8 @@ class SQLiteStore:
                         #"model": shared_data["model"],
                         "blurb": shared_data["blurb"],
                         "image_data": shared_data["image_data"],
-                        "public": bool(shared_data["public"])
+                        "public": bool(shared_data["public"]),
+                        "min_age": shared_data["min_age"],
                     })
                 
                 return result

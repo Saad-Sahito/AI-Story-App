@@ -77,6 +77,9 @@ class ActPlan(BaseModel):
 class ActSummary(BaseModel):
     act_summary: str = Field(description="Detailed summary of the entire Act")
 
+class StoryMinimumAge(BaseModel):
+    min_age: int = Field(description="minimum age limit to read this story")
+
 # ============================================================================
 # OUTPUT PARSERS
 # ============================================================================
@@ -84,6 +87,7 @@ class ActSummary(BaseModel):
 story_seed_parser = PydanticOutputParser(pydantic_object=StorySeed)
 act_plan_parser = PydanticOutputParser(pydantic_object=ActPlan)
 act_ingestor_parser = PydanticOutputParser(pydantic_object=ActSummary)
+min_age_parser = PydanticOutputParser(pydantic_object=StoryMinimumAge)
 
 # ============================================================================
 # STORY AUTHOR CLASS (INTERACTIVE)
@@ -183,17 +187,6 @@ class StoryAuthor:
         You are the Story Architect for an interactive, choice-driven narrative.
         Your goal: Create a flexible story foundation - NOT a rigid blueprint. This seed guides act planning, which happens progressively as the user makes choices.
 
-        The user has specified:
-        - POV: {user_context.get('POV', 'Third-person')}
-        - Tone: {user_context.get('Tone', 'Balanced')}
-        - Genre: {genres_str}
-        - Setting: {user_context.get('Setting', 'To be determined')}
-        - Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
-        - Themes: {themes_str}
-        - Target Audience: {user_context.get('target_audience_age', 'General')} years old
-        - Target Length: {target_length} words ({act_count} acts recommended)
-        {protagonist_instruction}
-
         Create a story foundation that:
         1. Respects ALL user specifications above (POV, tone, genre are FIXED)
         2. STRICTLY follows any protagonist specifications provided - these are MANDATORY
@@ -231,15 +224,16 @@ class StoryAuthor:
         """
 
         human_prompt = f"""Create an interactive story seed with these specifications:
-
-Setting: {user_context.get('Setting', 'Create an appropriate setting')}
-Genres: {genres_str}
-POV: {user_context.get('POV', 'Third-person')}
-Tone: {user_context.get('Tone', 'Balanced')}
-Prose Style: {user_context.get('Guide Prose', 'Standard')}
-Themes: {themes_str}
-Target Audience Age: {user_context.get('target_audience_age', 'General audience')}
-Length: {user_context.get('Length', 'Standard')} ({target_length} words)
+{title_str}
+- POV: {user_context.get('POV', 'Third-person')}
+- Tone: {user_context.get('Tone', 'Balanced')}
+- Genre: {genres_str}
+- Setting: {user_context.get('Setting', 'To be determined')}
+- Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
+- Themes: {themes_str}
+- Target Audience Age: {user_context.get('target_audience_age', 'General')} years old
+- Target Length: {target_length} words ({act_count} acts recommended)
+{protagonist_instruction}
 
 Generate a compelling foundation that enables meaningful user choices and branching narratives, blending the specified genres ({genres_str}) appropriately."""
         
@@ -252,20 +246,21 @@ Generate a compelling foundation that enables meaningful user choices and branch
         
         # Parse into Pydantic model
         story_seed = story_seed_parser.parse(response.content.strip())
-        
+
         del response
+        max_age = min(user_context.get('target_audience_age', 18), 18)
         response = await utility_client(
-            system_prompt="Check if the user context matches the story_seed produced generally, " \
-            "important things to check are the protagonist vital details like name, age, etc. " \
-            f"Output the same seed back if correct, if not make changes and output accordingly:  {story_seed_parser.get_format_instructions()}",
-            human_prompt=f"user context: {user_context} " \
-            f"story seed: {story_seed}"
+            system_prompt=f"""Output the minimum age required to read a story with the given story seed, output an integer ranging from 9 - {max_age}, according to: 
+{min_age_parser.get_format_instructions()}""",
+            human_prompt=f"""
+story seed: 
+{story_seed}
+"""
         )
-        story_seed = story_seed_parser.parse(response.content.strip())
+        min_age = min_age_parser.parse(response.content.strip())
         del response
-        
-        print(f"✅ Interactive story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
-        return story_seed, tokens
+        print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
+        return story_seed, tokens, min_age.get('min_age', 15)
 
 
     async def generate_blurb(self, story_seed: StorySeed) -> str:
@@ -539,7 +534,7 @@ Suggest potential branches, but don't force predetermined outcomes.
         """
         Ingests entire act using act chapter summaries.
         """
-        text = self.memory.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=chapters)
+        text = await self.memory.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=chapters)
         combined_text = '\n'.join(text)
 
         system_prompt = f"""
@@ -597,7 +592,7 @@ Act Chapters Summaries:
                 
                 if success:
                     await self.memory.add_post_act_bundle(
-                        scene_bundle=result,
+                        act_bundle=result,
                         metadata={
                             "act_id": current_act,
                             "story_title": story_title,

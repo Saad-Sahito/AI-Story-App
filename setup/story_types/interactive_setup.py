@@ -367,16 +367,16 @@ class InteractiveStorySetup:
                 raise HTTPException(status_code=403, detail="Please enter a valid User ID.")
             memory_system = StoryMemorySystem(user_id=user_id, story_id=story_id)
             await memory_system.qdrant_initialize()
-            story_progress_data = await memory_system.get_story_progress()
-            if not story_progress_data:
-                raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
+            # story_progress_data = await memory_system.get_story_progress()
+            # if not story_progress_data:
+            #     raise HTTPException(status_code=405, detail="No existing story found for this user and story ID.")
         await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
-        user_session = await self._get_session(user_id)
-        story_text = (
-            await user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
-            or "No story text for this chapter found."
-        )
-        return {"status": "success", "message": f"Session started for {user_id} and {story_id}", "story_cluster": story_text}
+        # user_session = await self._get_session(user_id)
+        # story_text = (
+        #     await user_session["stories"][story_id]['memory_system'].get_story_cluster(chapter_id=story_progress_data.get("latest_chapter_id"))
+        #     or "No story text for this chapter found."
+        # )
+        return {"status": "success", "message": f"Session started for {user_id} and {story_id}"}
 
     def has_profanity(self, text: str) -> bool:
         return profanity.contains_profanity(text)
@@ -474,7 +474,7 @@ class InteractiveStorySetup:
             try:
                 # Step 1: Create story seed
                 #print(f"🌱 Creating {story_type} story seed")
-                story_seed, seed_tokens = await story_author.create_story_seed(
+                story_seed, seed_tokens, min_age = await story_author.create_story_seed(
                     user_context=user_context,
                     model=model
                 )
@@ -569,6 +569,7 @@ class InteractiveStorySetup:
                     "tense": story_seed.style_guide.get("tense", ""),
                     "genre": story_seed.genre,
                     "themes": story_seed.themes,
+                    "min_age": min_age,
                     "complete": False
                 }
             )

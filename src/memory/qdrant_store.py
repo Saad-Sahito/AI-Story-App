@@ -405,13 +405,21 @@ class QdrantStore:
             offset = None
 
             # Build base must conditions
-            must_conds = [
-                models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_number"])),
-                models.FieldCondition(key="act_id", match=models.MatchValue(value=metadata["act_number"])),
-                models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
-                models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
-                models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
-            ]
+            if metadata["chapter_number"] > 0:
+                must_conds = [
+                    models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_number"])),
+                    models.FieldCondition(key="act_id", match=models.MatchValue(value=metadata["act_number"])),
+                    models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
+                    models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                    models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
+                ]
+            else:
+                must_conds = [
+                    models.FieldCondition(key="act_id", match=models.MatchValue(value=metadata["act_number"])),
+                    models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
+                    models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                    models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
+                ]
 
             # Add type filter if provided
             if metadata and "type" in metadata:

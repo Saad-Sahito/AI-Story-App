@@ -165,8 +165,12 @@ class StoryMemorySystem:
     async def get_entire_act_chapters_for_act_ingestion_episodic_story(self, current_act: int, chapters: int = 0) -> list:
         act_chapter_text = []
         for i in range(1, chapters + 1):
+            print(i)
+            print(current_act)
             text = await self.search_single_episodic_story(act_number=current_act, chapter_number=i, summary_type = "chapter summary")
-            text_extract = f"Chapter number: {i}\n{text[0]}"
+            print(text)
+            #if len(text) > 0:
+            text_extract = f"Chapter number: {i}\n{text}"
             act_chapter_text.append(text_extract)
         return act_chapter_text
 
@@ -205,10 +209,11 @@ class StoryMemorySystem:
             for act_num in range(1, current_act_number):
                 act_text = await self.search_single_episodic_story(
                     act_number=act_num,
+                    chapter_number=0,
                     summary_type="act summary"
                 )
                 if act_text:
-                    text_extract = f"Act number: {act_num}\n{act_text[0]}"
+                    text_extract = f"Act number: {act_num}\n{act_text}"
                     prev_act_summaries.append(text_extract)
                 del act_text, text_extract
 
@@ -222,9 +227,9 @@ class StoryMemorySystem:
                     summary_type="chapter summary"
                 )
                 if chapt_text:
-                    text_extract = f"Chapter number: {chapt_num}\n{chapt_text[0]}"
+                    text_extract = f"Chapter number: {chapt_num}\n{chapt_text}"
                     last_few_chapters_summaries.append(text_extract)
-                del chapt_text, text_extract
+                
 
         chapters_combined_string = '\n'.join(last_few_chapters_summaries)
         acts_combined_string = '\n'.join(prev_act_summaries)
