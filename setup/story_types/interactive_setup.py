@@ -416,33 +416,26 @@ class InteractiveStorySetup:
         story_id = initial_story_data["story_id"]
         story_type = initial_story_data.get("story_type", "interactive")
         
-        # Get user session - LOCK SCOPE 1
-        user_key = f"{BASE_SESSION_KEY}:{user_id}"
-        user_lock_key = f"lock:{user_key}"
+        # Get user session - _get_session handles its own locking
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
         
-        # Retrieve and validate session (with lock)
-        user_data = None
-        story_data = None
-        async with redis_lock(client, user_lock_key):
-            user_data = await self._get_session(user_id=user_id)
-            if not user_data:
-                raise HTTPException(status_code=403, detail="Invalid user ID")
-            
-            story_data = user_data["stories"].get(story_id)
-            if not story_data:
-                raise HTTPException(status_code=405, detail="Invalid story ID")
-            
-            # Check monthly word count
-            monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
-            if monthly_wc_data.get('tier') == 1:
-                if monthly_wc_data.get('monthly_word_count') >= 100000:
-                    raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'free'")
-            elif monthly_wc_data.get('tier') == 2:
-                if monthly_wc_data.get('monthly_word_count') >= 200000:
-                    raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'scribe'")
-            del monthly_wc_data
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=405, detail="Invalid story ID")
         
-        # Now we're outside the lock - do all the heavy AI work here
+        # Check monthly word count
+        monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
+        if monthly_wc_data.get('tier') == 1:
+            if monthly_wc_data.get('monthly_word_count') >= 100000:
+                raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'free'")
+        elif monthly_wc_data.get('tier') == 2:
+            if monthly_wc_data.get('monthly_word_count') >= 200000:
+                raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'scribe'")
+        del monthly_wc_data
+        
+        # Create story author
         story_author = StoryAuthor(memory_system=story_data['memory_system'])
         
         # Map tone integer to string and get temperature
@@ -477,8 +470,6 @@ class InteractiveStorySetup:
         }
         
         try:
-            # ALL HEAVY AI OPERATIONS HERE - NO LOCKS HELD
-            
             # Step 1: Create story seed
             story_seed, seed_tokens, min_age = await story_author.create_story_seed(
                 user_context=user_context,
@@ -489,10 +480,10 @@ class InteractiveStorySetup:
             print(f"📖 Generating blurb for: {story_seed.title}")
             blurb = await story_author.generate_blurb(story_seed)
             
-            # Step 3: Generate cover image (commented out in your code)
+            # Step 3: Generate cover image
             image_data_base64 = None
             
-            # Step 4: Store documents in memory system (no lock needed - memory system has its own locking)
+            # Step 4: Store documents in memory system
             await story_data['memory_system'].add_long_term_document(
                 text=json.dumps(user_context, indent=2),
                 metadata={
@@ -534,6 +525,7 @@ class InteractiveStorySetup:
                 "story_type": "interactive"
             }
             
+            del user_context
             print(f"✅ Story initialization complete: {story_seed.title}")
             print(f"   - Type: {story_type}")
             print(f"   - Acts planned: {story_seed.act_count}")
@@ -549,47 +541,45 @@ class InteractiveStorySetup:
         finally:
             del story_author
 
-        # NOW acquire lock for final Redis updates - LOCK SCOPE 2
-        async with redis_lock(client, user_lock_key):
-            # Update story progress in memory system
-            await story_data["memory_system"].update_story_progress(
-                metadata={
-                    "latest_chapter_id": 1,
-                    "continue_scene_id": 1,
-                    "story_title": story_seed.title,
-                    "story_word_count": 0,
-                    "chapter_word_count": 0,
-                    "current_act_id": 1,
-                    "total_acts": story_seed.act_count,
-                    "tone_temp": mapped_tone_temp,
-                    "model": model,
-                    "author_token_usage": tokens_usage,
-                    "blurb": blurb,
-                    "image_data": image_data_base64,
-                    "story_type": story_type,
-                    "target_length": story_seed.target_length,
-                    "pov": story_seed.style_guide.get("pov", "Third-person"),
-                    "prose_style": story_seed.style_guide.get("prose_style", ""),
-                    "narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
-                    "tense": story_seed.style_guide.get("tense", ""),
-                    "genre": story_seed.genre,
-                    "themes": story_seed.themes,
-                    "min_age": min_age,
-                    "complete": False
-                }
-            )
-            
-            # Update Redis session
-            serializable_story_data = {
-                "memory_system_params": story_data.get("memory_system_params", {}),
-                "last_active": time.time(),
+        # Update story progress in memory system
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "latest_chapter_id": 1,
+                "continue_scene_id": 1,
+                "story_title": story_seed.title,
+                "story_word_count": 0,
+                "chapter_word_count": 0,
+                "current_act_id": 1,
+                "total_acts": story_seed.act_count,
+                "tone_temp": mapped_tone_temp,
+                "model": model,
+                "author_token_usage": tokens_usage,
+                "blurb": blurb,
+                "image_data": image_data_base64,
+                "story_type": story_type,
+                "target_length": story_seed.target_length,
+                "pov": story_seed.style_guide.get("pov", "Third-person"),
+                "prose_style": story_seed.style_guide.get("prose_style", ""),
+                "narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
+                "tense": story_seed.style_guide.get("tense", ""),
+                "genre": story_seed.genre,
+                "themes": story_seed.themes,
+                "min_age": min_age,
+                "complete": False
             }
-            user_data["stories"][story_id] = serializable_story_data
-            
-            await self._set_session(user_id, story_id, serializable_story_data)
-            await self._set_session(user_id, data=user_data)
+        )
         
-        # Register story OUTSIDE the lock
+        # Update Redis session - _set_session handles its own locking
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params", {}),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+        
+        # Register story in user management
         from src.memory.user_management import append_story
         await append_story(
             user_id=user_id, 
