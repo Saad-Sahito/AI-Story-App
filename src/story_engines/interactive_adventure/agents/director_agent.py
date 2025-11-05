@@ -978,9 +978,19 @@ Story Word Count so far: {state.story_word_count}
         print(f"   Scenes remaining: {scenes_remaining}")
         print(f"   → Target for THIS scene: {target_scene_word_count} words")
 
-        story_seed = await self.memory.get_long_term_document(
+        story_seed_raw = await self.memory.get_long_term_document(
             metadata={'type': 'story_seed', 'story_title': state.story_title}
         )
+        # Parse the JSON string
+        if story_seed_raw:
+            try:
+                story_seed = json.loads(story_seed_raw)
+            except json.JSONDecodeError as e:
+                print(f"⚠️ Error parsing story_seed: {e}")
+                story_seed = {}
+        else:
+            story_seed = {}
+        #print(story_seed)
         system_prompt = f"""You are the Scene Director for an interactive story.
     You work under a Chapter Blueprint that defines the chapter's purpose, emotional arc, and closure condition.
 
