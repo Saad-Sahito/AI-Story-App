@@ -386,22 +386,13 @@ class ClassicStorySetup:
     async def create_premise(self, initial_story_data: dict, model: str):
         """
         Create story seed, blurb, and cover image at story initialization.
-        
-        Args:
-            initial_story_data: Dict containing:
-                - POV, Tone (int 0-100), Genre, Title, Length (int 0-100), Setting
-                - Guide Prose, Additional Themes, target_audience_age
-                - user_id, story_id, story_type
-            model: LLM model to use
-        
-        Returns:
-            Dict with status, blurb, image_data, and story_seed info
+        Works for BOTH classic and interactive stories.
         """
-
         flagged = [k for k, v in initial_story_data.items() if self.has_profanity(str(v))]
         if flagged:
             print("Inappropriate content found in:", flagged)
             raise HTTPException(status_code=390, detail="Inappropriate words found in user context")
+        
         client = await get_redis_client()
         
         # Mapping dictionaries
@@ -425,14 +416,17 @@ class ClassicStorySetup:
         # Extract metadata
         user_id = initial_story_data["user_id"]
         story_id = initial_story_data["story_id"]
-        story_type = initial_story_data.get("story_type", "classic")
+        story_type = initial_story_data.get("story_type", "interactive")
         
-        # Get user session
+        # Get user session - LOCK SCOPE 1
         user_key = f"{BASE_SESSION_KEY}:{user_id}"
         user_lock_key = f"lock:{user_key}"
-        user_data = await self._get_session(user_id=user_id)
         
+        # Retrieve and validate session (with lock)
+        user_data = None
+        story_data = None
         async with redis_lock(client, user_lock_key):
+            user_data = await self._get_session(user_id=user_id)
             if not user_data:
                 raise HTTPException(status_code=403, detail="Invalid user ID")
             
@@ -440,120 +434,125 @@ class ClassicStorySetup:
             if not story_data:
                 raise HTTPException(status_code=405, detail="Invalid story ID")
             
-            # Ensure user monthly word count compatibility
+            # Check monthly word count
             monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
             if monthly_wc_data.get('tier') == 1:
-                if monthly_wc_data.get('monthly_word_count')  >= 100000:
+                if monthly_wc_data.get('monthly_word_count') >= 100000:
                     raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'free'")
             elif monthly_wc_data.get('tier') == 2:
-                if monthly_wc_data.get('monthly_word_count')  >= 200000:
+                if monthly_wc_data.get('monthly_word_count') >= 200000:
                     raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'scribe'")
             del monthly_wc_data
-            # Initialize StoryAuthor with memory system    
-            story_author = StoryAuthor(memory_system=story_data['memory_system'])
+        
+        # Now we're outside the lock - do all the heavy AI work here
+        story_author = StoryAuthor(memory_system=story_data['memory_system'])
+        
+        # Map tone integer to string and get temperature
+        mapped_tone_temp = 0.7
+        if "Tone" in initial_story_data:
+            tone_value = int(initial_story_data["Tone"])
+            mapped_tone = tone_dict.get(tone_value)
+            mapped_tone_temp = tone_temp_dict.get(tone_value, 0.7)
             
-            # Map tone integer to string and get temperature
-            if "Tone" in initial_story_data:
-                tone_value = int(initial_story_data["Tone"])
-                mapped_tone = tone_dict.get(tone_value)
-                mapped_tone_temp = tone_temp_dict.get(tone_value, 0.7)
-                
-                # Find closest match if exact value not found
-                if mapped_tone is None:
-                    closest_key = min(tone_dict.keys(), key=lambda k: abs(k - tone_value))
-                    mapped_tone = tone_dict[closest_key]
-                    mapped_tone_temp = tone_temp_dict.get(closest_key, 0.7)
-                
-                initial_story_data["Tone"] = mapped_tone
+            if mapped_tone is None:
+                closest_key = min(tone_dict.keys(), key=lambda k: abs(k - tone_value))
+                mapped_tone = tone_dict[closest_key]
+                mapped_tone_temp = tone_temp_dict.get(closest_key, 0.7)
             
-            # Map length integer to string
-            if "Length" in initial_story_data:
-                length_value = int(initial_story_data["Length"])
-                mapped_length = length_dict.get(length_value)
-                
-                # Find closest match if exact value not found
-                if mapped_length is None:
-                    closest_key = min(length_dict.keys(), key=lambda k: abs(k - length_value))
-                    mapped_length = length_dict[closest_key]
-                
-                initial_story_data["Length"] = mapped_length
+            initial_story_data["Tone"] = mapped_tone
+        
+        # Map length integer to string
+        if "Length" in initial_story_data:
+            length_value = int(initial_story_data["Length"])
+            mapped_length = length_dict.get(length_value)
             
-            # Filter: Clean user context (remove system fields)
-            user_context = {
-                k: v for k, v in initial_story_data.items() 
-                if k not in ["story_id", "user_id", "story_type"]
+            if mapped_length is None:
+                closest_key = min(length_dict.keys(), key=lambda k: abs(k - length_value))
+                mapped_length = length_dict[closest_key]
+            
+            initial_story_data["Length"] = mapped_length
+        
+        # Clean user context (remove system fields)
+        user_context = {
+            k: v for k, v in initial_story_data.items() 
+            if k not in ["story_id", "user_id", "story_type"]
+        }
+        
+        try:
+            # ALL HEAVY AI OPERATIONS HERE - NO LOCKS HELD
+            
+            # Step 1: Create story seed
+            story_seed, seed_tokens, min_age = await story_author.create_story_seed(
+                user_context=user_context,
+                model=model
+            )
+
+            # Step 2: Generate blurb
+            print(f"📖 Generating blurb for: {story_seed.title}")
+            blurb = await story_author.generate_blurb(story_seed)
+            
+            # Step 3: Generate cover image (commented out in your code)
+            image_data_base64 = None
+            
+            # Step 4: Store documents in memory system (no lock needed - memory system has its own locking)
+            await story_data['memory_system'].add_long_term_document(
+                text=json.dumps(user_context, indent=2),
+                metadata={
+                    "type": "story_user_context",
+                    "story_title": story_seed.title
+                }
+            )
+            
+            await story_data['memory_system'].add_long_term_document(
+                text=story_seed.model_dump_json(indent=2),
+                metadata={
+                    "type": "story_seed",
+                    "story_title": story_seed.title
+                }
+            )
+            
+            # Step 5: Plan Act 1
+            print(f"📋 Planning Act 1 for: {story_seed.title}")
+            act_1_plan, act_tokens = await story_author.plan_act(
+                story_title=story_seed.title,
+                act_number=1,
+                model=model
+            )
+            
+            tokens_usage = {
+                "prompt_tokens": act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"],
+                "completion_tokens": act_tokens["completion_tokens"] + seed_tokens["completion_tokens"],
+                "total_tokens": act_tokens["total_tokens"] + seed_tokens["total_tokens"]
+            }
+
+            story_info = {
+                "title": story_seed.title,
+                "act_count": story_seed.act_count,
+                "target_length": story_seed.target_length,
+                "act_1_title": act_1_plan.act_title,
+                "genre": story_seed.genre,
+                "tone": user_context.get("Tone"),
+                "pov": story_seed.style_guide.get("pov"),
+                "story_type": "interactive"
             }
             
-            #story_title = user_context.get("Title", "None")
-            
-            try:
-                # Step 1: Create story seed
-                #print(f"🌱 Creating story seed")
-                story_seed, seed_tokens, min_age = await story_author.create_story_seed(
-                    user_context=user_context,
-                    model=model
-                )
+            print(f"✅ Story initialization complete: {story_seed.title}")
+            print(f"   - Type: {story_type}")
+            print(f"   - Acts planned: {story_seed.act_count}")
+            print(f"   - Target length: {story_seed.target_length} words")
+            print(f"   - Total tokens used: {tokens_usage}")
 
-                # Step 2: Generate blurb
-                print(f"📖 Generating blurb for: {story_seed.title}")
-                blurb = await story_author.generate_blurb(story_seed)
-                
-                # Step 3: Generate cover image
-                #print(f"🎨 Generating cover image for: {story_seed.title}")
-                #image_data_base64 = await story_author.generate_cover_image(blurb)
-                image_data_base64=None
-                # Store both original user context and parsed seed
-                await story_data['memory_system'].add_long_term_document(
-                    text=json.dumps(user_context, indent=2),
-                    metadata={
-                        "type": "story_user_context",
-                        "story_title": story_seed.title
-                    }
-                )
-                
-                await story_data['memory_system'].add_long_term_document(
-                    text=story_seed.model_dump_json(indent=2),
-                    metadata={
-                        "type": "story_seed",
-                        "story_title": story_seed.title
-                    }
-                )
-                
-                
-                # Step 4: Plan Act 1 (ready for story generation to begin)
-                print(f"📋 Planning Act 1 for: {story_seed.title}")
-                act_1_plan, act_tokens = await story_author.plan_act(
-                    story_title=story_seed.title,
-                    act_number=1,
-                    model=model
-                )
-                
-                tokens_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                tokens_usage["prompt_tokens"] = act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"]
-                tokens_usage["completion_tokens"] = act_tokens["completion_tokens"] + seed_tokens["completion_tokens"]
-                tokens_usage["total_tokens"] = act_tokens["total_tokens"] + seed_tokens["total_tokens"]
-                
-                print(f"✅ Story initialization complete: {story_seed.title}")
-                print(f"   - Acts planned: {story_seed.act_count}")
-                print(f"   - Target length: {story_seed.target_length} words")
-                print(f"   - Act 1 chapters: {len(act_1_plan.chapter_outlines)}")
-                print(f"   - Total tokens used: {tokens_usage}")
+        except Exception as e:
+            print(f"❌ Error during story initialization: {str(e)}")
+            raise HTTPException(
+                status_code=500, 
+                detail=f"Failed to initialize story: {str(e)}"
+            )
+        finally:
+            del story_author
 
-                
-
-            except Exception as e:
-                print(f"❌ Error during story initialization: {str(e)}")
-                raise HTTPException(
-                    status_code=500, 
-                    detail=f"Failed to initialize story: {str(e)}"
-                )
-            
-            finally:
-                # Clean up author instance
-                del story_author
-            
-
-            
+        # NOW acquire lock for final Redis updates - LOCK SCOPE 2
+        async with redis_lock(client, user_lock_key):
             # Update story progress in memory system
             await story_data["memory_system"].update_story_progress(
                 metadata={
@@ -562,8 +561,8 @@ class ClassicStorySetup:
                     "story_title": story_seed.title,
                     "story_word_count": 0,
                     "chapter_word_count": 0,
-                    "current_act_id": 1,  # Track current act
-                    "total_acts": story_seed.act_count,  # Track total acts
+                    "current_act_id": 1,
+                    "total_acts": story_seed.act_count,
                     "tone_temp": mapped_tone_temp,
                     "model": model,
                     "author_token_usage": tokens_usage,
@@ -572,9 +571,9 @@ class ClassicStorySetup:
                     "story_type": story_type,
                     "target_length": story_seed.target_length,
                     "pov": story_seed.style_guide.get("pov", "Third-person"),
-                    "prose_style": story_seed.style_guide.get("prose_style", "Third-person"),
-                    "narrative_voice": story_seed.style_guide.get("narrative_voice", "Third-person"),
-                    "tense": story_seed.style_guide.get("tense", "Third-person"),
+                    "prose_style": story_seed.style_guide.get("prose_style", ""),
+                    "narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
+                    "tense": story_seed.style_guide.get("tense", ""),
                     "genre": story_seed.genre,
                     "themes": story_seed.themes,
                     "min_age": min_age,
@@ -591,31 +590,23 @@ class ClassicStorySetup:
             
             await self._set_session(user_id, story_id, serializable_story_data)
             await self._set_session(user_id, data=user_data)
-            
-            # Register story in user management
-            from src.memory.user_management import append_story
-            await append_story(
-                user_id=user_id, 
-                story_title=story_seed.title, 
-                story_id=story_id, 
-                story_type=story_type
-            )
-            
-            return {
-                "status": "success",
-                "blurb": blurb,
-                "image_data": image_data_base64,
-                "story_info": {
-                    "title": story_seed.title,
-                    "act_count": story_seed.act_count,
-                    "target_length": story_seed.target_length,
-                    "first_chapter_title": act_1_plan.chapter_outlines[0].chapter_title,
-                    "genre": story_seed.genre,
-                    "tone": user_context.get("Tone"),
-                    "pov": story_seed.style_guide.get("pov")
-                },
-                "tokens_used": tokens_usage
-            }
+        
+        # Register story OUTSIDE the lock
+        from src.memory.user_management import append_story
+        await append_story(
+            user_id=user_id, 
+            story_title=story_seed.title, 
+            story_id=story_id, 
+            story_type=story_type
+        )
+        
+        return {
+            "status": "success",
+            "blurb": blurb,
+            "image_data": image_data_base64,
+            "story_info": story_info,
+            "tokens_used": tokens_usage
+        }
 
 
     # ============================================================================
