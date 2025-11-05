@@ -273,7 +273,7 @@ story seed:
         min_age = min_age_parser.parse(response.content.strip())
         del response
         print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
-        return story_seed, tokens, min_age.get('min_age', 15)
+        return story_seed, tokens, min_age.min_age
 
         # # Store both original user context and parsed seed
         # await self.memory.add_long_term_document(

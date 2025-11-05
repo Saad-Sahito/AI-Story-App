@@ -427,7 +427,6 @@ async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapte
 async def api_put_story_public(user_id: str, story_id: str, public: bool = True):
     return await update_user_story_public_status(user_id=user_id, story_id=story_id, public=public)
 
-
 class ImageRequest(BaseModel):
     story_type: str
 
