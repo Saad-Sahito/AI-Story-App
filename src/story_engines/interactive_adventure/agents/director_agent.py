@@ -674,6 +674,7 @@ Target Word Count for Act: {act_plan.get('target_word_count', 'N/A')}
                 summary_type="chapter summary"
             )
             director_context = await self.memory.get_director_context(
+                current_act_number=state.current_act_id,
                 current_chapter_number=state.current_chapter_id,
                 query=self.current_chap_summary if self.current_chap_summary else "",
                 k=5
@@ -926,6 +927,7 @@ Story Word Count so far: {state.story_word_count}
         )
         
         director_context = await self.memory.get_director_context(
+            current_act_number=state.current_act_id,
             current_chapter_number=state.current_chapter_id,
             query=self.current_chap_summary if self.current_chap_summary else "",
             k=3
