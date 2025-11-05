@@ -669,6 +669,7 @@ Target Word Count for Act: {act_plan.get('target_word_count', 'N/A')}
         # Get recent context (last 2-3 chapters)
         if state.current_chapter_id > 1:
             self.current_chap_summary = await self.memory.search_single_episodic_story(
+                act_number=state.current_act_id,
                 chapter_number=state.current_chapter_id - 1,
                 summary_type="chapter summary"
             )
@@ -919,6 +920,7 @@ Story Word Count so far: {state.story_word_count}
         
         # Get current chapter summary and director context
         self.current_chap_summary = await self.memory.search_single_episodic_story(
+            act_number=state.current_act_id,
             chapter_number=state.current_chapter_id,
             summary_type="scene summary"
         )
