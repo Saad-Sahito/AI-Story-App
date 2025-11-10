@@ -11,6 +11,7 @@ from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
 from src.story_engines.classic_narrative.agents.director_agent import DirectorGraph
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
 from src.utilities.image_generation import generate_cover_image
+from src.utilities.blurb_generator import generate_blurb
 from config_vars import tier_2_monthly_words_limit, tier_1_monthly_words_limit
 from typing import Optional
 from asyncio import Lock
@@ -478,7 +479,7 @@ class ClassicStorySetup:
 
             # Step 2: Generate blurb
             print(f"📖 Generating blurb for: {story_seed.title}")
-            blurb = await story_author.generate_blurb(story_seed)
+            blurb = await generate_blurb(story_seed)
             
             # Step 3: Generate cover image
             image_data_base64 = None

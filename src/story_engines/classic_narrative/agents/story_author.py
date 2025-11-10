@@ -59,7 +59,7 @@ class ChapterOutline(BaseModel):
 
 class ActPlan(BaseModel):
     """Complete plan for one act of the story"""
-    act_number: int = Field(..., description="Which act this is (1, 2, 3, etc.)")
+    act_number: int = Field(..., description="Which act this is (1, 2, 3, etc)")
     act_title: str = Field(..., description="Evocative name for this act")
     act_purpose: str = Field(
         ..., 
@@ -245,7 +245,7 @@ class StoryAuthor:
 - Setting: {user_context.get('Setting', 'To be determined')}
 - Prose Style: {user_context.get('Guide Prose', 'Standard narrative')}
 - Themes: {themes_str}
-- Target Audience Age: {user_context.get('target_audience_age', 'General')} years old
+- Target Audience Age: {user_context.get('target_audience_age', 'General')}
 - Target Length: {target_length} words ({act_count} acts recommended)
 {protagonist_instruction}
 
@@ -274,73 +274,6 @@ story seed:
         del response
         print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
         return story_seed, tokens, min_age.min_age
-
-        # # Store both original user context and parsed seed
-        # await self.memory.add_long_term_document(
-        #     text=json.dumps(user_context, indent=2),
-        #     metadata={
-        #         "type": "story_user_context",
-        #         "story_title": story_title
-        #     }
-        # )
-        
-        # await self.memory.add_long_term_document(
-        #     text=story_seed.model_dump_json(indent=2),
-        #     metadata={
-        #         "type": "story_seed",
-        #         "story_title": story_title
-        #     }
-        # )
-
-    async def generate_blurb(self, story_seed: StorySeed) -> str:
-        """
-        Create compelling back-cover blurb from story seed.
-        
-        Args:
-            story_seed: The StorySeed object
-            
-        Returns:
-            Marketing blurb as string
-        """
-        print("📖 Generating book blurb...")
-        
-        system_prompt = """You are a professional book marketer specializing in back-cover copy.
-
-Write a captivating blurb (<50 words) that:
-- Hooks readers emotionally
-- Establishes atmosphere and stakes
-- Teases the protagonist's journey
-- Matches the story's genre and tone
-- Avoids spoilers or major plot reveals
-
-Style: Professional, marketable, similar to what you'd find in a bookstore.
-
-Output only the blurb—no commentary or formatting."""
-        genres_str = ", ".join(story_seed.genre)  # Updated to handle list of genres
-        # Format seed info for context
-        seed_summary = f"""
-Title: {story_seed.title}
-Genre: {genres_str}
-Tone: {story_seed.tone}
-Premise: {story_seed.premise}
-Protagonist: {story_seed.protagonist}
-Central Conflict: {story_seed.central_conflict}
-Themes: {', '.join(story_seed.themes)}
-Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
-"""
-        
-        response = await utility_client(
-            system_prompt=system_prompt,
-            human_prompt=f"Create a blurb for:\n\n{seed_summary}"
-        )
-        
-        blurb = response.content.strip()
-        print("✅ Blurb generated")
-        return blurb
-
-
-    
-
 
     async def plan_act(
         self, 

@@ -262,61 +262,7 @@ story seed:
         min_age = min_age_parser.parse(response.content.strip())
         del response
         print(f"✅ Story seed created: '{story_seed.title}' ({story_seed.act_count} acts, {target_length} words)")
-        return story_seed, tokens, min_age.min_age
-
-
-    async def generate_blurb(self, story_seed: StorySeed) -> str:
-        """
-        Create compelling back-cover blurb from story seed.
-        
-        Args:
-            story_seed: The StorySeed object
-            
-        Returns:
-            Marketing blurb as string
-        """
-        print("📖 Generating book blurb...")
-        
-        system_prompt = """You are a professional book marketer specializing in interactive fiction back-cover copy.
-
-Write a short captivating blurb (<50 words) that:
-- Hooks readers emotionally
-- Establishes atmosphere and stakes
-- Teases the protagonist's journey
-- Hints at meaningful choices without spoiling them
-- Matches the story's genres and tone
-- Emphasizes agency: "Your choices shape the story"
-
-Style: Professional, marketable, similar to what you'd find on interactive fiction or game narratives.
-
-Output only the blurb—no commentary or formatting."""
-        
-        genres_str = ", ".join(story_seed.genre)  # Updated to handle list of genres
-        
-        seed_summary = f"""
-Title: {story_seed.title}
-Genres: {genres_str}
-Tone: {story_seed.tone}
-Premise: {story_seed.premise}
-Protagonist: {story_seed.protagonist['name']} - {story_seed.protagonist['core_trait']}
-Initial Conflict: {story_seed.initial_conflict}
-Themes: {', '.join(story_seed.themes)}
-Setting: {story_seed.world_essentials.get('setting', 'Unknown')}
-
-Note: This is an INTERACTIVE story where user choices matter.
-"""
-        
-        response = await utility_client(
-            system_prompt=system_prompt,
-            human_prompt=f"Create a blurb for this interactive story:\n\n{seed_summary}"
-        )
-        
-        blurb = response.content.strip()
-        print("✅ Blurb generated")
-        return blurb
-
-
-    
+        return story_seed, tokens, min_age.min_age    
 
     async def plan_act(
         self, 
