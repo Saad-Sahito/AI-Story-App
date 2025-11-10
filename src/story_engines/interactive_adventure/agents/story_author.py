@@ -7,6 +7,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from src.llm_client.llm_client import author_client, utility_client, ingestor_client
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
+from config_vars import author_story_rules_negative
 
 
 # ============================================================================
@@ -219,6 +220,7 @@ class StoryAuthor:
         - Be concise—this is a seed, not full planning
         - Focus on emotional core and world rules, not detailed plot
         - Internal consistency is critical (especially protagonist traits must align)
+        - {author_story_rules_negative}
 
         {story_seed_parser.get_format_instructions()}
         """

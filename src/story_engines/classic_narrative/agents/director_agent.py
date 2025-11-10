@@ -15,6 +15,7 @@ from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import director_client, ingestor_client
+from config_vars import tier_1_monthly_words_limit, tier_2_monthly_words_limit
 
 
 # ============================================================================
@@ -800,13 +801,13 @@ Create {expected_scenes} scene plans that bring this chapter to life, with each 
             # Ensure user monthly word count compatibility
             monthly_wc_data = await self.memory.get_monthly_word_count()
             if monthly_wc_data.get('tier') == 1:
-                if monthly_wc_data.get('monthly_word_count')  >= 100000:
+                if monthly_wc_data.get('monthly_word_count')  >= tier_1_monthly_words_limit:
                     status="User monthly word count limit reached for tier free"
                     state.error_message = f"Scene {scene.scene_id} failed: {status}"
                     state.next_action = "ERROR"
                     return state.__dict__
             elif monthly_wc_data.get('tier') == 2:
-                if monthly_wc_data.get('monthly_word_count')  >= 200000:
+                if monthly_wc_data.get('monthly_word_count')  >= tier_2_monthly_words_limit:
                     status="User monthly word count limit reached for tier scribe"
                     state.error_message = f"Scene {scene.scene_id} failed: {status}"
                     state.next_action = "ERROR"

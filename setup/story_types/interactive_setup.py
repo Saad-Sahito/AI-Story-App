@@ -4,13 +4,14 @@ import time
 import redis.asyncio as redis
 from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
-from better_profanity import profanity
+from src.utilities.profanity_filter import has_profanity
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from src.story_engines.interactive_adventure.agents.story_author import StoryAuthor
 from src.story_engines.interactive_adventure.agents.director_agent import DirectorGraph
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
 from src.utilities.image_generation import generate_cover_image
+from config_vars import tier_2_monthly_words_limit, tier_1_monthly_words_limit
 from asyncio import Lock
 from typing import Optional
 from contextlib import asynccontextmanager
@@ -377,16 +378,13 @@ class InteractiveStorySetup:
         #     or "No story text for this chapter found."
         # )
         return {"status": "success", "message": f"Session started for {user_id} and {story_id}"}
-
-    def has_profanity(self, text: str) -> bool:
-        return profanity.contains_profanity(text)
     
     async def create_premise(self, initial_story_data: dict, model: str):
         """
         Create story seed, blurb, and cover image at story initialization.
         Works for BOTH classic and interactive stories.
         """
-        flagged = [k for k, v in initial_story_data.items() if self.has_profanity(str(v))]
+        flagged = [k for k, v in initial_story_data.items() if has_profanity(str(v))]
         if flagged:
             print("Inappropriate content found in:", flagged)
             raise HTTPException(status_code=390, detail="Inappropriate words found in user context")
@@ -428,10 +426,10 @@ class InteractiveStorySetup:
         # Check monthly word count
         monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
         if monthly_wc_data.get('tier') == 1:
-            if monthly_wc_data.get('monthly_word_count') >= 100000:
+            if monthly_wc_data.get('monthly_word_count') >= tier_1_monthly_words_limit:
                 raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'free'")
         elif monthly_wc_data.get('tier') == 2:
-            if monthly_wc_data.get('monthly_word_count') >= 200000:
+            if monthly_wc_data.get('monthly_word_count') >= tier_2_monthly_words_limit:
                 raise HTTPException(status_code=380, detail="User monthly word count limit reached for tier 'scribe'")
         del monthly_wc_data
         
@@ -790,12 +788,12 @@ class InteractiveStorySetup:
                     # Ensure user monthly word count compatibility
                     monthly_wc_data = await story_data['memory_system'].get_monthly_word_count()
                     if monthly_wc_data.get('tier') == 1:
-                        if monthly_wc_data.get('monthly_word_count')  >= 100000:
+                        if monthly_wc_data.get('monthly_word_count')  >= tier_1_monthly_words_limit:
                             await websocket.send_json({"error": "User monthly word count limit reached for tier 'free'"})
                             await websocket.close(code=1000)
                             return
                     elif monthly_wc_data.get('tier') == 2:
-                        if monthly_wc_data.get('monthly_word_count')  >= 200000:
+                        if monthly_wc_data.get('monthly_word_count')  >= tier_2_monthly_words_limit:
                             await websocket.send_json({"error": "User monthly word count limit reached for tier 'scribe'"})
                             await websocket.close(code=1000)
                             return

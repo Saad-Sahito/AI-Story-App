@@ -13,6 +13,7 @@ from langchain_core.output_parsers import PydanticOutputParser
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
 from .shared_scene_planner import UserSceneContext
+from config_vars import tier_2_monthly_words_limit, tier_1_monthly_words_limit
 
 import src.story_engines.interactive_adventure.agents.shared_scene_planner as scene_planner_module
 from src.llm_client.llm_client import director_client, ingestor_client
@@ -882,12 +883,12 @@ Story Word Count so far: {state.story_word_count}
         # Ensure user monthly word count compatibility
         monthly_wc_data = await self.memory.get_monthly_word_count()
         if monthly_wc_data.get('tier') == 1:
-            if monthly_wc_data.get('monthly_word_count')  >= 100000:
+            if monthly_wc_data.get('monthly_word_count')  >= tier_1_monthly_words_limit:
                 status="User monthly word count limit reached for tier 'free'"
                 state.next_action = "ERROR"
                 raise RuntimeError(status)
         elif monthly_wc_data.get('tier') == 2:
-            if monthly_wc_data.get('monthly_word_count')  >= 200000:
+            if monthly_wc_data.get('monthly_word_count')  >= tier_2_monthly_words_limit:
                 status="User monthly word count limit reached for tier 'scribe'"
                 state.next_action = "ERROR"
                 raise RuntimeError(status)
