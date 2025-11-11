@@ -8,10 +8,11 @@ from dotenv import load_dotenv
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
 from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
-from src.story_engines.classic_narrative.agents.director_agent import DirectorGraph
+from src.story_engines.classic_narrative.agents.director_agent_classic import DirectorGraph
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
 from src.utilities.image_generation import generate_cover_image
 from src.utilities.blurb_generator import generate_blurb
+from src.utilities.ingestor import Ingestor
 from config_vars import tier_2_monthly_words_limit, tier_1_monthly_words_limit
 from typing import Optional
 from asyncio import Lock
@@ -703,7 +704,9 @@ class ClassicStorySetup:
                         
                         #if completion_check['next_action'] == 'START_NEXT_ACT':
                         if current_act < total_acts:
-                            ingested = await story_author.ingest_act(current_act=current_act, chapters=latest_chapter-1, story_title=story_title)
+                            text = await memory_system.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=latest_chapter-1)
+                            combined_text = '\n'.join(text)
+                            ingested = await Ingestor.ingest_act(current_act=current_act, chapters_text=combined_text)
                             if ingested == "failed":
                                 print("Act Ingestion failed.")
                                 return {
@@ -711,6 +714,15 @@ class ClassicStorySetup:
                                     "message": f"Act ingestion failed, for act {current_act}",
                                     "current_act_id": current_act
                                 }
+                            else:
+                                await memory_system.add_post_act_bundle(
+                                    act_bundle=ingested,
+                                    metadata={
+                                        "act_id": current_act,
+                                        "story_title": story_title,
+                                        "type": "act summary"
+                                    }
+                                )
                             # Plan next act
                             next_act = current_act + 1
                             print(f"🎬 Transitioning to Act {next_act}")

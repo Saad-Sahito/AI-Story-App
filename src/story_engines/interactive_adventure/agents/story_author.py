@@ -75,8 +75,7 @@ class ActPlan(BaseModel):
         description="Natural stopping point for this act (e.g., 'Hero makes irreversible choice')"
     )
 
-class ActSummary(BaseModel):
-    act_summary: str = Field(description="Detailed summary of the entire Act")
+
 
 class StoryMinimumAge(BaseModel):
     min_age: int = Field(description="minimum age limit to read this story")
@@ -87,7 +86,7 @@ class StoryMinimumAge(BaseModel):
 
 story_seed_parser = PydanticOutputParser(pydantic_object=StorySeed)
 act_plan_parser = PydanticOutputParser(pydantic_object=ActPlan)
-act_ingestor_parser = PydanticOutputParser(pydantic_object=ActSummary)
+
 min_age_parser = PydanticOutputParser(pydantic_object=StoryMinimumAge)
 
 # ============================================================================
@@ -478,83 +477,3 @@ User choices may have taken the story in unexpected directions - adapt your plan
 Suggest potential branches, but don't force predetermined outcomes.
 """
 
-    async def ingest_act(self, current_act: int, chapters: int, story_title: str, max_retries: int = 3):
-        """
-        Ingests entire act using act chapter summaries.
-        """
-        text = await self.memory.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=chapters)
-        combined_text = '\n'.join(text)
-
-        system_prompt = f"""
-You are the Act Breakdown Agent. Extract relevant and absolutely important info from the Act, including relevant references to user decisions wherever indicated.
-Always include chapter number reference alongside relevant text.
-
-Respond ONLY in JSON with this schema:
-{act_ingestor_parser.get_format_instructions()}
-"""
-
-        human_prompt = f"""
-Current Act: {current_act}
-
-Act Chapters Summaries:
-{combined_text}
-"""
-
-        for attempt in range(1, max_retries + 1):
-            resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
-            raw_text = StoryHelpers._extract_content(resp)
-            clean_resp = StoryHelpers._strip_code_fences(raw_text)
-            del raw_text, resp
-            gc.collect()
-
-            if isinstance(clean_resp, dict):
-                clean_resp = json.dumps(clean_resp)
-
-            success, result, exc = StoryHelpers._try_validate_with_model_then_parser(clean_resp, ActSummary, act_ingestor_parser)
-            
-            if success:
-                await self.memory.add_post_act_bundle(
-                    scene_bundle=result,
-                    metadata={
-                        "act_id": current_act,
-                        "story_title": story_title,
-                        "type": "act summary"
-                    }
-                )
-                return "success"
-
-            else:
-                print(f"[Attempt {attempt}] Scene ingestion validation failed:", exc)
-            
-            try:
-                fixed_resp = await StoryHelpers._json_fixer(clean_resp)
-                fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
-                del fixed_resp, clean_resp
-                gc.collect()
-                
-                if isinstance(fixed_clean, dict):
-                    fixed_clean = json.dumps(fixed_clean)
-
-                success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, ActSummary, act_ingestor_parser)
-                del fixed_clean
-                
-                if success:
-                    await self.memory.add_post_act_bundle(
-                        act_bundle=result,
-                        metadata={
-                            "act_id": current_act,
-                            "story_title": story_title,
-                            "type": "act summary"
-                        }
-                    )
-                    return "success"
-            except Exception as inner_e:
-                print(f"[Attempt {attempt}] json_fixer raised:", inner_e)
-            
-            if attempt < max_retries:
-                print(f"Retrying ingest_scene... (attempt {attempt+1})")
-                continue
-            else:
-                print("All retries exhausted; returning minimal structure.")
-                del system_prompt, human_prompt
-                return "failed"

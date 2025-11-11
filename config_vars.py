@@ -6,7 +6,7 @@ allowed_words = [
     "ovary", "uterus", "testicle", "menstruation", "womb"
 ]
 
-banned_words_list = ['transgender', 'trans', 'queer', 'gay', 'homo', 'homosexual', 'bisexual', 'ladyboy', 'femboy', 'transfeminine', 'transmasculine', 'lesbian', 'tranny']
+banned_words_list = ['transgender', 'trans', 'queer', 'gay', 'homo', 'homosexual', 'bisexual', 'ladyboy', 'femboy', 'transfeminine', 'transmasculine', 'lesbian', 'tranny', 'pansexual']
 author_story_rules_negative = """
 - Do not include any characters with non-straight sexual orientations (e.g., no gay, lesbian, bisexual, pansexual, asexual, or queer identities).
 - Do not include any transgender, non-binary, genderfluid, or other gender-diverse characters or themes.
