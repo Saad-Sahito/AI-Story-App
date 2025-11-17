@@ -1,4 +1,4 @@
-allowed_words = [
+allowed_words_list = [
     "hell", "damn", "goddamn", "goddammit", "god", 
     "kill", "killed", "killing", "murder", "murderer", 
     "stupid", "moron", "dummy", "crazy", 

@@ -29,23 +29,23 @@ scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
 
 class CharacterMemory(BaseModel):
     name: str
-    chapter_id: str
-    summary: str = Field(description="Inline summary of character's actions/motivations/changes")
-    traits: List[str] = Field(default_factory=list)
-    relationships: Dict[str, str] = Field(default_factory=dict)
-    emotional_state: Optional[str] = None
-    goals: Optional[str] = None
-    status_changes: Optional[str] = None
+    progression: List[str] = Field(default_factory=list, description="Detailed progression history entries, formatted as 'Act {act} Chapter {chapter} Scene {scene}: {detailed change description, including what changed, why, and current state}'")
+    current_summary: str = Field(description="Current inline summary of character's actions/motivations/changes")
+    current_traits: List[str] = Field(default_factory=list)
+    current_relationships: Dict[str, str] = Field(default_factory=dict)
+    current_emotional_state: Optional[str] = None
+    current_goals: Optional[str] = None
+    current_status: Optional[str] = None
 
 
 class WorldElementMemory(BaseModel):
     name: str
-    chapter_id: str
-    summary: str = Field(description="Summary of how this world element appeared/changed")
-    atmosphere: Optional[str] = None
-    culture: Optional[str] = None
-    events: Optional[str] = None
-    connections: Union[Dict[str, str], str] = Field(default_factory=dict)
+    progression: List[str] = Field(default_factory=list, description="Detailed progression history entries, formatted as 'Act {act} Chapter {chapter} Scene {scene}: {detailed change description, including what changed, why, and current state}'")
+    current_summary: str = Field(description="Current summary of how this world element appeared/changed")
+    current_atmosphere: Optional[str] = None
+    current_culture: Optional[str] = None
+    current_events: Optional[str] = None
+    current_connections: Union[Dict[str, str], str] = Field(default_factory=dict)
 
 
 class ChapterBundle(BaseModel):
@@ -58,6 +58,8 @@ chapter_parser = PydanticOutputParser(pydantic_object=ChapterBundle)
 
 class ActSummary(BaseModel):
     act_summary: str = Field(description="Detailed summary of the entire Act")
+    character_progressions: Dict[str, CharacterMemory] = Field(description="Cumulative character progressions up to this act")
+    world_progressions: Dict[str, WorldElementMemory] = Field(description="Cumulative world element progressions up to this act")
 
 act_ingestor_parser = PydanticOutputParser(pydantic_object=ActSummary)
 
@@ -67,6 +69,7 @@ act_ingestor_parser = PydanticOutputParser(pydantic_object=ActSummary)
 class Ingestor:
     @staticmethod
     async def ingest_scene(
+        act_id: int,
         chapter_id: int,
         scene_id: int,
         scene_text: str,
@@ -77,7 +80,7 @@ class Ingestor:
         system_prompt = f"""You are the Scene Breakdown Agent. Extract structured information from the scene.
 Always include:
 
-* chapter_id and scene_id in each entity's details.
+* act_id, chapter_id and scene_id in each entity's details.
 
 * Both old_name and new_name fields for every character and world element:
 
@@ -88,7 +91,7 @@ Always include:
 Only include relevant character and world names that appear or are mentioned. If a name change occurs, clearly indicate it through old_name/new_name instead of creating extra keys.
 Respond ONLY in JSON matching this schema: {scene_parser.get_format_instructions()}"""
 
-        human_prompt = f"""Current Chapter: {chapter_id}, Current Scene: {scene_id}
+        human_prompt = f"""Current Act: {act_id}, Current Chapter: {chapter_id}, Current Scene: {scene_id}
 Scene: {scene_text}
 Character Names: {chars} World Names: {worlds}"""
 
@@ -109,13 +112,13 @@ Character Names: {chars} World Names: {worlds}"""
                 return result
 
             try:
-                fixed_resp = await StoryHelpers._json_fixer(clean_resp, exc)
-                fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
-                del fixed_resp, clean_resp
+                fixed_resp = await StoryHelpers.load_json_with_retry(clean_resp, scene_parser)
+
+                del clean_resp
                 gc.collect()
 
-                if isinstance(fixed_clean, dict):
-                    fixed_clean = json.dumps(fixed_clean)
+                if isinstance(fixed_resp, dict):
+                    fixed_clean = json.dumps(fixed_resp)
 
                 success, result, exc = StoryHelpers._try_validate_with_model_then_parser(
                     fixed_clean, SceneBundle, scene_parser
@@ -130,6 +133,7 @@ Character Names: {chars} World Names: {worlds}"""
 
     @staticmethod
     async def ingest_chapter(
+        act_id: int,
         chapter_id: int,
         current_chap_summary: str,
         char_details: Dict[str, Any],
@@ -153,16 +157,22 @@ CRITICAL:
 
 * Use EXACT keys from provided Character Details and World Details.
 
+* For each CharacterMemory and WorldElementMemory, update the progression list by appending new entries based on changes in this chapter, formatted as 'Act {act_id} Chapter {chapter_id}: [detailed description of change, including what changed, why, previous state, and new current state]'. If no change, append a note confirming stability.
+
+* Update current_ fields to reflect the state at the end of this chapter.
+
+* Build upon provided previous details to create cumulative progression history.
+
 * For missing fields in memory, set to empty string "" or null as specified.
 
 * NEVER omit "world_summary" — it will crash the system.
 
-EXAMPLE STRUCTURE: {{ "summary": "Chapter summary here...", "character_summary": {{ "Alex Rivera": {{ "name": "Alex Rivera", "chapter_id": "2", ... }} }}, "world_summary": {{ "Neo-Tokyo": {{ "name": "Neo-Tokyo", "chapter_id": "2", ... }}, "Grid": {{ ... }} }} }}
-Provided Character Details (use these keys): {json.dumps(char_details, indent=2)}
-Provided World Details (use these keys and expand): {json.dumps(world_details, indent=2)}
+EXAMPLE STRUCTURE: {{ "summary": "Chapter summary here...", "character_summary": {{ "Alex Rivera": {{ "name": "Alex Rivera", "progression": ["Act 1 Chapter 1: Initial introduction as hero...", "Act 1 Chapter 2: Faced betrayal, now distrustful..."], "current_summary": "...", ... }} }}, "world_summary": {{ "Neo-Tokyo": {{ "name": "Neo-Tokyo", "progression": [...], ... }}, "Grid": {{ ... }} }} }}
+Provided Character Details (use these keys and build progression): {json.dumps(char_details, indent=2)}
+Provided World Details (use these keys and build progression): {json.dumps(world_details, indent=2)}
 {chapter_parser.get_format_instructions()}"""
 
-        human_prompt = f"""Current Chapter: {chapter_id} Chapter Text: {current_chap_summary}
+        human_prompt = f"""Current Act: {act_id} Current Chapter: {chapter_id} Chapter Text: {current_chap_summary}
 Character Details: {char_details}
 World Details: {world_details}"""
 
@@ -203,12 +213,11 @@ World Details: {world_details}"""
 
             # JSON Fixer Fallback
             try:
-                fixed_resp = await StoryHelpers._json_fixer(clean_resp, exc)
+                fixed_resp = await StoryHelpers.load_json_with_retry(clean_resp, chapter_parser)
                 if not fixed_resp:
                     continue
-                fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
-                if isinstance(fixed_clean, dict):
-                    fixed_clean = json.dumps(fixed_clean)
+                if isinstance(fixed_resp, dict):
+                    fixed_clean = json.dumps(fixed_resp)
                 elif not isinstance(fixed_clean, str):
                     fixed_clean = str(fixed_clean)
                 if not fixed_clean.strip():
@@ -223,23 +232,29 @@ World Details: {world_details}"""
         return None
     
     @staticmethod
-    async def ingest_act(current_act: int, chapters_text: str, max_retries: int = 3):
+    async def ingest_act(act_id: int, chapters_text: str, char_details: Dict[str, Any], world_details: Dict[str, Any], max_retries: int = 3):
         """
-        Ingests entire act using act chapter summaries.
+        Ingests entire act using act chapter summaries, and builds cumulative progressions for characters and worlds.
         """
         system_prompt = f"""
 You are the Act Breakdown Agent. Extract relevant and absolutely important info from the Act.
 Always include chapter number reference alongside relevant text.
+For character_progressions and world_progressions, build cumulative histories by aggregating and appending act-level changes based on the provided chapter summaries and previous details.
+Append to progression lists with entries like 'Act {act_id}: [detailed act-level change summary, integrating chapter changes, current state]'.
+Update current_ fields to reflect the state at the end of this act.
 
 Respond ONLY in JSON with this schema:
 {act_ingestor_parser.get_format_instructions()}
 """
         # print("COMBINED TEXT FOR ACT INGESTION: ",combined_text)
         human_prompt = f"""
-Current Act: {current_act}
+Current Act: {act_id}
 
 Act Chapters Summaries:
 {chapters_text}
+
+Previous Character Details (build upon for progressions): {json.dumps(char_details, indent=2)}
+Previous World Details (build upon for progressions): {json.dumps(world_details, indent=2)}
 """
 
         for attempt in range(1, max_retries + 1):
@@ -258,16 +273,16 @@ Act Chapters Summaries:
                 return result
 
             else:
-                print(f"[Attempt {attempt}] Scene ingestion validation failed:", exc)
+                print(f"[Attempt {attempt}] Act ingestion validation failed:", exc)
             
             try:
-                fixed_resp = await StoryHelpers._json_fixer(clean_resp, exc)
-                fixed_clean = StoryHelpers._strip_code_fences(fixed_resp)
-                del fixed_resp, clean_resp
+                fixed_resp = await StoryHelpers.load_json_with_retry(clean_resp, act_ingestor_parser)
+                
+                del clean_resp
                 gc.collect()
                 
-                if isinstance(fixed_clean, dict):
-                    fixed_clean = json.dumps(fixed_clean)
+                if isinstance(fixed_resp, dict):
+                    fixed_clean = json.dumps(fixed_resp)
 
                 success, result, exc = StoryHelpers._try_validate_with_model_then_parser(fixed_clean, ActSummary, act_ingestor_parser)
                 del fixed_clean
@@ -278,7 +293,7 @@ Act Chapters Summaries:
                 print(f"[Attempt {attempt}] json_fixer raised:", inner_e)
             
             if attempt < max_retries:
-                print(f"Retrying ingest_scene... (attempt {attempt+1})")
+                print(f"Retrying ingest_act... (attempt {attempt+1})")
                 continue
             else:
                 print("All retries exhausted; returning minimal structure.")

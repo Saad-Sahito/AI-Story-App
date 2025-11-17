@@ -5,7 +5,8 @@ import json
 from typing import Any, Dict, Tuple, Optional
 from langchain_core.messages import AIMessage
 from src.llm_client.llm_client import ingestor_client
-
+from pydantic import BaseModel, Field
+from langchain_core.output_parsers import PydanticOutputParser
 
 class StoryHelpers:
     @staticmethod
@@ -170,13 +171,37 @@ class StoryHelpers:
             last_exc = e
 
         return False, None, last_exc
-
+    
     @staticmethod
-    async def _json_fixer(text: str) -> str:
+    async def load_json_with_retry(text: str, parser, max_attempts: int = 5):
+        """Generic JSON loader with self-healing retry logic"""
+
+        attempt = 0
+        current_text = text
+
+        while attempt < max_attempts:
+            try:
+                # Step 1 
+                data = parser.parse(text)
+                return text
+            
+            except Exception as e:
+                # Step 2 → Auto-fix using your LLM json_fixer
+                current_text = await StoryHelpers._json_fixer(
+                    text=current_text,
+                    parser=parser,
+                    exc=e
+                )
+                attempt += 1
+
+        raise ValueError("❌ JSON parsing failed after maximum attempts")
+    
+    @staticmethod
+    async def _json_fixer(text: str, parser, exc = None) -> str:
         """
         Uses the provided llm client to repair malformed JSON strings.
         """
-        system_prompt = """
+        system_prompt = f"""
 You are a JSON repair agent. 
 - Input may be malformed JSON text. 
 - Output ONLY the corrected JSON, nothing else. 
@@ -185,9 +210,14 @@ You are a JSON repair agent.
 - Always return a plain JSON object with the same top-level keys.
 - If the input is correct, return it as is.
 - Change null/none instances of str to empty string "".
+
+{parser.get_format_instructions()}
 """
 
-        prompt = f"Fix the following json: {text}\nIf it is correct, then output as is, DO NOT add anything else, no leading or ending remarks."
+        prompt = f"""Fix the following json: {text}
+If it is correct, then output as is, DO NOT add anything else, no leading or ending remarks.
+{f"The exception that occured is: {exc}" if exc else ""}
+"""
         resp = await ingestor_client(system_prompt=system_prompt, human_prompt=prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)

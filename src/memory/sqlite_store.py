@@ -127,9 +127,9 @@ class SQLiteStore:
                     total_acts INTEGER,
                     target_length INTEGER,
                     genre_list TEXT,
+                    sub_genre_list TEXT,
                     themes_list TEXT,
                     pov TEXT,
-                    narrative_voice TEXT,
                     prose_style TEXT,
                     tense TEXT,
                     blurb TEXT,
@@ -142,7 +142,7 @@ class SQLiteStore:
                     UNIQUE(story_id)
                 )
             """)
-            
+            # narrative_voice TEXT,
             await conn.execute("""
                 CREATE TABLE IF NOT EXISTS story_progress (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -197,8 +197,8 @@ class SQLiteStore:
         """Retrieve shared story data for a given story_id."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
-                SELECT story_id, story_title, story_type, total_acts, target_length, genre_list, themes_list,
-                       pov, narrative_voice, tense, prose_style,
+                SELECT story_id, story_title, story_type, total_acts, target_length, genre_list, sub_genre_list, themes_list,
+                       pov, tense, prose_style,
                        blurb, tone_temp, image_data, public, min_age, created_at, updated_at
                 FROM shared_story_data
                 WHERE story_id = ?
@@ -207,6 +207,7 @@ class SQLiteStore:
             if row:
                 result = dict(row)
                 result["genre_list"] = json.loads(result["genre_list"]) if result["genre_list"] else []
+                result["sub_genre_list"] = json.loads(result["sub_genre_list"]) if result["sub_genre_list"] else []
                 result["themes_list"] = json.loads(result["themes_list"]) if result["themes_list"] else []
                 return result
             return None
@@ -224,9 +225,10 @@ class SQLiteStore:
                     "total_acts": metadata.get("total_acts") if metadata.get("total_acts") is not None else (existing["total_acts"] or 3),
                     "target_length": metadata.get("target_length") if metadata.get("target_length") is not None else (existing["target_length"] or 0),
                     "genre_list": metadata.get("genre") if metadata.get("genre") is not None else existing["genre_list"],
+                    "sub_genre_list": metadata.get("sub_genre") if metadata.get("sub_genre") is not None else existing["sub_genre_list"],
                     "themes_list": metadata.get("themes") if metadata.get("themes") is not None else existing["themes_list"],
                     "pov": metadata.get("pov") if metadata.get("pov") is not None else existing["pov"],
-                    "narrative_voice": metadata.get("narrative_voice") if metadata.get("narrative_voice") is not None else existing["narrative_voice"],
+                    #"narrative_voice": metadata.get("narrative_voice") if metadata.get("narrative_voice") is not None else existing["narrative_voice"],
                     "tense": metadata.get("tense") if metadata.get("tense") is not None else existing["tense"],
                     "prose_style": metadata.get("prose_style") if metadata.get("prose_style") is not None else existing["prose_style"],
                     "blurb": metadata.get("blurb") if metadata.get("blurb") is not None else existing["blurb"],
@@ -244,10 +246,11 @@ class SQLiteStore:
                     "total_acts": metadata.get("total_acts", 3),
                     "target_length": metadata.get("target_length", 0),
                     "genre_list": metadata.get("genre", []),
+                    "sub_genre_list": metadata.get("sub_genre", []),
                     "themes_list": metadata.get("themes", []),
                     "pov": metadata.get("pov"),
                     "tense": metadata.get("tense"),
-                    "narrative_voice": metadata.get("narrative_voice"),
+                    #"narrative_voice": metadata.get("narrative_voice"),
                     "prose_style": metadata.get("prose_style"),
                     "blurb": metadata.get("blurb"),
                     "tone_temp": metadata.get("tone_temp"),
@@ -259,7 +262,7 @@ class SQLiteStore:
 
             await conn.execute("""
             INSERT INTO shared_story_data (
-                story_id, story_title, story_type, total_acts, target_length, genre_list, themes_list, pov, tense, narrative_voice, prose_style,
+                story_id, story_title, story_type, total_acts, target_length, genre_list, sub_genre_list, themes_list, pov, tense, prose_style,
                 blurb, tone_temp, image_data, public, min_age
             ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(story_id) DO UPDATE SET
@@ -268,9 +271,9 @@ class SQLiteStore:
                 total_acts = excluded.total_acts,
                 target_length = excluded.target_length,
                 genre_list = excluded.genre_list,
+                sub_genre_list = excluded.sub_genre_list,
                 themes_list = excluded.themes_list,
                 pov = excluded.pov,
-                narrative_voice = excluded.narrative_voice,
                 tense = excluded.tense,
                 prose_style = excluded.prose_style,
                 blurb = excluded.blurb,
@@ -286,11 +289,12 @@ class SQLiteStore:
                 merged_data["total_acts"],
                 merged_data["target_length"],
                 json.dumps(merged_data["genre_list"]),
+                json.dumps(merged_data["sub_genre_list"]),
                 json.dumps(merged_data["themes_list"]),
                 merged_data["pov"],
                 merged_data["prose_style"],
                 merged_data["tense"],
-                merged_data["narrative_voice"],
+               # merged_data["narrative_voice"],
                 merged_data["blurb"],
                 merged_data["tone_temp"],
                 #merged_data["model"],
@@ -665,7 +669,7 @@ class SQLiteStore:
                         "public": False,
                         "min_age": 15,
                         "pov": None,
-                        "narrative_voice": None,
+                        #"narrative_voice": None,
                         "prose_style": None,
                         "tense": None,
                         "genre": [],
@@ -696,8 +700,9 @@ class SQLiteStore:
                             "pov": shared_data["pov"],
                             "tense": shared_data["tense"],
                             "prose_style": shared_data["prose_style"],
-                            "narrative_voice": shared_data["narrative_voice"],
+                           # "narrative_voice": shared_data["narrative_voice"],
                             "genre": shared_data["genre_list"],
+                            "sub_genre": shared_data["sub_genre_list"],
                             "themes": shared_data["themes_list"],
                             #"tone_temp": shared_data["tone_temp"],
                             "total_acts": shared_data["total_acts"],
@@ -965,7 +970,7 @@ class SQLiteStore:
             "genre": metadata.get("genre"),
             "themes": metadata.get("themes"),
             "pov": metadata.get("pov"),
-            "narrative_voice": metadata.get("narrative_voice"),
+            #"narrative_voice": metadata.get("narrative_voice"),
             "prose_style": metadata.get("prose_style"),
             "tense": metadata.get("tense"),
             "blurb": metadata.get("blurb"),
@@ -1162,7 +1167,7 @@ class SQLiteStore:
                     "total_acts": 3,
                     "target_length": 0,
                     "pov": None,
-                    "narrative_voice": None,
+                   # "narrative_voice": None,
                     "tense": None,
                     "prose_style": None,
                     "genre": [],
@@ -1196,9 +1201,10 @@ class SQLiteStore:
                         "target_length": shared_data["target_length"] if shared_data["target_length"] is not None else 0,
                         "pov": shared_data["pov"],
                         "tense": shared_data["tense"],
-                        "narrative_voice": shared_data["narrative_voice"],
+                        #"narrative_voice": shared_data["narrative_voice"],
                         "prose_style": shared_data["prose_style"],
                         "genre": shared_data["genre_list"] or [],
+                        "sub_genre": shared_data["sub_genre_list"] or [],
                         "themes": shared_data["themes_list"] or [],
                         "story_type": shared_data["story_type"] or "classic",
                         "story_title": shared_data["story_title"],
@@ -1432,6 +1438,7 @@ class SQLiteStore:
             shared_story_data = [dict(row) for row in rows]
             for record in shared_story_data:
                 record["genre_list"] = json.loads(record["genre_list"]) if record["genre_list"] else []
+                record["sub_genre_list"] = json.loads(record["sub_genre_list"]) if record["sub_genre_list"] else []
                 record["themes_list"] = json.loads(record["themes_list"]) if record["themes_list"] else []
                 if record.get("image_data"):
                     record["image_data"] = base64.b64encode(record["image_data"]).decode("utf-8")

@@ -196,7 +196,7 @@ class StoryMemorySystem:
         return episodic_raw
 
     async def get_director_context(self, current_act_number: int, current_chapter_number: int, query: str, k: int = 5) -> dict:
-        char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, k+int(k/2))
+        char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, 50)
         chapters_context = await self.search_multiple_episodic_story(
             query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
         )
@@ -353,6 +353,10 @@ class StoryMemorySystem:
     async def add_post_act_bundle(self, act_bundle: Dict[str, str], metadata: Dict[str, Any]):
         if act_bundle.get("act_summary"):
             await self.add_story_summary(act_bundle["act_summary"], metadata={"type": "act summary", "act_id": metadata.get("act_id", 0)})
+        if act_bundle.get("character_progression"):
+            await self.add_character_summary(act_bundle["character_progression"], metadata)
+        if act_bundle.get("world_progression"):
+            await self.add_world_summary(act_bundle["world_progression"], metadata)
 
     #---------------User Management------------------
     async def update_user_monthly_word_count(self, word_count):

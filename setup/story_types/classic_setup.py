@@ -388,7 +388,7 @@ class ClassicStorySetup:
         Create story seed, blurb, and cover image at story initialization.
         Works for BOTH classic and interactive stories.
         """
-        flagged = [k for k, v in initial_story_data.items() if has_profanity(str(v))]
+        flagged = [k for k, v in initial_story_data.items() if await has_profanity(str(v))]
         if flagged:
             print("Inappropriate content found in:", flagged)
             raise HTTPException(status_code=390, detail="Inappropriate words found in user context")
@@ -471,77 +471,49 @@ class ClassicStorySetup:
             if k not in ["story_id", "user_id", "story_type"]
         }
         
-        try:
-            # Step 1: Create story seed
-            story_seed, seed_tokens, min_age = await story_author.create_story_seed(
-                user_context=user_context,
-                model=model
-            )
+        # try:
+        # Step 1: Create story seed
+        story_plan = await story_author.orchestrate_story_planning(
+            user_context=user_context
+        )
+        all_tokens = story_plan['tokens']
+        story_seed = story_plan['seed']
+        minimal_plot = story_plan['minimal_plot']
+        # Step 2: Generate blurb
+        print(f"📖 Generating blurb for: {story_seed.title}")
+        blurb = await generate_blurb(minimal_plot)
+        
+        # Step 3: Generate cover image
+        image_data_base64 = None
+        
+        # Step 5: Plan Act 1
+        print(f"📋 Planning Act 1 for: {story_seed.title}")
+        _, act_tokens = await story_author.plan_act(
+            story_title=story_seed.title,
+            act_number=1
+        )
+        
+        tokens_usage = {
+            "prompt_tokens": act_tokens["prompt_tokens"] + all_tokens["prompt_tokens"],
+            "completion_tokens": act_tokens["completion_tokens"] + all_tokens["completion_tokens"],
+            "total_tokens": act_tokens["total_tokens"] + all_tokens["total_tokens"]
+        }
+        
+        del user_context
+        print(f"✅ Story initialization complete: {story_seed.title}")
+        print(f"   - Type: {story_type}")
+        print(f"   - Acts planned: {minimal_plot.act_count}")
+        print(f"   - Target length: {story_seed.target_length} words")
+        print(f"   - Total tokens used: {tokens_usage}")
 
-            # Step 2: Generate blurb
-            print(f"📖 Generating blurb for: {story_seed.title}")
-            blurb = await generate_blurb(story_seed)
-            
-            # Step 3: Generate cover image
-            image_data_base64 = None
-            
-            # Step 4: Store documents in memory system
-            await story_data['memory_system'].add_long_term_document(
-                text=json.dumps(user_context, indent=2),
-                metadata={
-                    "type": "story_user_context",
-                    "story_title": story_seed.title
-                }
-            )
-            
-            await story_data['memory_system'].add_long_term_document(
-                text=story_seed.model_dump_json(indent=2),
-                metadata={
-                    "type": "story_seed",
-                    "story_title": story_seed.title
-                }
-            )
-            
-            # Step 5: Plan Act 1
-            print(f"📋 Planning Act 1 for: {story_seed.title}")
-            act_1_plan, act_tokens = await story_author.plan_act(
-                story_title=story_seed.title,
-                act_number=1,
-                model=model
-            )
-            
-            tokens_usage = {
-                "prompt_tokens": act_tokens["prompt_tokens"] + seed_tokens["prompt_tokens"],
-                "completion_tokens": act_tokens["completion_tokens"] + seed_tokens["completion_tokens"],
-                "total_tokens": act_tokens["total_tokens"] + seed_tokens["total_tokens"]
-            }
-
-            story_info = {
-                "title": story_seed.title,
-                "act_count": story_seed.act_count,
-                "target_length": story_seed.target_length,
-                "act_1_title": act_1_plan.act_title,
-                "genre": story_seed.genre,
-                "tone": user_context.get("Tone"),
-                "pov": story_seed.style_guide.get("pov"),
-                "story_type": "interactive"
-            }
-            
-            del user_context
-            print(f"✅ Story initialization complete: {story_seed.title}")
-            print(f"   - Type: {story_type}")
-            print(f"   - Acts planned: {story_seed.act_count}")
-            print(f"   - Target length: {story_seed.target_length} words")
-            print(f"   - Total tokens used: {tokens_usage}")
-
-        except Exception as e:
-            print(f"❌ Error during story initialization: {str(e)}")
-            raise HTTPException(
-                status_code=500, 
-                detail=f"Failed to initialize story: {str(e)}"
-            )
-        finally:
-            del story_author
+        # except Exception as e:
+        #     print(f"❌ Error during story initialization: {str(e)}")
+        #     raise HTTPException(
+        #         status_code=500, 
+        #         detail=f"Failed to initialize story: {str(e)}"
+        #     )
+        # finally:
+        #     del story_author
 
         # Update story progress in memory system
         await story_data["memory_system"].update_story_progress(
@@ -552,7 +524,7 @@ class ClassicStorySetup:
                 "story_word_count": 0,
                 "chapter_word_count": 0,
                 "current_act_id": 1,
-                "total_acts": story_seed.act_count,
+                "total_acts": minimal_plot.act_count,
                 "tone_temp": mapped_tone_temp,
                 "model": model,
                 "author_token_usage": tokens_usage,
@@ -560,13 +532,14 @@ class ClassicStorySetup:
                 "image_data": image_data_base64,
                 "story_type": story_type,
                 "target_length": story_seed.target_length,
-                "pov": story_seed.style_guide.get("pov", "Third-person"),
-                "prose_style": story_seed.style_guide.get("prose_style", ""),
-                "narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
-                "tense": story_seed.style_guide.get("tense", ""),
+                "pov": story_seed.pov,
+                "prose_style": story_seed.prose_style,
+                #"narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
+                "tense": "past",
                 "genre": story_seed.genre,
+                "sub_genre": story_seed.sub_genre,
                 "themes": story_seed.themes,
-                "min_age": min_age,
+                "min_age": story_plan.target_audience_age,
                 "complete": False
             }
         )
@@ -591,11 +564,7 @@ class ClassicStorySetup:
         )
         
         return {
-            "status": "success",
-            "blurb": blurb,
-            "image_data": image_data_base64,
-            "story_info": story_info,
-            "tokens_used": tokens_usage
+            "status": "success"
         }
 
 
@@ -682,7 +651,7 @@ class ClassicStorySetup:
                 
                 if act_plan_json:
                     act_plan = json.loads(act_plan_json)
-                    chapter_outlines = act_plan.get('chapter_outlines', [])
+                    chapter_outlines = act_plan.get('chapter_seeds', [])
                     total_chapters_in_act = len(chapter_outlines)
                     
                     # Find highest chapter number in this act
@@ -729,8 +698,7 @@ class ClassicStorySetup:
                             
                             act_plan, tokens = await story_author.plan_act(
                                 story_title=story_title,
-                                act_number=next_act,
-                                model=progress.get('model', 'gpt-4')
+                                act_number=next_act
                             )
                             
                             # Update progress with new act
@@ -752,7 +720,7 @@ class ClassicStorySetup:
                                 "current_act_id": next_act,
                                 "total_acts": total_acts,
                                 "act_title": act_plan.act_title,
-                                "chapter_count": len(act_plan.chapter_outlines),
+                                "chapter_count": len(act_plan.chapter_seeds),
                                 "message": f"Started Act {next_act}: {act_plan.act_title}",
                                 "tokens_used": tokens,
                                 "progress_percentage": int(act_percentage * 100),

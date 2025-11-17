@@ -39,6 +39,8 @@ replicate
 
 # === Others ===
 better-profanity
+textstat
+deepdiff
 
 # === Optional / debugging ===
 #memory-profiler
