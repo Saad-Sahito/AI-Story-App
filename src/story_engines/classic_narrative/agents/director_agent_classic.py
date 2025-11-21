@@ -4,6 +4,7 @@ import json
 import asyncio
 import gc
 import traceback
+import re
 from typing import Any, Dict, List, Optional, Literal
 from langgraph.graph import StateGraph, END
 from dataclasses import dataclass, field
@@ -16,22 +17,167 @@ import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_
 from src.llm_client.llm_client import director_client
 from config_vars import tier_1_monthly_words_limit, tier_2_monthly_words_limit
 from src.utilities.ingestor import Ingestor
-from setup.shared_redis_pool import get_redis_client
+
 
 
 # ============================================================================
 # STATE AND MODELS
 # ============================================================================
-class ChapterOutline(BaseModel):
-    chapter_number: int
-    chapter_title: str
-    chapter_goal: str
-    target_word_count: int
-    key_scenes: List[str]
-    emotional_beats: List[str]
-    ends_when: str
-    thematic_elements: List[str]
-    agent_focus: Dict[str, str]
+
+
+class SceneWriterDirective(BaseModel):
+    """
+    COMPLETE scene instructions for Scene Writer.
+    This is the ONLY context Scene Writer gets — must be comprehensive.
+    """
+    scene_id: int
+    chapter_id: int
+    act_id: int
+    
+    # =========================================================================
+    # STORY EVENTS - THE SPINE
+    # =========================================================================
+    
+    story_events: List[str] = Field(
+        description="3-5 CONCRETE actions/discoveries that MUST happen (order matters)"
+    )
+    
+    scene_purpose: str = Field(
+        description="advance_plot | develop_character | reveal_world | create_emotion | setup_payoff"
+    )
+    
+    # =========================================================================
+    # AGENT DETAILS - WHO & THEIR OBJECTIVES
+    # =========================================================================
+    
+    agents_in_scene: Dict[str, Dict[str, Any]] = Field(
+        description="""
+        agent_name -> {
+            'role': str (their story role),
+            'objective': str (what they want THIS scene),
+            'current_status': str (physical/emotional state they enter with),
+            'distinctive_voice': str (speech patterns, word choice, cadence),
+            'recent_arc': str (what's happened to them recently),
+            'relationship_to_others': dict (how they relate to each agent in scene)
+        }
+        """
+    )
+    
+    # =========================================================================
+    # WORLD & SETTING - THE STAGE
+    # =========================================================================
+    
+    setting: Dict[str, str] = Field(
+        description="""
+        {
+            'location': str (specific place this scene occurs),
+            'atmosphere': str (sensory details: light, sound, smell, temperature),
+            'active_world_elements': list (magic system active, tech present, dangers, etc),
+            'time_of_day': str,
+            'weather_or_environmental': str
+        }
+        """
+    )
+    
+    # =========================================================================
+    # STATE CHANGES - WHAT SHIFTS AFTER THIS SCENE
+    # =========================================================================
+    
+    character_state_changes: Dict[str, Dict[str, Any]] = Field(
+        default_factory=dict,
+        description="""
+        agent_name -> {
+            'learns': list (new facts they discover),
+            'believes_shift': dict ('old_belief' -> 'new_belief'),
+            'emotional_state_after': str,
+            'status_after': str (physically or socially changed?),
+            'relationship_shifts': dict (how their view of others changes)
+        }
+        """
+    )
+    
+    world_state_changes: Dict[str, str] = Field(
+        default_factory=dict,
+        description="What physically/metaphysically changes (corrupted location, broken object, revealed secret)"
+    )
+    
+    # =========================================================================
+    # SETUP & PAYOFF TRACKING
+    # =========================================================================
+    
+    introduces_for_later: List[str] = Field(
+        default_factory=list,
+        description="New questions, objects, relationships, tensions introduced here (must payoff later)"
+    )
+    
+    resolves_from_earlier: List[str] = Field(
+        default_factory=list,
+        description="What this scene answers/resolves from earlier setup"
+    )
+    
+    # =========================================================================
+    # RHYTHM & PACING
+    # =========================================================================
+    
+    emotional_arc: str = Field(
+        description="How emotion evolves: 'tense opening → intimate confession → explosive confrontation → tentative resolution'"
+    )
+    
+    pacing: str = Field(
+        description="fast (short sentences, quick beats) | medium (balanced) | slow (introspection, lingering moments)"
+    )
+    
+    # =========================================================================
+    # CONSTRAINTS & TARGETS
+    # =========================================================================
+    
+    target_word_count: int = Field(description="Target scene length")
+    
+    expected_paragraph_structure: str = Field(
+        description="Opening action beat | Development | Climax | Resolution (rough structure)"
+    )
+    
+    # =========================================================================
+    # CRITICAL CONTEXT FOR SCENE WRITER
+    # =========================================================================
+    
+    immediate_context: str = Field(
+        description="What happened in the last scene(s)? What's the reader's mindset entering this?"
+    )
+    
+    thematic_echo: str = Field(
+        description="How does this scene echo or advance one of the story's core themes?"
+    )
+    
+    conflict_context: str = Field(
+        description="Which story conflicts are active in this scene?"
+    )
+    
+    # =========================================================================
+    # OPTIONAL: SPECIFIC DIALOGUE OR ACTION REQUIREMENTS
+    # =========================================================================
+    
+    must_include_moments: List[str] = Field(
+        default_factory=list,
+        description="If there are specific beats that MUST happen (handed down from Author), list here"
+    )
+    
+    forbidden_elements: List[str] = Field(
+        default_factory=list,
+        description="What should NOT happen (contradicts earlier setup, too mature for age, etc)"
+    )
+
+
+# class ChapterOutline(BaseModel):
+#     chapter_number: int
+#     chapter_title: str
+#     chapter_goal: str
+#     target_word_count: int
+#     key_scenes: List[str]
+#     emotional_beats: List[str]
+#     ends_when: str
+#     thematic_elements: List[str]
+#     agent_focus: Dict[str, str]
 
 @dataclass
 class StoryState:
@@ -42,105 +188,130 @@ class StoryState:
     story_word_count: int = 0
     current_chapter_word_count: int = 0
     seed: Optional[Dict[str, Any]] = field(default_factory=dict)
-    chapter_plan: Optional[ChapterOutline] = field(default_factory=dict)
     act_plan: Optional[Dict[str, Any]] = field(default_factory=dict)
     next_action: str = ""
     error_message: Optional[str] = None
 
-# class ScenePlan(BaseModel):
-#     scene_id: int = Field(..., description="Unique identifier for the scene, sequential starting from 1")
-#     chapter_number: int
-#     chapter_title: str
-#     narrative_purpose: str = Field(alias="scene_goal")
-#     main_characters: List[str]
-#     location: str
-#     time_context: str
-#     key_events: List[str]
-#     emotional_beats: List[str]
-#     thematic_notes: List[str]
-#     symbolic_elements: List[str] = field(default_factory=list)
-#     word_count: int
-#     style_guide: str
-
-class DetailedSceneDirective(BaseModel):
-    """Director's specific instructions to Scene Writer"""
-    scene_id: int
-    
-    # From Author's beat
-    author_intent: str = Field(description="What Author planned")
-    
-    # Director's creative additions
-    opening_image: str = Field(description="Specific sensory detail to open with")
-    scene_blocking: str = Field(
-        description="Physical staging: who is where, doing what, spatial relationships"
-    )
-    pacing_direction: str = Field(
-        description="'Quick cuts for tension' or 'Linger on reaction' or 'Slow reveal'"
-    )
-    
-    dialogue_guidance: str = Field(
-        description="Tone of exchanges, power dynamics, subtext to convey"
-    )
-    
-    sensory_palette: List[str] = Field(
-        description="Which senses to emphasize: ['smell of rain', 'texture of rough stone', 'distant bells']"
-    )
-    
-    emotional_camera: str = Field(
-        description="Whose POV emotional filter: 'Through protagonist's paranoia' or 'Detached observation'"
-    )
-    
-    scene_rhythm: str = Field(
-        description="'Long flowing sentences → sharp short ones at revelation' or 'Staccato throughout'"
-    )
-    
-    key_details_to_include: List[str] = Field(
-        description="Specific objects, gestures, or moments that MUST appear"
-    )
-    
-    closing_image: str = Field(
-        description="Last sensory detail or action before scene ends"
-    )
-    
-    transition_to_next: str = Field(
-        description="How this scene should flow into next: 'Hard cut' or 'Zoom out to...' or 'Echo the opening'"
-    )
-    
-    # Tactical adjustments
-    word_count: int
-    style_adjustments: str = Field(
-        description="'More internal monologue' or 'Action-heavy' or 'Dialogue-driven' based on chapter flow"
-    )
-
-
-class ChapterDirectorBrief(BaseModel):
-    """Director's overview before planning scenes"""
-    chapter_rhythm: str = Field(description="Overall pacing strategy for this chapter")
-    visual_motif: str = Field(description="Recurring image or color for this chapter")
-    tonal_consistency: str = Field(description="How to maintain tone across scenes")
-    variety_strategy: str = Field(description="How scenes differ to prevent monotony")
+# class ChapterDirectorBrief(BaseModel):
+#     """Director's overview before planning scenes"""
+#     chapter_rhythm: str = Field(description="Overall pacing strategy for this chapter")
+#     visual_motif: str = Field(description="Recurring image or color for this chapter")
+#     tonal_consistency: str = Field(description="How to maintain tone across scenes")
+#     variety_strategy: str = Field(description="How scenes differ to prevent monotony")
 
 class DirectorOutput(BaseModel):
-    scenes: List[DetailedSceneDirective] = Field(..., description="List of detailed scene plans for Scene Writer")
+    scenes: List[SceneWriterDirective] = Field(..., description="List of concrete scene directives for Scene Writer")
     action: Literal["generate_and_ingest", "END"] = Field(
         description="'generate_and_ingest' to continue, 'END' if story complete"
     )
 
-chapter_director_brief_parser = PydanticOutputParser(pydantic_object=ChapterDirectorBrief)
-chapter_outline_parser = PydanticOutputParser(pydantic_object=ChapterOutline)
+# chapter_director_brief_parser = PydanticOutputParser(pydantic_object=ChapterDirectorBrief)
+# chapter_outline_parser = PydanticOutputParser(pydantic_object=ChapterOutline)
 director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
 
+# ============================================================================
+# GENERIC CONTEXT FORMATTER (replaces old DirectorContextBuilder)
+# ============================================================================
+
+class ContextFormatter:
+    @staticmethod
+    def format_any(obj: Any) -> str:
+        if hasattr(obj, '__dict__'):
+            data = obj.__dict__
+        elif isinstance(obj, dict):
+            data = obj
+        else:
+            data = {k: v for k, v in obj.__dict__.items()} if hasattr(obj, '__dict__') else vars(obj)
+
+        parts = [
+            "╔═══════════════════════════════════════════════════════════╗",
+            "║ SCENE DIRECTIVE FOR WRITER",
+            "╚═══════════════════════════════════════════════════════════╝",
+        ]
+        for key, value in data.items():
+            if key == "previous_scenes_in_chapter":
+                continue
+            title = key.replace("_", " ").upper()
+            parts.append(ContextFormatter.format_section(title, value))
+        return "\n".join(parts)
+    
+    @staticmethod
+    def _format_value(value: Any, depth: int = 0) -> str:
+        indent = "  " * depth
+        if isinstance(value, dict):
+            lines = []
+            for k, v in value.items():
+                if isinstance(v, (dict, list)) and v:
+                    lines.append(f"{indent}{k}:")
+                    lines.append(ContextFormatter._format_value(v, depth + 1))
+                else:
+                    lines.append(f"{indent}{k}: {v}")
+            return "\n".join(lines)
+        elif isinstance(value, list):
+            if not value:
+                return "(none)"
+            lines = []
+            for i, item in enumerate(value[:10], 1):  # limit explosion
+                if isinstance(item, (dict, list)):
+                    lines.append(f"{indent}{i}. ")
+                    lines.append(ContextFormatter._format_value(item, depth + 1))
+                else:
+                    lines.append(f"{indent}- {item}")
+            if len(value) > 10:
+                lines.append(f"{indent}... ({len(value)-10} more)")
+            return "\n".join(lines)
+        else:
+            return str(value)
+
+    @staticmethod
+    def format_section(title: str, data: Any) -> str:
+        if data is None or (isinstance(data, (dict, list)) and not data):
+            return f"╠ {title}\n║ (none)\n"
+        content = ContextFormatter._format_value(data, depth=1)
+        return f"╠ {title}\n{content}\n"
+
+    @staticmethod
+    def full_context(snapshot: 'StoryContextSnapshot') -> str:
+        parts = [
+            "╔═══════════════════════════════════════════════════════════╗",
+            "║ DIRECTOR CONTEXT SNAPSHOT",
+            "╚═══════════════════════════════════════════════════════════╝",
+        ]
+        for key, value in snapshot.__dict__.items():
+            if key == "previous_scenes_in_chapter":
+                continue
+            title = key.replace("_", " ").upper()
+            parts.append(ContextFormatter.format_section(title, value))
+        return "\n".join(parts)
+
+
+@dataclass
+class StoryContextSnapshot:
+    story_seed: Dict
+    final_plot: Dict
+    act_plan: Dict
+    chapter_word_count_target: int
+    act_setup_payload: List[str]
+    act_payoff_payload: List[str]
+    connected_agents: List[Dict]
+    integrated_world: Dict
+    conflict_matrix: Dict
+    character_progressions: List[Dict]
+    world_progressions: List[Dict]
+    recent_chapters_summary: str
+    current_chapter_pivots: List[Dict] = field(default_factory=list)
 
 # ============================================================================
 # DIRECTOR GRAPH
 # ============================================================================
 class DirectorGraph:
     def __init__(self, memory_system: StoryMemorySystem):
+        self.story_context: Optional[StoryContextSnapshot] = None
+        self.current_chapter_outline: Optional[Dict[str, Any]] = None
         self.memory = memory_system
         self.graph = StateGraph(StoryState)
         self.graph.set_entry_point("load_act_node")
         self.graph.add_node("load_act_node", self.load_act_node)
-        self.graph.add_node("chapter_planner_node", self.chapter_planner_node)
         self.graph.add_node("scene_planner_node", self.scene_planner_node)
         self.graph.add_node("generate_scenes_node", self.generate_scenes_node)
         self.graph.add_node("quality_validate_node", self.quality_validate_node)
@@ -149,8 +320,8 @@ class DirectorGraph:
         self.graph.add_node("error_node", self.error_node)
 
         # Edges
-        self.graph.add_edge("load_act_node", "chapter_planner_node")
-        self.graph.add_edge("chapter_planner_node", "scene_planner_node")
+        self.graph.add_edge("load_act_node", "scene_planner_node")
+
         self.graph.add_conditional_edges(
             "scene_planner_node",
             lambda state: state.next_action,
@@ -160,7 +331,15 @@ class DirectorGraph:
                 "ERROR": "error_node"
             }
         )
-        self.graph.add_edge("generate_scenes_node", "quality_validate_node")
+        self.graph.add_conditional_edges(
+            "generate_scenes_node",
+            lambda state: state.next_action,
+            {
+                "END": END,
+                "ERROR": "error_node",
+                "quality_validate_node": "quality_validate_node"
+            }
+        )
         self.graph.add_conditional_edges(
             "quality_validate_node",
             lambda state: state.next_action,
@@ -176,20 +355,68 @@ class DirectorGraph:
 
         self.compiled = self.graph.compile()
 
-        self.current_chap_summary = ""
+        # self.current_chap_summary = ""
         self.llm_temp = 0.7
-        self.model = ""
+        #self.model = ""
         self.act_title = ""
+        self.min_age = 13
+        self.pov = "third person"
+        self.tense = "past"
+        self.voice = "standard narrative"
+        self.tone = "light"
         self.director_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.writer_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.target_length = 50000
+    
+    # ============================================================================
+    # CONTEXT BUILDING
+    # ============================================================================
 
+    async def _build_context(self, story_title: str, act_id: int, chapter_id: int) -> StoryContextSnapshot:
+        seed = json.loads(await self.memory.get_long_term_document(metadata={'type': 'story_seed', 'story_title': story_title}))
+        self.pov = seed['pov']
+        self.voice = seed['prose_style']
+        self.tone = seed['tone']
+        plot = json.loads(await self.memory.get_long_term_document(metadata={'type': 'expanded_plot_outline', 'story_title': story_title}))
+        act_plan = json.loads(await self.memory.get_long_term_document(metadata={'type': 'act_plan', 'act_id': act_id, 'story_title': story_title}))
+        agents = json.loads(await self.memory.get_long_term_document(metadata={'type': 'connected_agents', 'story_title': story_title}))
+        world = json.loads(await self.memory.get_long_term_document(metadata={'type': 'integrated_world', 'story_title': story_title}))
+        conflict = json.loads(await self.memory.get_long_term_document(metadata={'type': 'conflict_matrix', 'story_title': story_title}))
+
+
+        # Extract the high-level chapter outline (still stored inside act_plan for backward compat)
+        rich_chapter = next(
+            (c for c in act_plan.get("chapter_outlines", []) if isinstance(c, dict) and c.get("chapter_number") == chapter_id),
+            {}
+        )
+        target_word_count = rich_chapter.get("target_word_count")
+        char_prog = await self.memory.get_long_term_recent_characters(chapter_id)
+        world_prog = await self.memory.get_long_term_recent_worlds(chapter_id)
+        recent_summary = await self.memory.search_single_episodic_story(act_number=act_id, chapter_number=chapter_id, summary_type="scene summary")
+        #print(rich_chapter.get("pivot_points"))
+        return StoryContextSnapshot(
+            story_seed=seed,
+            final_plot=plot,
+            act_plan=act_plan,
+            chapter_word_count_target=target_word_count,
+            act_setup_payload=act_plan.get("setup_this_act", []),
+            current_chapter_pivots=rich_chapter.get("pivot_points"),
+            act_payoff_payload=act_plan.get("payoff_this_act", []),
+            connected_agents=agents,
+            integrated_world=world,
+            conflict_matrix=conflict,
+            character_progressions=char_prog,
+            world_progressions=world_prog,
+            recent_chapters_summary=recent_summary or ""
+        )
+    
     # ============================================================================
     # NODES
     # ============================================================================
 
     async def load_act_node(self, state: StoryState) -> Dict:
-        print(f"\nLoad Act Node: Act {state.current_act_id}")
+        print(f"\n📖 Load Act Node: Act {state.current_act_id}")
+        
         act_plan_json = await self.memory.get_long_term_document(
             metadata={'type': 'act_plan', 'act_id': state.current_act_id, 'story_title': state.story_title}
         )
@@ -197,258 +424,161 @@ class DirectorGraph:
             state.error_message = f"No act plan for act {state.current_act_id}"
             state.next_action = "ERROR"
             return state.__dict__
-
+        
         state.act_plan = json.loads(act_plan_json)
         self.act_title = state.act_plan.get('act_title', 'Unknown Act')
+        
+        # NEW: Build comprehensive context snapshot
+        print("📚 Building full story context snapshot...")
+        self.story_context = await self._build_context(state.story_title, state.current_act_id, state.current_chapter_id)
+        
         self.scene_chunk_callback({"type": "act_title", "message": self.act_title})
-
-        # Load story seed for style guide
-        story_seed_json = await self.memory.get_long_term_document(
-            metadata={'type': 'story_seed', 'story_title': state.story_title}
-        )
-        state.seed = json.loads(story_seed_json) if story_seed_json else {}
-
+        print(f"✓ Act loaded: {self.act_title}")
+        print(f"✓ Context snapshot: {len(self.story_context.connected_agents)} agents.")
+        
         return state.__dict__
-
-    async def chapter_planner_node(self, state: StoryState) -> Dict:
-        print(f"Chapter Planner: Chapter {state.current_chapter_id}")
-
-        # Check if chapter plan already exists
-        existing_plan = await self.memory.get_long_term_document(
-            metadata={
-                "type": "chapter_plan",
-                "act_id": state.current_act_id,
-                "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title
-            }
-        )
-        existing_plan = ChapterOutline(**existing_plan)
-
-        if existing_plan:
-            #plan_dict = json.loads(existing_plan) if isinstance(existing_plan, str) else existing_plan
-            state.chapter_plan = existing_plan
-            print(f"Using existing chapter plan for chapter {state.current_chapter_id}")
-            state.next_action = "scene_planner"
-            return state.__dict__
-        plot_outline = await self.memory.get_long_term_document(
-            metadata={
-                "type": "expanded_plot_outline",
-                "act_id": state.current_act_id,
-                "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title
-            }
-        )
-        # Otherwise, generate new chapter outline
-        chapter_outline = state.act_plan['chapter_seeds'][state.current_chapter_id - 1]  # 0-indexed
-        if not chapter_outline:
-            state.error_message = f"Chapter {state.current_chapter_id} outline not found"
-            state.next_action = "ERROR"
-            return state.__dict__
-
-        # Convert to structured ChapterOutline
-        target_word_count =  plot_outline.get('target_length', 3000) // len(plot_outline.get('act_summaries')) // len(state.act_plan['chapter_seeds'])  # Even dist
-        #expected_scenes = len(chapter_outline.get('key_scenes', [])) or 3
-
-        system_prompt = f"""Convert this chapter seed into a structured plan.
-
-Story Style: POV = {state.seed.get('style_guide', {}).get('pov', 'Third-person')}, 
-Prose = {state.seed.get('prose_style', '')}, 
-Tense = past, 
-Tone = {state.seed.get('tone', 'Balanced')}
-
-Chapter Target Word Count: {target_word_count}
-
-{chapter_outline_parser.get_format_instructions()}"""
-
-        human_prompt = f"Chapter {state.current_chapter_id}: {chapter_outline.get('chapter_title', 'Untitled')} Chapter Seed: {json.dumps(chapter_outline, indent=2)}"
-
-        resp, tokens = await director_client(
-            system_prompt=system_prompt,
-            human_prompt=human_prompt,
-            llm_temp=self.llm_temp,
-            model=self.model
-        )
-        self.director_token_usage["prompt_tokens"] += tokens["prompt_tokens"]
-        self.director_token_usage["completion_tokens"] += tokens["completion_tokens"]
-        self.director_token_usage["total_tokens"] += tokens["total_tokens"]
-
-        clean_resp = StoryHelpers._extract_content(resp)
-        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
-
-        result = await StoryHelpers.load_json_with_retry(clean_resp, chapter_outline_parser)
-
-        chapter_plan: ChapterOutline = result
-        chapter_plan.target_word_count = target_word_count
-
-        # Save chapter plan
-        await self.memory.add_long_term_document(
-            text=json.dumps({"chapter_plan": chapter_plan}),
-            metadata={
-                "type": "chapter_plan",
-                "act_id": state.current_act_id,
-                "chapter_id": state.current_chapter_id,
-                "story_title": state.story_title
-            }
-        )
-
-        state.chapter_plan = chapter_plan
-        state.next_action = "scene_planner"
-        return state.__dict__
-
+    
+    
     
     async def scene_planner_node(self, state: StoryState) -> Dict:
-        """Director interprets Author's scene beats and creates detailed directives"""
         print(f"Scene Planner: Chapter {state.current_chapter_id}")
-        
-        act_plan = state.act_plan
-        
-        # Get Author's scene beats
-        author_scene_beats = act_plan.get('chapter_scene_beats', {}).get(int(state.current_chapter_id), [])
-        
-        if not author_scene_beats:
-            state.error_message = "No scene beats from Author"
-            state.next_action = "ERROR"
+
+        # ─── CACHED DIRECTIVES? ─────────────────────────────────────────────────────
+        cached = await self.memory.get_long_term_document(metadata={
+            "type": "director_scene_directives",
+            "act_id": state.current_act_id,
+            "chapter_id": state.current_chapter_id,
+            "story_title": state.story_title
+        })
+        if cached:
+            print("Using cached scene directives")
+            state.next_action = "generate_scenes"
             return state.__dict__
+
+        # ─── NO PIVOTS → SKIP ───────────────────────────────────────────────────────
+        pivot_points = getattr(self.story_context, "current_chapter_pivots", [])
+        if not pivot_points:
+            print("No pivot points found → skipping to generate_scenes")
+            state.next_action = "generate_scenes"
+            return state.__dict__
+
+        total_chapter_words: int = self.story_context.chapter_word_count_target
+        # ─── PARSER FOR FULL RICH DIRECTIVES ────────────────────────────────────────
+        # We'll trick the parser: tell it to output DirectorOutput, but with scenes as SceneWriterDirective
+        # This works because DirectorOutput.scenes is List[ConcreteSceneDirective], but we override instructions
+        #rich_director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
+
+        system_prompt = f"""You are the Director. Your only job is to turn high-level story pivots into 100% executable, concrete SceneWriterDirective objects that can never be misinterpreted.
+
+CRITICAL RULES (never break these):
+
+1. Every story_events list (3–5 per scene) MUST consist exclusively of concrete, filmable, speakable actions.  
+   Allowed:  
+   - "Lirael tells Kael she will defect during the Calm Storm"  
+   - "Kael pulls out his half-finished signal jammer and demonstrates it fizzles"  
+   - "Voren enters and touches his staff to Lirael's loyalty vine tattoo"  
+   Forbidden forever:  
+   - "Lirael wrestles with doubt"  
+   - "Tension rises"  
+   - "Kael shows mixed loyalty"  
+   - "The vines react to dishonesty"
+
+2. If a pivot says "Lirael confesses her plan", you MUST break it into at least two concrete events (she says the plan out loud + the other character reacts in a specific, visible way).
+
+3. Magic/system rules in this scene MUST be consistent with every previous scene in the full story context. If the vines glowed brighter with honesty last chapter, they cannot suddenly wilt with honesty this chapter.
+
+4. Every single field in SceneWriterDirective must be filled, but story_events is the spine — everything else (objectives, state changes, emotional arc) must flow logically from those concrete events.
+
+5. Target word count per scene: calculate exactly (total_chapter_words // total_scenes_this_chapter). Never round vaguely.
+
+6. Output ONLY valid JSON matching DirectorOutput schema. No explanations, no markdown, no extra text.
+
+Total chapter word target: {total_chapter_words}
+Full story context (use it religiously for continuity):
+{ContextFormatter.full_context(self.story_context)}
+"""
+        all_rich_directives = []
+        scene_id_counter = state.scene_id
         
-        # Load connected agents and integrated world (fix your bug)
-        agents_json = await self.memory.get_long_term_document(
-            metadata={'type': 'connected_agents', 'story_title': state.story_title}
-        )
-        connected_agents = json.loads(agents_json)
-        
-        world_json = await self.memory.get_long_term_document(
-            metadata={'type': 'integrated_world', 'story_title': state.story_title}
-        )
-        integrated_world = json.loads(world_json)
-        
-        # Get context from previous chapter
-        prev_chapter_summary = await self.memory.search_single_episodic_story(
-            act_number=state.current_act_id,
-            chapter_number=state.current_chapter_id - 1,
-            summary_type="chapter summary"
-        )
-        
-        director_context = await self.memory.get_director_context(
-            current_act_number=state.current_act_id,
-            current_chapter_number=state.current_chapter_id,
-            query=prev_chapter_summary or "",
-            k=5
-        )
-        
-        # DIRECTOR'S CREATIVE WORK: First, create chapter-level strategy
-        chapter_brief_prompt = f"""You are the Director. The Author has given you scene beats. 
-    Before directing individual scenes, create your VISION for this chapter.
+        total_pivots = len(pivot_points)
 
-    Consider:
-    - How should this chapter FEEL different from previous ones?
-    - What visual or sensory motif unifies it?
-    - What pacing rhythm best serves these events?
-    - How do scenes build on each other?
+        for idx, pivot in enumerate(pivot_points, 1):
+            print(f"  Planning pivot {idx}/{total_pivots}: {pivot.get('pivot_type', 'unknown')}")
 
-    Author's Chapter Plan:
-    {state.chapter_plan.model_dump_json(indent=2)}
+            scenes_per_pivot: int = 2 if total_pivots <= 4 else 1
+            words_per_scene_temp = int(total_chapter_words/(scenes_per_pivot * total_pivots))
+            words_per_scene = max(300, words_per_scene_temp)
+            print("Director words per scene: ", words_per_scene)
+            human_prompt = f"""Generate exactly {scenes_per_pivot} complete, production-ready SceneWriterDirective object(s) for this pivot.
 
-    Author's Scene Beats:
-    {json.dumps(author_scene_beats, indent=2)}
+PIVOT TO COVER:
+{json.dumps(pivot, indent=2)}
 
-    Story Context So Far:
-    {director_context}
+HARD REQUIREMENT:
+- Each scene target: {words_per_scene} words (±15%)
 
-    Previous Chapter: {prev_chapter_summary}
+EVERY story_events list MUST be 3–5 concrete, observable actions or spoken lines.  
+Examples of correct events for a confession scene:
+  • Lirael sits beside Kael and says, “I’m leaving during the Calm Storm.”
+  • Kael’s hand tightens on his gadget; he whispers, “The vines will force me to report you.”
+  • Kael slides a brass cylinder across the table and says, “This jammer isn’t finished yet.”
+  • Voren’s staff taps twice in the doorway; he asks, “Why is your vine dim?”
 
-    {chapter_director_brief_parser.get_format_instructions()}"""
+Do NOT write vague or internal events. If you cannot think of concrete actions, create an extra micro-beat (a look, a touch, an object) to make it visible.
 
-        chapter_brief_resp, tokens1 = await director_client(
-            system_prompt="You are a film director creating your vision for a chapter.",
-            human_prompt=chapter_brief_prompt,
-            llm_temp=0.8,
-            model=self.model
-        )
-        
-        clean_brief = StoryHelpers._extract_content(chapter_brief_resp)
-        clean_brief = StoryHelpers._strip_code_fences(clean_brief)
-        brief_json = await StoryHelpers.load_json_with_retry(clean_brief, chapter_director_brief_parser)
-        chapter_brief = chapter_director_brief_parser.parse(brief_json)
-        
-        self.director_token_usage["prompt_tokens"] += tokens1["prompt_tokens"]
-        self.director_token_usage["completion_tokens"] += tokens1["completion_tokens"]
-        self.director_token_usage["total_tokens"] += tokens1["total_tokens"]
-        
-        # DIRECTOR'S CREATIVE WORK: Now create detailed scene directives
-        system_prompt = f"""You are the Director translating Author's scene beats into detailed directives for the Scene Writer.
+All other fields (agents_in_scene, character_state_changes, setting, emotional_arc, etc.) must derive directly from these concrete events — no freelancing.
 
-    The Author says WHAT happens. You specify HOW it happens.
+Output ONLY the pure JSON DirectorOutput object with "action": "generate_and_ingest" and a "scenes" array of {scenes_per_pivot} complete SceneWriterDirective objects.
+"""
 
-    For each scene beat, provide:
-    1. Opening image (specific sensory detail)
-    2. Scene blocking (spatial staging, who where)
-    3. Pacing direction (how fast/slow, when to linger)
-    4. Dialogue guidance (tone, subtext, power dynamics)
-    5. Sensory palette (which senses to engage)
-    6. Emotional camera (whose perspective filters emotion)
-    7. Scene rhythm (sentence structure guidance)
-    8. Key details that MUST appear
-    9. Closing image
-    10. Transition to next scene
+            try:
+                resp, tokens = await director_client(
+                    system_prompt=system_prompt,
+                    human_prompt=human_prompt,
+                    llm_temp=0.35
+                )
 
-    Your Chapter Vision:
-    {chapter_brief.model_dump_json(indent=2)}
+                self.director_token_usage["prompt_tokens"] += tokens["prompt_tokens"]
+                self.director_token_usage["completion_tokens"] += tokens["completion_tokens"]
+                self.director_token_usage["total_tokens"] += tokens["total_tokens"]
 
-    Agents Available:
-    {json.dumps([{
-        'name': a['name'], 
-        'type': a['type'],
-        'distinctive_voice': a.get('distinctive_voice', ''),
-        'plot_function': a.get('plot_function', '')
-    } for a in connected_agents], indent=2)}
+                clean_resp = StoryHelpers._extract_content(resp)
+                clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-    World Context:
-    Physical locations: {integrated_world.get('plot_relevant_locations', '')}
-    World rules: {integrated_world.get('world_plot_interactions', '')}
+                director_output: DirectorOutput = await StoryHelpers.load_json_with_retry(
+                    text=clean_resp,
+                    parser=director_parser
+                )
 
-    Story Style:
-    POV: {state.seed.get('pov', 'Third-person')}
-    Prose: {state.seed.get('prose_style', '')}
-    Tone: {state.seed.get('tone', '')}
+                rich_scenes: List[dict] = director_output.scenes
 
-    {director_parser.get_format_instructions()}
+                for scene_dict in rich_scenes:
+                    scene_dict = scene_dict.model_dump()
+                    scene_dict.update({
+                        "scene_id": scene_id_counter,
+                        "chapter_id": state.current_chapter_id,
+                        "act_id": state.current_act_id,
+                        "target_word_count": words_per_scene
+                    })
 
-    Think like a film director blocking a scene, but for prose."""
+                    all_rich_directives.append(scene_dict)
+                    scene_id_counter += 1
 
-        human_prompt = f"""Create detailed scene directives for the Scene Writer.
+                print(f"    → Generated {len(rich_scenes)} rich32 rich scenes")
 
-    Author's Scene Beats (WHAT happens):
-    {json.dumps(author_scene_beats, indent=2)}
+            except Exception as e:
+                print(f"    Pivot {idx} failed: {e}")
+                traceback.print_exc()
+                state.error_message = f"Rich scene planning failed on pivot {idx}: {e}"
+                state.next_action = "ERROR"
+                return state.__dict__
 
-    Recent Story Context:
-    {director_context}
-
-    Transform Author's beats into vivid, executable directives that specify HOW to write each scene.
-    Make each scene feel distinct within your chapter vision.
-    Total scenes: {len(author_scene_beats)}"""
-
-        resp, tokens2 = await director_client(
-            system_prompt=system_prompt,
-            human_prompt=human_prompt,
-            llm_temp=self.llm_temp,
-            model=self.model
-        )
-        
-        self.director_token_usage["prompt_tokens"] += tokens2["prompt_tokens"]
-        self.director_token_usage["completion_tokens"] += tokens2["completion_tokens"]
-        self.director_token_usage["total_tokens"] += tokens2["total_tokens"]
-        
-        clean_resp = StoryHelpers._extract_content(resp)
-        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
-        
-        result_json = await StoryHelpers.load_json_with_retry(clean_resp, director_parser)
-        result: DirectorOutput = director_parser.parse(result_json)
-        
-        scenes = [s.model_dump() for s in result.scenes]
-        
-        # Store Director's directives
+        # ─── PERSIST FINAL RICH DIRECTIVES ──────────────────────────────────────────
+        await self.memory.update_story_progress({
+                "director_token_usage": self.director_token_usage
+            })
         await self.memory.add_long_term_document(
-            text=json.dumps(scenes),
+            text=json.dumps(all_rich_directives, indent=2),
             metadata={
                 "type": "director_scene_directives",
                 "act_id": state.current_act_id,
@@ -456,16 +586,15 @@ Chapter Target Word Count: {target_word_count}
                 "story_title": state.story_title
             }
         )
-        
+
+        print(f"Chapter {state.current_chapter_id}: {len(all_rich_directives)} FULL rich scene directives ready")
         state.next_action = "generate_scenes"
         return state.__dict__
-
-
-    async def generate_scenes_node(self, state: StoryState) -> Dict:
-        """Execute Director's directives through Scene Writer"""
-        print(f"Generate Scenes: Chapter {state.current_chapter_id}, Scene {state.scene_id}")
         
-        # Load DIRECTOR's directives (not Author's beats)
+    async def generate_scenes_node(self, state: StoryState) -> Dict:
+        print(f"✍️ Generate Scenes: Chapter {state.current_chapter_id}, Scene {state.scene_id}")
+        
+        # Load scene directives
         scenes_json = await self.memory.get_long_term_document(
             metadata={
                 "type": "director_scene_directives",
@@ -474,58 +603,46 @@ Chapter Target Word Count: {target_word_count}
                 "story_title": state.story_title
             }
         )
+        
         director_directives = json.loads(scenes_json)
         
-        redis_client = None
-        try:
-            redis_client = await get_redis_client()
-        except Exception as e:
-            print(f"Redis init failed: {e}")
-        
         for directive_dict in director_directives:
-            directive = DetailedSceneDirective(**directive_dict)
-            
-            if directive.scene_id > state.scene_id:
-                break
+            directive = SceneWriterDirective(**directive_dict)
+            directive_text = ContextFormatter.format_any(directive)
             if directive.scene_id != state.scene_id:
-                print(f"Skipping completed scene {directive.scene_id}")
                 continue
-
-            # Word count limit check
-            monthly = await self.memory.get_monthly_word_count()
-            if monthly.get('tier') == 1 and monthly.get('monthly_word_count', 0) >= tier_1_monthly_words_limit:
-                state.error_message = "Free tier word limit reached"
-                state.next_action = "ERROR"
-                return state.__dict__
-            if monthly.get('tier') == 2 and monthly.get('monthly_word_count', 0) >= tier_2_monthly_words_limit:
-                state.error_message = "Scribe tier word limit reached"
-                state.next_action = "ERROR"
-                return state.__dict__
-
-            # Pass Director's FULL directive to Scene Writer
-            director_instructions = directive.model_dump_json(indent=2)
-            state.scene_id = directive.scene_id
+            # later:
+            scene_target_length: int = int(directive.target_word_count)
             
+            # NEW: Format complete directive for Scene Writer
+            # directive_for_writer = format_scene_directive_for_scene_writer(directive)
+            
+            # print(f"  Scene {state.scene_id}: {directive.scene_purpose}")
+            # print(f"  Events: {', '.join(directive.story_events[:2])}")
+            
+            # Pass FORMATTED directive (not raw JSON)
             user_context = UserSceneContext.create_for_user(
                 user_id=self.memory.user_id,
                 story_id=self.memory.story_id,
-                director_instructions=director_instructions,  # Full directive, not just beats
+                director_instructions=directive_text,
                 scene_chunk_callback=self.scene_chunk_callback,
-                llm_temp=self.llm_temp,
-                model=self.model,
                 token_usage=self.writer_token_usage,
-                target_length=self.target_length,
-                scene_target_length=directive.word_count,
-                user_age=self.min_age
+                llm_temp=self.llm_temp,
+                scene_target_length=scene_target_length,
+                user_age=self.min_age,
+                pov=self.pov,
+                voice=self.voice,
+                tone=self.tone,
+                tense=self.tense
             )
-
+            
             scene_text, scene_cluster, status, writer_tokens = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
-                user_context=user_context,
+                ctx=user_context,
                 stop_event=self.stop_event
             )
 
             if status != "SUCCESS":
-                state.error_message = f"Scene {directive.scene_id} failed: {status}"
+                state.error_message = f"Scene {directive_text.scene_id} failed: {status}"
                 state.next_action = "ERROR"
                 return state.__dict__
 
@@ -533,6 +650,8 @@ Chapter Target Word Count: {target_word_count}
             await self.memory.update_user_monthly_word_count(word_count=word_count)
             self.writer_token_usage = writer_tokens
 
+            from setup.shared_redis_pool import get_redis_client 
+            redis_client = await get_redis_client()   
             # Redis pause
             if redis_client:
                 queue_key = f"continue_input_queue:{self.memory.user_id}:{self.memory.story_id}"
@@ -542,6 +661,7 @@ Chapter Target Word Count: {target_word_count}
                     choice = await redis_client.lpop(queue_key)
                     if choice in (b"1", "1", 1):
                         user_choice = True
+                        print("User chose to continue")
                         break
                     elif choice is not None:
                         break
@@ -554,8 +674,8 @@ Chapter Target Word Count: {target_word_count}
             chars = await self.memory.get_long_term_characters_names()
             worlds = await self.memory.get_long_term_worlds_names()
             self.scene_chunk_callback({"type": "status", "message": "saving story"})
-
             scene_bundle = await Ingestor.ingest_scene(
+                act_id=state.current_act_id,
                 chapter_id=state.current_chapter_id,
                 scene_id=state.scene_id,
                 scene_text=scene_text,
@@ -577,10 +697,12 @@ Chapter Target Word Count: {target_word_count}
                     "act_title": self.act_title
                 }
             )
+            
             await self.memory.add_post_scene_bundle(
-                parts=scene_bundle or {},
+                scene_bundle=scene_bundle or {},
                 metadata={
                     "chapter_id": state.current_chapter_id,
+                    "scene_id": state.scene_id,
                     "story_title": state.story_title,
                     "act_id": state.current_act_id
                 }
@@ -597,7 +719,7 @@ Chapter Target Word Count: {target_word_count}
             state.scene_id += 1
             gc.collect()
 
-        state.next_action = "ingest_chapter"
+        state.next_action = "quality_validate_node"
         return state.__dict__
 
     async def quality_validate_node(self, state: StoryState) -> Dict:
@@ -609,10 +731,15 @@ Chapter Target Word Count: {target_word_count}
         world_details = await self.memory.get_long_term_recent_worlds(state.current_chapter_id)
         char_details = await self.memory.get_long_term_recent_characters(state.current_chapter_id)
         self.scene_chunk_callback({"type": "status", "message": "saving chapter"})
-
+        current_chap_summary = await self.memory.search_single_episodic_story(
+            act_number=state.current_act_id,
+            chapter_number=state.current_chapter_id,
+            summary_type="scene summary"
+        )
         chapter_bundle = await Ingestor.ingest_chapter(
+            act_id=state.current_act_id,
             chapter_id=state.current_chapter_id,
-            current_chap_summary=self.current_chap_summary,
+            current_chap_summary=current_chap_summary,
             char_details=char_details,
             world_details=world_details
         )
@@ -631,7 +758,7 @@ Chapter Target Word Count: {target_word_count}
             state.scene_id = 1
             self.scene_chunk_callback({"chapter_complete": True})
             await self.memory.update_story_progress({"chapter_word_count": 0})
-        self.current_chap_summary = ""
+        # self.current_chap_summary = ""
         gc.collect()
         return state.__dict__
 
@@ -660,7 +787,7 @@ Chapter Target Word Count: {target_word_count}
                 return "No story progress"
 
             self.llm_temp = progress.get("tone_temp", 0.7)
-            self.model = progress.get("model", "")
+            #self.model = progress.get("model", "")
             self.min_age = progress.get("min_age", 13)
             self.target_length = progress.get("target_length", 50000)
             self.director_token_usage = self._parse_tokens(progress.get("director_token_usage"))

@@ -27,7 +27,7 @@ class MinimalStorySeed(BaseModel):
     themes: List[str]
     target_audience_age: int
     target_length: int
-    protagonist_specs: Dict[str, str] = Field(default_factory=dict)
+    protagonist_specs: Dict[str, Any] = Field(default_factory=dict)
 
 
 class WorldFoundation(BaseModel):
@@ -69,6 +69,9 @@ class NarrativeAgent(BaseModel):
         description="Specific quirks, speech patterns, habits, appearance details for characters"
     )
 
+class NarrativeAgentList(BaseModel):
+    """List of narrative agents"""
+    agents: List[NarrativeAgent] = Field(description="List of narrative agents for the story")
 
 class EnhancedConflictMatrix(BaseModel):
     """Multi-dimensional conflict analysis"""
@@ -174,6 +177,8 @@ class ConnectedNarrativeAgent(BaseModel):
         description="Speech patterns, vocabulary, communication style if applicable"
     )
 
+class ConnectedNarrativeAgentList(BaseModel):
+    agents: List[ConnectedNarrativeAgent]
 
 class IntegratedWorld(BaseModel):
     """World after plot integration"""
@@ -228,27 +233,62 @@ class StoryTracker(BaseModel):
     """Lightweight story-level consistency tracking"""
     act_tracking: Dict[int, ActTracking]
 
-class UniversalSceneBeat(BaseModel):
-    """Genre-agnostic scene structure"""
-    scene_number: int
-    scene_purpose: str = Field(description="What this scene accomplishes")   
-    key_events: List[str]= Field(description="2-4 concrete things that happen")
-    agent_focuses: List[str] = Field(description="Which agents are central")
-    emotional_shift: str  = Field(description="How emotion changes (optional)")
-    setup_elements: List[str] = Field(default_factory=list, description="Things introduced for later")  
-    payoff_elements: List[str] = Field(default_factory=list,description="Things resolved from earlier")
-    word_count_target: int = Field(default=400)
+class ChapterPivotPoints(BaseModel):
+    """Major story moments that anchor a chapter"""
+    pivot_number: int = Field(description="Sequential pivot number within chapter of the act")
+    pivot_type: str = Field(
+        description="revelation | confrontation | decision | loss | discovery | betrayal | transformation | etc..."
+    )
+    what_changes: str = Field(
+        description="What fundamentally shifts in the story at this moment"
+    )
+    agents_involved: List[str] = Field(description="Key agents present")
+    story_function: str = Field(
+        description="Why this pivot matters to overall plot/character/theme"
+    )
+    emotional_weight: str = Field(description="How this moment should feel")
+    
+    # Setup/Payoff tracking
+    introduces_for_later: List[str] = Field(
+        default_factory=list,
+        description="New questions, objects, or tensions this pivot creates"
+    )
+    resolves_from_earlier: List[str] = Field(
+        default_factory=list,
+        description="What this pivot pays off from earlier in story"
+    )
+    
+    # State changes
+    character_knowledge_changes: Dict[str, str] = Field(
+        default_factory=dict,
+        description="What characters learn/believe after this pivot"
+    )
+    relationship_changes: Dict[str, str] = Field(
+        default_factory=dict,
+        description="How relationships shift (e.g., 'protag-mentor: trust → suspicion')"
+    )
+    must_include_elements: List[str] = Field(
+    default_factory=list,
+    description="Immutable beats that MUST appear exactly (e.g., 'opening speakeasy heist with live jazz', 'lipstick message', 'heirloom ring glints')")
+
+class ChapterOutline(BaseModel):
+    chapter_number: int = Field(description="Chapter number within the story")
+    target_word_count: int = Field(description="Chapter word count target")
+    pivot_points : List[ChapterPivotPoints]
+    
 
 class ActPlan(BaseModel):
-    """Complete plan for a single act"""
+    """Complete plan for a single act - CHAPTER LEVEL"""
     act_number: int
     act_title: str
     act_purpose: str = Field(
         description="What this act accomplishes in the overall story"
     )
-    chapter_seeds: List[str] = Field(
-        description="Raw creative instructions for each chapter - rich chapter seeds"
+    
+    chapter_outlines: List[ChapterOutline] = Field(
+        description="Each chapter has: seed (creative direction) + 2-4 pivot points"
     )
+    
     emotional_progression: str = Field(
         description="How emotional tone evolves through this act"
     )
@@ -258,37 +298,32 @@ class ActPlan(BaseModel):
     act_climax: str = Field(
         description="Peak moment of tension/revelation in this act"
     )
-    # NEW: Pre-planned scene beats for entire act
-    chapter_scene_beats: Dict[int, List[UniversalSceneBeat]] = Field(
-        description="Maps chapter_number → list of scene beats"
-    )
     
-    # NEW: Simple tracking
+    # Tracking
     setup_this_act: List[str] = Field(
         default_factory=list,
-        description="Things introduced this act that matter later (any genre)"
+        description="Things introduced this act that matter later"
     )
     payoff_this_act: List[str] = Field(
         default_factory=list, 
         description="Things from earlier acts that get resolved here"
     )
-    
-    # NEW: Agent progression
     agent_state_changes: Dict[str, str] = Field(
         default_factory=dict,
-        description="How each agent changes this act: {agent_name: 'starts X, ends Y'}"
+        description="How each agent changes this act"
     )
+
 
 # ============================================================================
 # OUTPUT PARSERS
 # ============================================================================
 
 world_foundation_parser = PydanticOutputParser(pydantic_object=WorldFoundation)
-narrative_agent_parser = PydanticOutputParser(pydantic_object=NarrativeAgent)
+narrative_agent_parser = PydanticOutputParser(pydantic_object=NarrativeAgentList)
 enhanced_conflict_parser = PydanticOutputParser(pydantic_object=EnhancedConflictMatrix)
 minimal_plot_parser = PydanticOutputParser(pydantic_object=MinimalPlotOutline)
 expanded_plot_parser = PydanticOutputParser(pydantic_object=ExpandedPlotOutline)
-connected_narrative_agent_parser = PydanticOutputParser(pydantic_object=ConnectedNarrativeAgent)
+connected_narrative_agent_parser = PydanticOutputParser(pydantic_object=ConnectedNarrativeAgentList)
 integrated_world_parser = PydanticOutputParser(pydantic_object=IntegratedWorld)
 twist_strategy_parser = PydanticOutputParser(pydantic_object=TwistStrategy)
 quality_report_parser = PydanticOutputParser(pydantic_object=QualityReport)
@@ -353,10 +388,10 @@ Build a world foundation that enables compelling stories."""
             parser=world_foundation_parser
         )
 
-        world = world_foundation_parser.parse(json_data)
+        #world = world_foundation_parser.parse(json_data)
 
 
-        return world, tokens
+        return json_data, tokens
     
     async def integrate_with_conflict(
         self,
@@ -388,7 +423,7 @@ Identify:
 {integrated_world_parser.get_format_instructions()}"""
         
         human_prompt = f"""Agents involved:
-{json.dumps([a.model_dump() for a in agents], indent=2)}
+{json.dumps([a.model_dump() for a in agents], indent=2, ensure_ascii=False)}
 
 Show how the world itself evolves as a result of agent actions or thematic resolution — e.g., corrupted system reformed, dying world revived, myth reinterpreted.
 Integrate world with story."""
@@ -408,9 +443,9 @@ Integrate world with story."""
             parser=integrated_world_parser
         )
 
-        integrated = integrated_world_parser.parse(json_data)
+        #integrated = integrated_world_parser.parse(json_data)
 
-        return integrated, tokens
+        return json_data, tokens
 
 
 
@@ -457,7 +492,7 @@ Let them be autonomous entities shaped by their world and psychology.
 
 Age-appropriate for: {seed.target_audience_age} year old audience
 
-Output as JSON list of NarrativeAgent objects, one for each required role.
+Output as JSON object with a key 'agents' containing a list of NarrativeAgent objects, one for each required role.
 {narrative_agent_parser.get_format_instructions()}"""
         
         human_prompt = f"""Seed: {seed.model_dump_json(indent=2)}
@@ -483,31 +518,37 @@ Generate {agent_count} narrative agents for the roles: {', '.join(required_roles
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        # 🔥 New: JSON fixer loop
+                # === FINAL EXTRACTION LOGIC (WORKS WITH BOTH DICT AND PYDANTIC) ===
         agents_json = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=narrative_agent_parser
         )
 
-        # 🔥 Root correctness: ensure it's actually a list
-        if isinstance(agents_json, dict):
-            # Try to salvage the list (common LLM pattern)
-            possible_lists = [v for v in agents_json.values() if isinstance(v, list)]
-            if possible_lists:
-                agents_json = possible_lists[0]
+        # Case 1: We got a Pydantic NarrativeAgentList instance
+        if hasattr(agents_json, "agents"):
+            agents = agents_json.agents  # Already proper NarrativeAgent instances!
+        
+        # Case 2: We got a raw dict (fallback)
+        elif isinstance(agents_json, dict):
+            if "agents" in agents_json:
+                raw_list = agents_json["agents"]
             else:
-                raise ValueError("Expected a list of NarrativeAgent objects but got a dict.")
+                # LLM sometimes puts the list directly under another key
+                raw_list = next((v for v in agents_json.values() if isinstance(v, list)), None)
+                if raw_list is None:
+                    raise ValueError("Could not find agent list in response")
+            
+            # Convert dicts → Pydantic models
+            agents = [NarrativeAgent(**item) if isinstance(item, dict) else item for item in raw_list]
+        
+        else:
+            raise ValueError("Unexpected parsed type from LLM")
 
-        if not isinstance(agents_json, list):
-            raise ValueError("Expected JSON root to be a list of NarrativeAgent objects.")
+        # Final sanity check
+        if not agents or not all(isinstance(a, NarrativeAgent) for a in agents):
+            raise ValueError("Failed to produce valid NarrativeAgent instances")
 
-        # 🔥 Construct Pydantic models
-        agents = [NarrativeAgent(**a) for a in agents_json]
-
-        # Optional: ensure count matches requested roles
-        if len(agents) != agent_count:
-            print(f"⚠️ Warning: Expected {agent_count} agents based on required roles but got {len(agents)}")
-
+        print(f"Successfully created {len(agents)} narrative agents")
         return agents, tokens
     
     async def connect_agents_to_plot(
@@ -540,7 +581,7 @@ For each agent, define:
 
 Maintain the story’s prose style throughout this plot: {prose_style}
 
-Output as JSON list of ConnectedNarrativeAgent objects.
+Output as JSON object with a key 'agents' containing a list of ConnectedNarrativeAgent objects.
 {connected_narrative_agent_parser.get_format_instructions()}"""
         
         human_prompt = f"""Connect these autonomous agents to the story organically.
@@ -569,18 +610,15 @@ Conflicts:
             parser=connected_narrative_agent_parser
         )
 
-        # Handle edge cases where JSON root is not a list
-        if isinstance(agents_json, dict):
-            possible_lists = [v for v in agents_json.values() if isinstance(v, list)]
-            if possible_lists:
-                agents_json = possible_lists[0]
-            else:
-                raise ValueError("Expected a list of agents but got a dict.")
-
-        connected = [ConnectedNarrativeAgent(**a) for a in agents_json]
+        if hasattr(agents_json, "agents"):
+            connected = agents_json.agents
+        elif isinstance(agents_json, dict):
+            raw = agents_json.get("agents") or next((v for v in agents_json.values() if isinstance(v, list)), None)
+            connected = [ConnectedNarrativeAgent(**item) if isinstance(item, dict) else item for item in raw]
+        else:
+            raise ValueError("Failed to parse connected agents")
 
         return connected, tokens
-
 
 
 class ConflictArchitect:
@@ -653,9 +691,9 @@ Build a multi-dimensional conflict matrix."""
             text=clean_resp,
             parser=enhanced_conflict_parser
         )
-        matrix = enhanced_conflict_parser.parse(json_data)
+       # matrix = enhanced_conflict_parser.parse(json_data)
         
-        return matrix, tokens
+        return json_data, tokens
 
 
 # class TwistEvaluator:
@@ -763,11 +801,188 @@ Conflicts: {conflict_matrix.model_dump_json(indent=2)}
             text=clean_resp,
             parser=quality_report_parser
         )
-        report = quality_report_parser.parse(json_data)
+        #report = quality_report_parser.parse(json_data)
         
-        return report, tokens
+        return json_data, tokens
 
+class ActContextBuilder:
+    """Builds rich, structured context for act planning without overwhelming the LLM"""
+    
+    @staticmethod
+    def build_act_context(
+        act_number: int,
+        final_plot: dict,
+        seed: dict,
+        connected_agents: list,
+        integrated_world: dict,
+        conflict_matrix: dict,
+        story_tracker: dict,
+        previous_acts: dict,
+        story_so_far: str,
+        structure_name: str,
+        word_guidance: tuple
+    ) -> str:
+        """
+        Returns a carefully formatted context string that gives the LLM:
+        - High-level story stakes and progression
+        - Agent arcs specific to this act
+        - World elements relevant to this act
+        - Setup/payoff tracking
+        - Previous act consequences
+        """
+        
+        word_percentage, act_guidance = word_guidance
+        suggested_words = int(seed.get('target_length', 50000) * word_percentage)
+        suggested_chapters = max(2, suggested_words // 2500)
+        
+        context_parts = []
+        
+        # ===== SECTION 1: ACT IDENTITY =====
+        context_parts.append(f"""
+╔════════════════════════════════════════════════════════════════════════════╗
+║ ACT {act_number} CONTEXT & GUIDANCE
+╚════════════════════════════════════════════════════════════════════════════╝
 
+STRUCTURE: {structure_name}
+ACT PURPOSE: {act_guidance}
+TARGET: ~{suggested_words:,} words across {suggested_chapters} chapters
+TONE: {seed.get('tone', 'Balanced')}
+PROSE STYLE: {seed.get('prose_style', 'Standard narrative')}
+""")
+        
+        # ===== SECTION 2: ACT SUMMARY & EMOTIONAL ARC =====
+        act_summaries = final_plot.get('act_summaries', [])
+        if act_number <= len(act_summaries):
+            context_parts.append(f"""
+┌─ ACT SUMMARY ─────────────────────────────────────────────────────────────┐
+{act_summaries[act_number - 1]}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+        
+        # ===== SECTION 3: WHAT THIS ACT SETS UP & PAYS OFF =====
+        tracker = story_tracker.get(str(act_number), {})
+        setup_elements = tracker.get('setup_elements', [])
+        payoff_elements = tracker.get('payoff_elements', [])
+        
+        context_parts.append(f"""
+┌─ STORY CONTINUITY ────────────────────────────────────────────────────────┐
+SETUP (introduce for later payoff):
+{ActContextBuilder._format_list(setup_elements, indent=2)}
+
+PAYOFF (resolve from earlier acts):
+{ActContextBuilder._format_list(payoff_elements, indent=2)}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+        
+        # ===== SECTION 4: AGENT ARCS THIS ACT =====
+        context_parts.append("\n┌─ AGENT ARCS THIS ACT ─────────────────────────────────────────────────┐")
+        
+        tracker_agents = tracker.get('key_agent_moments', {})
+        
+        for agent in connected_agents:
+            agent_name = agent.get('name', 'Unknown')
+            agent_role = agent.get('role', '')
+            agent_arc = agent.get('agent_arc', '')
+            
+            # Extract act-specific moments if available
+            moment = tracker_agents.get(agent_name, "")
+            
+            context_parts.append(f"""
+{agent_name} ({agent_role})
+  Arc: {agent_arc}
+  This Act: {moment if moment else 'Key player in unfolding conflicts'}
+""")
+        
+        context_parts.append("└───────────────────────────────────────────────────────────────────────┘\n")
+        
+        # ===== SECTION 5: CONFLICT ESCALATION =====
+        context_parts.append(f"""
+┌─ CONFLICT ESCALATION ─────────────────────────────────────────────────────┐
+Central: {conflict_matrix.get('central_conflict', '')}
+
+Escalation Path: {conflict_matrix.get('escalation_path', '')}
+
+Moral Dilemma: {conflict_matrix.get('moral_dilemma_axis', '')}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+        
+        # ===== SECTION 6: WORLD ELEMENTS THIS ACT =====
+        locs = integrated_world.get('plot_relevant_locations', '').split('\n')
+        rules = integrated_world.get('world_plot_interactions', '').split('\n')
+
+        context_parts.append(f"""
+┌─ WORLD & SETTING ─────────────────────────────────────────────────────────┐
+Relevant Locations:
+{ActContextBuilder._format_list(locs, indent=2)}
+
+World Rules Active:
+{ActContextBuilder._format_list(rules, indent=2)}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+
+        
+        # ===== SECTION 7: PREVIOUS ACT CONSEQUENCES =====
+        if previous_acts and act_number > 1:
+            context_parts.append(f"""
+┌─ CONSEQUENCES FROM ACT {act_number - 1} ───────────────────────────────────┐
+{ActContextBuilder._summarize_previous_act(previous_acts.get(act_number - 1, {}))}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+        
+        # ===== SECTION 8: STORY PROGRESS =====
+        context_parts.append(f"""
+┌─ STORY SO FAR ────────────────────────────────────────────────────────────┐
+{story_so_far}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+        
+        # ===== SECTION 9: THEMATIC THREADS =====
+        themes = seed.get('themes', [])
+        if themes:
+            context_parts.append(f"""
+┌─ THEMATIC FOCUS ──────────────────────────────────────────────────────────┐
+Core Themes: {', '.join(themes)}
+
+How This Act Deepens Themes:
+{final_plot.get('narrative_flow', '')}
+└───────────────────────────────────────────────────────────────────────────┘
+""")
+        
+        return "\n".join(context_parts)
+    
+    @staticmethod
+    def _format_list(items: list, indent: int = 0) -> str:
+        """Format list items with indentation"""
+        if not items:
+            return " " * indent + "(none specified)"
+        
+        formatted = []
+        for item in items:
+            if isinstance(item, str):
+                clean = item.strip()
+                if clean:
+                    formatted.append(" " * indent + f"• {clean}")
+        
+        return "\n".join(formatted) if formatted else " " * indent + "(none specified)"
+    
+    @staticmethod
+    def _summarize_previous_act(prev_act: dict) -> str:
+        """Extract key consequences from previous act"""
+        climax = prev_act.get('act_climax', '')
+        payoffs = prev_act.get('payoff_this_act', [])
+        changes = prev_act.get('agent_state_changes', {})
+        
+        summary = f"Climax: {climax}\n"
+        if payoffs:
+            summary += f"Payoffs this act: {payoffs}\n"
+        
+        if changes:
+            summary += "Character Changes: " + ", ".join(
+                [f"{agent} ({status})" for agent, status in list(changes.items())]
+            )
+        
+        return summary
+    
 # ============================================================================
 # MAIN STORY AUTHOR CLASS
 # ============================================================================
@@ -785,7 +1000,6 @@ class StoryAuthor:
         self.world_builder = WorldBuilder(self._cached_author_llm_call)
         self.agent_genesis = AgentGenesis(self._cached_author_llm_call)
         self.conflict_architect = ConflictArchitect(self._cached_author_llm_call)
-        #self.twist_evaluator = TwistEvaluator(self._cached_author_llm_call)
         self.quality_controller = QualityController(self._cached_author_llm_call)
         
         # LLM cache
@@ -865,7 +1079,7 @@ class StoryAuthor:
             genre=genres,
             sub_genre=sub_genre,
             setting=user_context.get('Setting'),
-            prose_style=user_context.get('Guide Prose', 'Standard narrative'),
+            prose_style=user_context.get('Guide Prose', ['Standard narrative'])[0],
             themes=themes,
             target_audience_age=target_audience_age,
             target_length=target_length,
@@ -941,11 +1155,11 @@ World Foundation: {world_foundation.model_dump_json(indent=2)}
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        json_data = await StoryHelpers.load_json_with_retry(
+        outline = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=minimal_plot_parser
         )
-        outline = minimal_plot_parser.parse(json_data)
+        #outline = minimal_plot_parser.parse(json_data)
         
         # Validate roles
         if len(outline.required_character_roles) < 2:
@@ -1029,9 +1243,9 @@ Integrate evolving relationships between agents. Show how they change each other
             text=clean_resp,
             parser=expanded_plot_parser
         )
-        expanded = expanded_plot_parser.parse(json_data)
+        #expanded = expanded_plot_parser.parse(json_data)
         
-        return expanded, tokens
+        return json_data, tokens
     
     async def _enforce_age_appropriateness(
         self,
@@ -1081,9 +1295,9 @@ Integrate evolving relationships between agents. Show how they change each other
             text=clean_resp,
             parser=expanded_plot_parser
         )
-        sanitized_plot = expanded_plot_parser.parse(json_data)
+        #sanitized_plot = expanded_plot_parser.parse(json_data)
 
-        return sanitized_plot, tokens
+        return json_data, tokens
     
     async def refine_plot_with_quality_feedback(
         self,
@@ -1134,10 +1348,9 @@ Refine the plot to address these concerns while maintaining what's working."""
             parser=expanded_plot_parser
         )
         
-        refined = expanded_plot_parser.parse(json_data)
-                
-        
-        return refined, tokens
+        #refined = expanded_plot_parser.parse(json_data)
+
+        return json_data, tokens
     
     async def reinforce_thematic_resonance(
             self, 
@@ -1147,10 +1360,12 @@ Refine the plot to address these concerns while maintaining what's working."""
             themes: List[str], 
             model="None"
             ) -> Tuple[ExpandedPlotOutline, dict]:
-        system_prompt = """You are a thematic development editor.
+        system_prompt = f"""You are a thematic development editor.
     Ensure the story’s major themes are reflected consistently in the plot, world, and agent arcs.
     Highlight recurring imagery, motifs, and emotional symbols.
-    Don't change core elements unnecessarily."""
+    Don't change core elements unnecessarily.
+
+    {expanded_plot_parser.get_format_instructions()}"""
         human_prompt = f"""
     Themes: {', '.join(themes)}
     Plot: {plot.model_dump_json(indent=2)}
@@ -1166,10 +1381,9 @@ Refine the plot to address these concerns while maintaining what's working."""
             text=clean_resp,
             parser=expanded_plot_parser
         )
-        refined_expanded = expanded_plot_parser.parse(json_data)
+        #refined_expanded = expanded_plot_parser.parse(json_data)
         
-        
-        return refined_expanded, tokens
+        return json_data, tokens
     
     async def _create_story_tracker(
         self,
@@ -1216,7 +1430,7 @@ Create act-by-act tracking of what gets introduced and resolved."""
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
         json_data = await StoryHelpers.load_json_with_retry(clean_resp, story_tracker_parser)
         
-        return story_tracker_parser.parse(json_data), tokens
+        return json_data, tokens
     
     async def orchestrate_story_planning(
         self,
@@ -1269,21 +1483,18 @@ Create act-by-act tracking of what gets introduced and resolved."""
         # PHASE 6: Connect Elements (Parallel)
         print("\n🔗 Phase 6: Connecting elements to plot...")
         prose_style = seed.prose_style
-        connect_agent_task = asyncio.create_task(
-            self.agent_genesis.connect_agents_to_plot(
-                narrative_agents, conflict_matrix, minimal_plot, prose_style, model
-            )
+        # Run agent connection first
+        connected_agents, connect_tokens = await self.agent_genesis.connect_agents_to_plot(
+            narrative_agents, conflict_matrix, minimal_plot, prose_style, model
         )
-        integrate_world_task = asyncio.create_task(
-            self.world_builder.integrate_with_conflict(
-                world_foundation, conflict_matrix, await connect_agent_task, model
-            )
+
+        # Now run world integration using the actual list
+        integrated_world, integrate_tokens = await self.world_builder.integrate_with_conflict(
+            world_foundation, conflict_matrix, connected_agents, model
         )
         
-        connected_agents, connect_tokens = await connect_agent_task
         print(f"✓ Agents connected to plot")
-        
-        integrated_world, integrate_tokens = await integrate_world_task
+
         print(f"✓ World integrated with conflicts")
         
         # PHASE 7: Expand Plot
@@ -1322,7 +1533,7 @@ Create act-by-act tracking of what gets introduced and resolved."""
         # === Age-appropriateness safety pass ===
         print("\n🔞 Running age-appropriateness filter...")
         final_plot, age_filter_tokens = await self._enforce_age_appropriateness(
-            final_plot=final_plot if 'final_final_plot' not in locals() else final_final_plot,
+            final_plot=final_final_plot,
             seed=seed,
             model=model
         )
@@ -1436,7 +1647,7 @@ Create act-by-act tracking of what gets introduced and resolved."""
             "connected_agents": connected_agents,
             "integrated_world": integrated_world,
             "minimal_plot": minimal_plot,
-            "final_plot": final_final_plot,
+            "final_plot": final_plot,
             #"twist_strategy": twist_strategy,
             "quality_report": quality_report,
             "story_tracker": story_tracker,
@@ -1572,7 +1783,183 @@ Create act-by-act tracking of what gets introduced and resolved."""
         even_perc = 1.0 / total_acts
         return [(even_perc, f"ACT {i+1}: Progress the story with rising tension and agent development.") for i in range(total_acts)]
 
+    def get_enhanced_act_planning_system_prompt(
+            self,
+        act_number: int,
+        total_acts: int,
+        structure_name: str,
+        act_guidance: str,
+        themes: list,
+        tone: str,
+        prose_style: str,
+        word_count: int,
+        min_age: int
+    ) -> str:
+        """
+        More directive system prompt that tells the LLM exactly what to prioritize
+        """
+        
+        return f"""You are planning ACT {act_number} of {total_acts} for a world-class story.
 
+    YOUR JOB:
+    Create 2-4 CHAPTERS with rich PIVOT POINTS (major story moments).
+    Do NOT write scenes. Do NOT write dialogue. Do NOT write description.
+    Instead, map out the SPINE of each chapter — the critical turning points.
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    STRUCTURE & PACING REQUIREMENTS
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    Structure Template: {structure_name}
+    Act Purpose: {act_guidance}
+    Tone: {tone}
+    Prose Style: {prose_style}
+    Key Themes: {', '.join(themes)}
+
+    Act {act_number}'s Role:
+    - THIS is where we progress toward the {['setup', 'complication', 'climax'][min(act_number-1, 2)]}
+    - Previous acts have established foundation; this act BUILDS on that
+    - Next acts will depend on what YOU set up here
+    - Pacing: balance revelations, confrontations, decisions, and consequences
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    WHAT YOU MUST INCLUDE IN EACH CHAPTER
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    For EACH chapter, provide:
+
+    1. CHAPTER SEED (2-3 sentences)
+    - The creative DNA of this chapter
+    - What makes it FEEL different from other chapters
+    - What drives the emotional tone
+    Example: "Kael arrives at the abandoned tower where his father died. 
+                The air is cold—but wrongly so, unnatural. As he searches for answers,
+                he realizes his father's presence still lingers in corrupted magic."
+
+    2. TARGET WORD COUNT
+    - Roughly {word_count} words per chapter
+    - No need to be exact; let Director adjust
+
+    3. PIVOT POINTS (2-4 per chapter, ordered chronologically)
+    Each pivot is ONE moment where something fundamentally shifts:
+    - A revelation that reframes the narrative
+    - A confrontation that shifts power or trust
+    - A decision that locks in consequences
+    - A loss that raises the stakes
+    - A discovery that opens new paths forward
+    - A betrayal that inverts a relationship
+    - A transformation in a character or location
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    PIVOT POINT STRUCTURE (REPEAT FOR EACH PIVOT)
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    For each pivot, you MUST specify:
+
+    pivot_type: (revelation | confrontation | decision | loss | discovery | betrayal | transformation)
+
+    what_changes: Describe what fundamentally shifts.
+    - Not "Kael learns magic"
+    - But "Kael learns magic comes at cost of memory — forcing him to choose between power and remembering his sister"
+
+    agents_involved: [List only agents who are CENTRAL to this pivot]
+    - Don't list every character in the scene
+    - List who DRIVES or is TRANSFORMED by this moment
+
+    story_function: Why does this matter to the overall plot?
+    - Connect to larger conflicts or character arcs
+    - Make explicit the RIPPLE EFFECT
+
+    emotional_weight: How should this FEEL?
+    - "Shocking but inevitable" / "Bittersweet triumph" / "Crushing betrayal"
+    - This guides the Director's scene construction
+
+    introduces_for_later: What NEW tensions, objects, relationships, or questions does this pivot CREATE?
+    - These MUST be payoff elsewhere in the story
+    - These FEED into later acts
+    - Be specific: "Question: Can Kael trust his mentor?" not just "introduces doubt"
+
+    resolves_from_earlier: What from EARLIER in the story gets ANSWERED here?
+    - Callbacks to setup
+    - Payoff on seeded mysteries
+    - Character relationship shifts that were building
+
+    character_knowledge_changes: For each agent involved, what do they NOW KNOW/BELIEVE?
+    - "Kael: learns his father was corrupted by dark magic"
+    - "Mentor: realizes Kael is stronger than expected"
+    - Track misconceptions being corrected
+
+    relationship_changes: How do AGENT RELATIONSHIPS shift?
+    - "Kael-Mentor: trust → suspicion"
+    - "Kael-Love Interest: strangers → allies"
+    - Be concise but specific
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    CRITICAL CONSTRAINTS
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    ✓ CONSISTENCY: Each pivot must align with agent arcs and established world rules
+    ✓ ESCALATION: Pivots should build in intensity/stakes as chapter progresses
+    ✓ SETUP/PAYOFF: Track what you introduce vs. what you resolve
+    ✓ AGENT AUTHENTICITY: Agents act from their psychology, not plot convenience
+    ✓ THEMATIC RESONANCE: Each pivot should echo at least one core theme
+    ✓ AGE-APPROPRIATE: Content suitable for {min_age}-year-old audience
+    ✓ REALISM: Even in fantasy/sci-fi, causes lead to effects
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    FAILURE MODES TO AVOID
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    ❌ Don't make pivots feel random or convenient
+    ❌ Don't use pivots just for shock value
+    ❌ Don't have agents acting against their established psychology
+    ❌ Don't forget about setup/payoff tracking
+    ❌ Don't introduce massive new elements without explanation
+    ❌ Don't lose sight of the act's core purpose in the larger structure
+    ❌ Don't create pivots that contradict world rules or earlier plot points
+
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    Output ONLY valid JSON matching the ActPlan schema. Include ALL fields."""
+
+
+    def get_enhanced_act_planning_human_prompt(
+            self,
+        chapter_number: int,
+        context_str: str,
+        act_number: int,
+        total_acts: int,
+        suggested_chapters: int,
+        suggested_words: int
+    ) -> str:
+        """
+        Well-organized human prompt that leverages the context builder
+        """
+        
+        return f"""{context_str}
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    YOUR TASK
+    ═══════════════════════════════════════════════════════════════════════════════
+
+    Plan Act {act_number} of {total_acts} with {suggested_chapters} chapters, startin from chapter number {chapter_number}, (~{suggested_words} words total).
+
+    For EACH chapter:
+    1. Provide a brief creative seed (2-3 sentences)
+    2. List 2-4 pivot points in order
+    3. Each pivot includes all required fields (type, what_changes, agents, etc.)
+
+    Think about:
+    • How previous acts created setup that THIS act must pay off
+    • How THIS act sets up future acts
+    • When to introduce new complications vs. resolve existing ones
+    • Emotional pacing: where should readers catch breath? Where should tension peak?
+    • Agent psychology: why would each agent DO the things they do?
+
+    Create a chapter outline that the CHAPTER DIRECTOR can translate into actual scenes.
+    Your job is the SPINE of the act. The Director handles the flesh."""
+
+    
     async def plan_act(
         self,
         story_title: str,
@@ -1634,17 +2021,40 @@ Create act-by-act tracking of what gets introduced and resolved."""
 
         print(f"✓ Story progress: {current_word_count:,} / {target_total:,} words")
         
-        # Build context from previous acts
-        previous_acts_context = ""
-        for i in range(1, act_number):
+        # === CRITICAL FIX: Properly parse ALL previous act plans ===
+        previous_acts = {}
+        for prev_act_num in range(1, act_number):
             try:
-                act_json = await self.memory.get_long_term_document(
-                    metadata={'type': 'act_plan', 'act_id': i, 'story_title': story_title}
+                act_doc = await self.memory.get_long_term_document(
+                    metadata={'type': 'act_plan', 'act_id': prev_act_num, 'story_title': story_title}
                 )
-                previous_acts_context += f"\n\n=== Act {i} ===\n{act_json}"
-            except:
-                pass
-        
+                if act_doc:
+                    act_data = json.loads(act_doc)
+                    # Convert to proper Pydantic model for consistency
+                    act_plan_model = ActPlan(**act_data)
+                    previous_acts[prev_act_num] = act_plan_model
+            except Exception as e:
+                print(f"Could not load Act {prev_act_num}: {e}")
+
+        # Get progress & calculate word budget
+        progress = await self.memory.get_story_progress()
+        current_word_count = progress.get('story_word_count', 0)
+        min_age = progress.get("min_age", 13)
+        target_total = final_plot.get('target_length', seed['target_length'] if seed else 50000)
+        remaining_words = max(5000, target_total - current_word_count)  # safety floor
+
+        total_acts = len(final_plot.get('act_summaries', [])) or 3
+        structure_name = find_best_structure_name(seed['genre'] if seed else ['Fiction'])
+
+        percentages_and_guidances = self.get_act_percentages_and_guidance(structure_name, total_acts)
+        word_percentage, act_guidance = percentages_and_guidances[act_number - 1]
+
+        suggested_word_count = max(4000, int(remaining_words * word_percentage))
+        suggested_chapters = max(2, min(6, suggested_word_count // 2200))  # ~2–6 chapters
+
+        print(f"Act {act_number} guidance: {act_guidance}")
+        print(f"Target: ~{suggested_word_count:,} words across ~{suggested_chapters} chapters")
+
         # Get rolling story summary
         latest_chapter = progress.get('latest_chapter_id', 0)
         story_so_far = await self.memory.get_director_context(
@@ -1653,70 +2063,48 @@ Create act-by-act tracking of what gets introduced and resolved."""
             query="",
             k=5
         )
+        if not story_so_far:
+            story_so_far = "Start of story."
         
-        # Calculate act guidance
-        total_acts = len(final_plot.get('act_summaries', []))
-        structure_name = find_best_structure_name(seed.get('genre', ['Fiction']))
-        
-        percentages_and_guidances = self.get_act_percentages_and_guidance(structure_name, total_acts)
-        word_percentage, act_guidance = percentages_and_guidances[act_number - 1]
-        
-        suggested_word_count = max(3000, int(remaining_words * word_percentage))
-        suggested_chapters = max(2, suggested_word_count // 2500)
-        
-        print(f"✓ Act {act_number} guidance: {act_guidance}")
-        print(f"✓ Target: ~{suggested_word_count:,} words across ~{suggested_chapters} chapters")
-        
-        # Get structure template
-        #structure_template = find_best_structure(seed.get('genre', ['Fiction']))
+
+    
         
         # Generate act plan
-        system_prompt = f"""You are planning Act {act_number} with COMPLETE SCENE-LEVEL DETAIL.
-
-For each chapter in this act:
-1. Provide a rich chapter seed (as before)
-2. Break the chapter into 3-5 scene beats
-
-Each scene beat should specify:
-- Scene purpose (advance plot / develop agent / reveal world / create emotion)
-- 2-4 key events that happen
-- Which agents are involved
-- Emotional trajectory
-- What gets SETUP for later (if anything)
-- What gets PAID OFF from earlier (if anything)
-- Target word count (300-500 words typically, adjust for importance)
-
-Be SPECIFIC but leave room for writer creativity in prose details.
-
-STORY TRACKER CONTEXT:
-What should be introduced this act: {story_tracker.get(act_number, {}).get('setup_elements', [])}
-What should be resolved this act: {story_tracker.get(act_number, {}).get('payoff_elements', [])}
-
-Act Purpose: {act_guidance}
-
-{act_plan_parser.get_format_instructions()}"""
-
-        human_prompt = f"""Plan Act {act_number} with {suggested_chapters} chapters.
-
-For EACH chapter, generate:
-- Chapter seed (rich creative direction)
-- 3-5 scene beats (specific events, not just vague goals)
-
-STORY CONTEXT:
-Plot: {json.dumps(final_plot, indent=2)}
-Agents: {json.dumps(agents, indent=2)}
-World: {json.dumps(world, indent=2)}
-Conflicts: {json.dumps(conflict_matrix, indent=2)}
-
-Previous acts summary: {previous_acts_context}
-Story so far: {story_so_far}
-
-Target this act: ~{suggested_word_count:,} words
-Chapters: {suggested_chapters}
-
-Generate complete chapter + scene structure."""
-#   Twist Strategy:
-# {json.dumps(twist_strategy, indent=2)}      
+        act_context = ActContextBuilder.build_act_context(
+            act_number=act_number,
+            final_plot=final_plot,
+            seed=seed,
+            connected_agents=agents,
+            integrated_world=world,
+            conflict_matrix=conflict_matrix,
+            story_tracker=story_tracker,
+            previous_acts={num: plan.model_dump() for num, plan in previous_acts.items()},       
+            story_so_far=story_so_far,
+            structure_name=structure_name,
+            word_guidance=(word_percentage, act_guidance)
+        )
+        
+        # NEW: Use enhanced prompts
+        system_prompt = self.get_enhanced_act_planning_system_prompt(
+            act_number=act_number,
+            total_acts=total_acts,
+            structure_name=structure_name,
+            act_guidance=act_guidance,
+            themes=seed.get('themes', []),
+            tone=seed.get('tone', 'Balanced'),
+            prose_style=seed.get('prose_style', 'Standard'),
+            word_count=suggested_word_count,
+            min_age=min_age
+        )
+        
+        human_prompt = self.get_enhanced_act_planning_human_prompt(
+            chapter_number=latest_chapter,
+            context_str=act_context,
+            act_number=act_number,
+            total_acts=total_acts,
+            suggested_chapters=suggested_chapters,
+            suggested_words=suggested_word_count
+        )
 
         response, tokens = await self._cached_author_llm_call(
             system_prompt=system_prompt,
@@ -1727,11 +2115,11 @@ Generate complete chapter + scene structure."""
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        json_data = await StoryHelpers.load_json_with_retry(
+        act_plan = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=act_plan_parser
         )
-        act_plan = act_plan_parser.parse(json_data)
+        #act_plan = act_plan_parser.parse(json_data)
         
         
         # Validate chapter count
@@ -1746,7 +2134,7 @@ Generate complete chapter + scene structure."""
         
         print("=" * 60)
         print(f"✅ ACT {act_number} PLANNED: '{act_plan.act_title}'")
-        print(f"📖 {len(act_plan.chapter_seeds)} chapters outlined")
+        print(f"📖 {len(act_plan.chapter_outlines)} chapters outlined")
         print("=" * 60)
         
         return act_plan, tokens

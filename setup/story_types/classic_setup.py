@@ -479,17 +479,18 @@ class ClassicStorySetup:
         all_tokens = story_plan['tokens']
         story_seed = story_plan['seed']
         minimal_plot = story_plan['minimal_plot']
+        final_plot = story_plan['final_plot']
         # Step 2: Generate blurb
-        print(f"📖 Generating blurb for: {story_seed.title}")
+        print(f"📖 Generating blurb for: {final_plot.title}")
         blurb = await generate_blurb(minimal_plot)
         
         # Step 3: Generate cover image
         image_data_base64 = None
         
         # Step 5: Plan Act 1
-        print(f"📋 Planning Act 1 for: {story_seed.title}")
+        print(f"📋 Planning Act 1 for: {final_plot.title}")
         _, act_tokens = await story_author.plan_act(
-            story_title=story_seed.title,
+            story_title=final_plot.title,
             act_number=1
         )
         
@@ -500,7 +501,7 @@ class ClassicStorySetup:
         }
         
         del user_context
-        print(f"✅ Story initialization complete: {story_seed.title}")
+        print(f"✅ Story initialization complete: {final_plot.title}")
         print(f"   - Type: {story_type}")
         print(f"   - Acts planned: {minimal_plot.act_count}")
         print(f"   - Target length: {story_seed.target_length} words")
@@ -520,7 +521,7 @@ class ClassicStorySetup:
             metadata={
                 "latest_chapter_id": 1,
                 "continue_scene_id": 1,
-                "story_title": story_seed.title,
+                "story_title": final_plot.title,
                 "story_word_count": 0,
                 "chapter_word_count": 0,
                 "current_act_id": 1,
@@ -539,7 +540,7 @@ class ClassicStorySetup:
                 "genre": story_seed.genre,
                 "sub_genre": story_seed.sub_genre,
                 "themes": story_seed.themes,
-                "min_age": story_plan.target_audience_age,
+                "min_age": story_seed.target_audience_age,
                 "complete": False
             }
         )
@@ -558,7 +559,7 @@ class ClassicStorySetup:
         from src.memory.user_management import append_story
         await append_story(
             user_id=user_id, 
-            story_title=story_seed.title, 
+            story_title=final_plot.title, 
             story_id=story_id, 
             story_type=story_type
         )
@@ -650,20 +651,30 @@ class ClassicStorySetup:
                 )
                 
                 if act_plan_json:
+                    max_chapter_in_acts = 0
                     act_plan = json.loads(act_plan_json)
-                    chapter_outlines = act_plan.get('chapter_seeds', [])
+                    chapter_outlines = act_plan.get('chapter_outlines', [])
                     total_chapters_in_act = len(chapter_outlines)
-                    
+                    del chapter_outlines, act_plan, act_plan_json
                     # Find highest chapter number in this act
-                    max_chapter_in_act = max(
-                        (ch.get('chapter_number', 0) for ch in chapter_outlines),
-                        default=0
-                    )
+                    for i in range(1, current_act + 1):
+                        act_plan_json_temp = await memory_system.get_long_term_document(
+                            metadata={
+                                'type': 'act_plan',
+                                'act_id': i,
+                                'story_title': story_title
+                            }
+                        )
+                        act_plan_temp = json.loads(act_plan_json_temp)
+                        chapter_outlines_temp = act_plan_temp.get('chapter_outlines', [])
+                        total_chapters_in_act_temp = len(chapter_outlines_temp)
+                        max_chapter_in_acts += total_chapters_in_act_temp
+                    del act_plan_json_temp, chapter_outlines_temp, act_plan_temp
                     
-                    print(f"📋 Act {current_act} has {total_chapters_in_act} chapters (up to chapter {max_chapter_in_act})")
+                    print(f"📋 Act {current_act} has {total_chapters_in_act} chapters (up to chapter {max_chapter_in_acts})")
                     
                     # If we're past the last chapter of current act, check for completion
-                    if latest_chapter > max_chapter_in_act:
+                    if latest_chapter > max_chapter_in_acts:
                         print(f"🔍 Checking if Act {current_act} is complete...")
                         
                         # completion_check = await story_author.check_act_completion(
@@ -675,7 +686,14 @@ class ClassicStorySetup:
                         if current_act < total_acts:
                             text = await memory_system.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=latest_chapter-1)
                             combined_text = '\n'.join(text)
-                            ingested = await Ingestor.ingest_act(current_act=current_act, chapters_text=combined_text)
+                            world_details = await memory_system.get_all_episodic_characters()
+                            char_details = await memory_system.get_all_episodic_world_elements()
+                            ingested = await Ingestor.ingest_act(
+                                act_id=current_act, 
+                                chapters_text=combined_text, 
+                                char_details=char_details, 
+                                world_details=world_details
+                                )
                             if ingested == "failed":
                                 print("Act Ingestion failed.")
                                 return {
@@ -705,14 +723,14 @@ class ClassicStorySetup:
                             await memory_system.increment_act(new_act_number=next_act)
             
                             # Update token usage
-                            writer_tokens = progress.get("author_token_usage", {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0})
-                            if isinstance(writer_tokens, dict):
-                                writer_tokens["prompt_tokens"] = tokens["prompt_tokens"] + writer_tokens["prompt_tokens"]
-                                writer_tokens["completion_tokens"] = tokens["completion_tokens"] + writer_tokens["completion_tokens"]
-                                writer_tokens["total_tokens"] = tokens["total_tokens"] + writer_tokens["total_tokens"]
+                            author_tokens = progress.get("author_token_usage")
+                            if isinstance(author_tokens, dict):
+                                author_tokens["prompt_tokens"] = tokens["prompt_tokens"] + author_tokens["prompt_tokens"]
+                                author_tokens["completion_tokens"] = tokens["completion_tokens"] + author_tokens["completion_tokens"]
+                                author_tokens["total_tokens"] = tokens["total_tokens"] + author_tokens["total_tokens"]
 
                             await memory_system.update_story_progress(
-                                metadata={"author_token_usage": writer_tokens}
+                                metadata={"author_token_usage": author_tokens}
                             )
                             
                             return {
@@ -720,7 +738,7 @@ class ClassicStorySetup:
                                 "current_act_id": next_act,
                                 "total_acts": total_acts,
                                 "act_title": act_plan.act_title,
-                                "chapter_count": len(act_plan.chapter_seeds),
+                                "chapter_count": len(act_plan.chapter_outlines),
                                 "message": f"Started Act {next_act}: {act_plan.act_title}",
                                 "tokens_used": tokens,
                                 "progress_percentage": int(act_percentage * 100),
@@ -749,6 +767,7 @@ class ClassicStorySetup:
                 else:
                     print(f"⚠️ No act plan found for act {current_act}")
                     # This shouldn't happen, but handle gracefully
+                    
                     return {
                         "status": "error",
                         "message": f"Act plan not found for act {current_act}",

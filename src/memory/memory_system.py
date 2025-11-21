@@ -165,10 +165,7 @@ class StoryMemorySystem:
     async def get_entire_act_chapters_for_act_ingestion_episodic_story(self, current_act: int, chapters: int = 0) -> list:
         act_chapter_text = []
         for i in range(0, chapters + 1):
-            print(i)
-            print(current_act)
             text = await self.search_single_episodic_story(act_number=current_act, chapter_number=i, summary_type = "chapter summary")
-            print(text)
             #if len(text) > 0:
             text_extract = f"Chapter number: {i}\n{text}"
             act_chapter_text.append(text_extract)
@@ -181,6 +178,12 @@ class StoryMemorySystem:
             "worlds": await self.episodic_worlds.search(query, metadata=metadata, k=k),
         }
     
+    async def get_all_episodic_characters(self):
+        return await self.episodic_characters.get_all_characters()
+    
+    async def get_all_episodic_world_elements(self):
+        return await self.episodic_characters.get_all_world_elements()
+
     async def search_multiple_episodic_story(self, query: str, metadata: dict = None, k: int = 5) -> str:
         hits = await self.episodic_story.search(query, metadata=metadata, k=k)
         return "\n".join(hits)
@@ -196,7 +199,9 @@ class StoryMemorySystem:
         return episodic_raw
 
     async def get_director_context(self, current_act_number: int, current_chapter_number: int, query: str, k: int = 5) -> dict:
-        char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, 50)
+        #char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, 50)
+        all_characters = await self.get_all_episodic_characters()
+        all_worlds = await self.get_all_episodic_world_elements()
         chapters_context = await self.search_multiple_episodic_story(
             query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
         )
@@ -236,8 +241,8 @@ class StoryMemorySystem:
         return {
             "previous act summaries":acts_combined_string,
             "last few chapter summaries from current act": chapters_combined_string,
-            "relevant characters": char_world_context.get("characters", []),
-            "relevant worlds": char_world_context.get("worlds", []),
+            "all characters": all_characters,
+            "all worlds": all_worlds,
             "relevant chapter context": chapters_context}
     
     # ---------- Long-Term (SQLite) operations ----------

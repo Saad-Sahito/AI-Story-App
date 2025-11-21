@@ -250,12 +250,13 @@ class QdrantStore:
                     # Convert structured info into a text summary for embeddings
                     embed_text = (
                         f"Name: {info.get('name')}\n"
-                        f"Summary: {info.get('summary', '')}\n"
-                        f"Traits: {', '.join(info.get('traits', []))}\n"
-                        f"Relationships: {json.dumps(info.get('relationships', {}))}\n"
-                        f"Emotional State: {info.get('emotional_state', '')}\n"
-                        f"Goals: {info.get('goals', '')}\n"
-                        f"Status Changes: {info.get('status_changes', '')}"
+                        f"Progression: {', '.join(info.get('progression', []))}\n"
+                        f"Summary: {info.get('current_summary', '')}\n"
+                        f"Traits: {', '.join(info.get('current_traits', []))}\n"
+                        f"Relationships: {json.dumps(info.get('current_relationships', {}))}\n"
+                        f"Emotional State: {info.get('current_emotional_state', '')}\n"
+                        f"Goals: {info.get('current_goals', '')}\n"
+                        f"Status: {info.get('current_status', '')}"
                     )
                     vec = await self._embed_text(embed_text)
 
@@ -263,7 +264,7 @@ class QdrantStore:
                     payload = metadata.copy() if metadata else {}
                     payload.update({
                         "key": name,
-                        "value": info["summary"],  # human-readable search value
+                        "value": info["current_summary"],  # human-readable search value
                         "text": embed_text,        # full text used for vector embedding
                         "character_name": name,
                         "structured_data": info,   # <-- full structured object here
@@ -302,18 +303,19 @@ class QdrantStore:
 
                     embed_text = (
                         f"Name: {info.get('name')}\n"
-                        f"Summary: {info.get('summary', '')}\n"
-                        f"Atmosphere: {info.get('atmosphere', '')}\n"
-                        f"Culture: {info.get('culture', '')}\n"
-                        f"Events: {info.get('events', '')}\n"
-                        f"Connections: {json.dumps(info.get('connections', {}))}"
+                        f"Progression: {', '.join(info.get('progression', []))}\n"
+                        f"Summary: {info.get('current_summary', '')}\n"
+                        f"Atmosphere: {info.get('current_atmosphere', '')}\n"
+                        f"Culture: {info.get('current_culture', '')}\n"
+                        f"Events: {info.get('current_events', '')}\n"
+                        f"Connections: {json.dumps(info.get('current_connections', {}))}"
                     )
                     vec = await self._embed_text(embed_text)
 
                     payload = metadata.copy() if metadata else {}
                     payload.update({
                         "key": name,
-                        "value": info["summary"],
+                        "value": info["current_summary"],
                         "text": embed_text,
                         "world_element": name,
                         "structured_data": info,
@@ -396,7 +398,134 @@ class QdrantStore:
 
             return hits
 
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
+    async def get_all_characters(self, include_structured: bool = True) -> List[Any]:
+        """
+        Retrieve all characters for the current user/story/namespace.
 
+        Args:
+            include_structured: If True, returns list of full structured dicts from `structured_data`.
+                                If False, returns formatted summary strings.
+
+        Returns:
+            List[dict] if include_structured=True, else List[str]
+        """
+        async with self.request_semaphore:
+            must_conds = [
+                models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
+                models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
+                models.FieldCondition(key="type", match=models.MatchValue(value="character")),
+            ]
+
+            filter_ = models.Filter(must=must_conds)
+            offset = None
+            results = []
+
+            while True:
+                batch, next_offset = await self.client.scroll(
+                    collection_name=self.collection,
+                    scroll_filter=filter_,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+
+                for record in batch:
+                    payload = record.payload or {}
+                    structured = payload.get("structured_data")
+
+                    if include_structured and structured is not None:
+                        # Return full original structured data + metadata
+                        results.append({
+                            "character_name": payload.get("character_name"),
+                            **structured  # This contains current_summary, current_traits, etc.
+                        })
+                    else:
+                        # Fallback: human-readable string summary
+                        name = payload.get("character_name", "Unknown")
+                        text = payload.get("text", "")
+                        progression = ", ".join(payload.get("progression", [])) if payload.get("progression") else None
+                        chapter_id = payload.get("chapter_id")
+
+                        parts = [f"{name}: {text}"]
+                        if progression:
+                            parts.append(f"Progression: {progression}")
+                        if chapter_id:
+                            parts.append(f"chapter_id={chapter_id}")
+
+                        results.append(" | ".join(parts))
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            return results
+
+
+    @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
+    async def get_all_world_elements(self, include_structured: bool = True) -> List[Any]:
+        """
+        Retrieve all world elements (locations, factions, lore, etc.).
+
+        Args:
+            include_structured: If True, returns list of full structured dicts.
+                                If False, returns formatted strings.
+
+        Returns:
+            List[dict] if include_structured=True, else List[str]
+        """
+        async with self.request_semaphore:
+            must_conds = [
+                models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
+                models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
+                models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
+                models.FieldCondition(key="type", match=models.MatchValue(value="world")),
+            ]
+
+            filter_ = models.Filter(must=must_conds)
+            offset = None
+            results = []
+
+            while True:
+                batch, next_offset = await self.client.scroll(
+                    collection_name=self.collection,
+                    scroll_filter=filter_,
+                    limit=100,
+                    offset=offset,
+                    with_payload=True,
+                    with_vectors=False,
+                )
+
+                for record in batch:
+                    payload = record.payload or {}
+                    structured = payload.get("structured_data")
+
+                    if include_structured and structured is not None:
+                        results.append({
+                            "world_element": payload.get("world_element"),
+                            **structured
+                        })
+                    else:
+                        name = payload.get("world_element", "Unknown")
+                        text = payload.get("text", "")
+                        progression = ", ".join(payload.get("progression", [])) if payload.get("progression") else None
+                        chapter_id = payload.get("chapter_id")
+
+                        parts = [f"{name}: {text}"]
+                        if progression:
+                            parts.append(f"Progression: {progression}")
+                        if chapter_id:
+                            parts.append(f"chapter_id={chapter_id}")
+
+                        results.append(" | ".join(parts))
+
+                if next_offset is None:
+                    break
+                offset = next_offset
+
+            return results
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def get_chapter_content(self, metadata: Dict[str, Any] = None) -> list[str]:
@@ -408,7 +537,6 @@ class QdrantStore:
             if metadata["chapter_number"] > 0:
                 must_conds = [
                     models.FieldCondition(key="chapter_id", match=models.MatchValue(value=metadata["chapter_number"])),
-                    models.FieldCondition(key="act_id", match=models.MatchValue(value=metadata["act_number"])),
                     models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                     models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                     models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),

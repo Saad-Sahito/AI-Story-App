@@ -173,7 +173,7 @@ class StoryHelpers:
         return False, None, last_exc
     
     @staticmethod
-    async def load_json_with_retry(text: str, parser, max_attempts: int = 5):
+    async def load_json_with_retry(text: str, parser, max_attempts: int = 10):
         """Generic JSON loader with self-healing retry logic"""
 
         attempt = 0
@@ -181,14 +181,12 @@ class StoryHelpers:
 
         while attempt < max_attempts:
             try:
-                # Step 1 
-                data = parser.parse(text)
-                return text
+                data = parser.parse(current_text)
+                return data
             
             except Exception as e:
-                # Step 2 → Auto-fix using your LLM json_fixer
+                print("attempting _json_fixer...")
                 current_text = await StoryHelpers._json_fixer(
-                    text=current_text,
                     parser=parser,
                     exc=e
                 )
@@ -197,31 +195,48 @@ class StoryHelpers:
         raise ValueError("❌ JSON parsing failed after maximum attempts")
     
     @staticmethod
-    async def _json_fixer(text: str, parser, exc = None) -> str:
+    async def _json_fixer(parser, exc = None) -> str:
         """
         Uses the provided llm client to repair malformed JSON strings.
         """
+        # Safely get format instructions – they are very useful for repair quality,
+        # but we must not crash if the parser doesn't have the method (e.g. JsonOutputParser,
+        # custom parser, or someone accidentally passed the pydantic class itself).
+        format_instructions = ""
+        if hasattr(parser, "get_format_instructions"):
+            try:
+                format_instructions = parser.get_format_instructions()
+            except Exception:
+                # Some parsers have the method but it can still raise – be defensive
+                format_instructions = ""
+
         system_prompt = f"""
-You are a JSON repair agent. 
-- Input may be malformed JSON text. 
-- Output ONLY the corrected JSON, nothing else. 
-- Never wrap JSON inside strings. 
-- Never introduce additional nesting. 
-- Always return a plain JSON object with the same top-level keys.
-- If the input is correct, return it as is.
-- Change null/none instances of str to empty string "".
+You are an expert JSON repair agent. Your only job is to output valid JSON.
 
-{parser.get_format_instructions()}
-"""
+Rules (follow exactly):
+- Output ONLY the repaired JSON. No explanations, no markdown, no wrappers, no extra text.
+- Never wrap the JSON in a string or add extra nesting.
+- Preserve the exact same top-level keys as the original.
+- If the input is already valid JSON, return it unchanged.
+- Convert any null/None in string fields to empty string "".
+- Fix trailing commas, missing quotes, unescaped characters, etc.
+- Do not add, remove, or rename any fields.
 
-        prompt = f"""Fix the following json: {text}
-If it is correct, then output as is, DO NOT add anything else, no leading or ending remarks.
-{f"The exception that occured is: {exc}" if exc else ""}
-"""
+Expected format (strictly adhere to this):
+{format_instructions}
+""".strip()
+
+        prompt = f"""
+Repair the following text into valid JSON.
+
+{"Error that occurred during previous parsing attempt: " + str(exc) if exc else ""}
+Output the fixed JSON now. Remember: ONLY the JSON, nothing else.
+""".strip()
+
         resp = await ingestor_client(system_prompt=system_prompt, human_prompt=prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         
-        # Explicitly cleanup big vars to free memory
+        # Clean up big variables immediately – important when dealing with long stories
         del resp, raw_text, prompt, system_prompt 
         return clean_resp
