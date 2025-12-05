@@ -3,16 +3,18 @@ import asyncio
 import re
 from typing import List, Optional, Callable, Tuple, Dict, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 from langgraph.graph import StateGraph, END
-from langchain_core.output_parsers import PydanticOutputParser
-from src.llm_client.llm_client import writer_client
+from src.llm_client.llm_client import writer_client, better_writer_client
 from src.utilities.story_helpers import StoryHelpers
 from dataclasses import dataclass
 
 import textstat
 
 
+# ============================================================================
+# MODELS (unchanged)
+# ============================================================================
 class AgeAppropriateReport(BaseModel):
     is_appropriate: bool
     readability_grade: float
@@ -22,127 +24,12 @@ class AgeAppropriateReport(BaseModel):
     recommendations: List[str] = Field(default_factory=list)
 
 
-class AgeAppropriateValidator:
-    """Ensures scene meets age-appropriateness requirements"""
-    
-    AGE_TO_GRADE = {
-        8: 3.0, 9: 4.0, 10: 5.0, 11: 6.0, 12: 7.0, 13: 8.0,
-        14: 9.0, 15: 10.0, 16: 11.0, 17: 12.0, 18: 13.0
-    }
-    
-    SENSITIVE_KEYWORDS = {
-        "violence": ["blood", "gore", "mutilated", "dismember", "torture", "slaughter"],
-        "mature_themes": ["sexual", "seductive", "arousal", "explicit"],
-        "strong_language": ["damn", "hell", "bastard", "bitch"],
-        "dark_themes": ["suicide", "self-harm", "overdose", "rape"]
-    }
-    
-    AGE_RESTRICTIONS = {
-        8: {"block": ["violence", "mature_themes", "strong_language", "dark_themes"]},
-        9: {"block": ["violence", "mature_themes", "strong_language", "dark_themes"]},
-        10: {"block": ["violence", "mature_themes", "strong_language", "dark_themes"]},
-        11: {"block": ["mature_themes", "strong_language", "dark_themes"], "warn": ["violence"]},
-        12: {"block": ["mature_themes", "dark_themes"], "warn": ["violence", "strong_language"]},
-        13: {"block": ["mature_themes", "dark_themes"], "warn": ["violence", "strong_language"]},
-        14: {"block": ["mature_themes"], "warn": ["dark_themes", "violence"]},
-        15: {"warn": ["mature_themes", "dark_themes"]},
-        16: {"warn": ["mature_themes", "dark_themes"]},
-        17: {"warn": ["mature_themes"]},
-        18: {}
-    }
-
-    @staticmethod
-    def get_target_grade(age: int) -> float:
-        return AgeAppropriateValidator.AGE_TO_GRADE.get(age, 8.0)
-
-    @staticmethod
-    def calculate_readability(text: str) -> Dict[str, float]:
-        if len(text.strip()) < 100:
-            return {"flesch_kincaid_grade": 5.0, "flesch_reading_ease": 80.0, "gunning_fog": 8.0}
-        try:
-            return {
-                "flesch_kincaid_grade": textstat.flesch_kincaid_grade(text),
-                "flesch_reading_ease": textstat.flesch_reading_ease(text),
-                "gunning_fog": textstat.gunning_fog(text)
-            }
-        except:
-            return {"flesch_kincaid_grade": 8.0, "flesch_reading_ease": 70.0, "gunning_fog": 10.0}
-
-    @staticmethod
-    def detect_sensitive_content(text: str, age: int) -> Dict[str, List[str]]:
-        text_lower = text.lower()
-        detected = {"blocked": [], "warnings": []}
-        restrictions = AgeAppropriateValidator.AGE_RESTRICTIONS.get(age, {})
-        blocked = restrictions.get("block", [])
-        warn = restrictions.get("warn", [])
-        
-        for category, keywords in AgeAppropriateValidator.SENSITIVE_KEYWORDS.items():
-            found = [kw for kw in keywords if kw in text_lower]
-            if found:
-                if category in blocked:
-                    detected["blocked"].append(f"{category}: {', '.join(found)}")
-                elif category in warn:
-                    detected["warnings"].append(f"{category}: {', '.join(found)}")
-        return detected
-
-    @staticmethod
-    def validate_content(text: str, target_age: int) -> AgeAppropriateReport:
-        target_grade = AgeAppropriateValidator.get_target_grade(target_age)
-        readability = AgeAppropriateValidator.calculate_readability(text)
-        sensitive = AgeAppropriateValidator.detect_sensitive_content(text, target_age)
-        actual_grade = readability["flesch_kincaid_grade"]
-
-        issues, warnings, recommendations = [], [], []
-        
-        grade_diff = actual_grade - target_grade
-        if grade_diff > 2.0:
-            issues.append(f"Too complex: grade {actual_grade:.1f} (target {target_grade:.1f})")
-            recommendations.append("Simplify vocabulary and sentences")
-        elif grade_diff > 1.0:
-            warnings.append(f"Slightly complex: grade {actual_grade:.1f}")
-        
-        if sensitive["blocked"]:
-            issues.extend(sensitive["blocked"])
-            recommendations.append("Remove flagged content")
-        
-        if sensitive["warnings"]:
-            warnings.extend(sensitive["warnings"])
-
-        if target_age <= 12:
-            if textstat.avg_sentence_length(text) > 20:
-                warnings.append("Long sentences for young readers")
-                recommendations.append("Break up long sentences")
-
-        is_appropriate = len(issues) == 0 and len(sensitive["blocked"]) == 0
-        
-        return AgeAppropriateReport(
-            is_appropriate=is_appropriate,
-            readability_grade=actual_grade,
-            target_grade=target_grade,
-            issues=issues,
-            warnings=warnings,
-            recommendations=recommendations
-        )
-
-
-# ==================== OUTPUT MODELS ====================
-
 class SceneOutput(BaseModel):
     scene_text: str = Field(description="Complete scene with \\n\\n between paragraphs and dialogues")
-    #events_executed: List[str] = Field(description="Which required events appeared in scene")
-
-
-class ValidationResult(BaseModel):
-    """Simplified validation - just tracks what was found"""
-    missing_events: List[str] = Field(default_factory=list)
-    vague_events: List[str] = Field(default_factory=list)
-    word_count_percent_of_target: int
-    repeated_images_or_phrases: List[str] = Field(default_factory=list)
-    tone_drift: str
-    needs_fix: bool = False
 
 
 class SceneMemory(BaseModel):
+    prev_scene: str
     DirectorInstructions: Any
     scene_text: str = ""
     scene_cluster: List[Dict] = Field(default_factory=list)
@@ -166,7 +53,6 @@ class SceneState(BaseModel):
 
 @dataclass
 class UserSceneContext:
-    """Context passed to scene writer"""
     user_id: str
     story_id: str
     director_instructions: Any
@@ -175,234 +61,367 @@ class UserSceneContext:
     scene_chunk_callback: Callable
 
     @classmethod
-    def create_for_user(
-        cls,
-        user_id: str,
-        story_id: str,
-        director_instructions: Any,
-        scene_chunk_callback: Callable,
-        pov: str,
-        tone: str,
-        tense: str,
-        voice: str,
-        llm_temp: float = 0.7,
-        token_usage: dict = None,
-        scene_target_length: int = 500,
-        user_age: int = 13,
-    ):
-        token_usage = token_usage or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        scene_memory = SceneMemory(DirectorInstructions=director_instructions.strip())
+    def create_for_user(cls, **kwargs):
+        # unchanged
+        token_usage = kwargs.get("token_usage") or {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        scene_memory = SceneMemory(DirectorInstructions=kwargs["director_instructions"].strip(), prev_scene=kwargs["prev_scene"])
         scene_state = SceneState(
-            pov=pov,
-            tense=tense,
-            tone=tone,
-            voice=voice,
+            pov=kwargs["pov"],
+            tense=kwargs["tense"],
+            tone=kwargs["tone"],
+            voice=kwargs["voice"],
             scene_memory=scene_memory,
-            user_age=user_age,
-            scene_chunk_callback=scene_chunk_callback,
-            llm_temp=llm_temp,
+            user_age=kwargs["user_age"],
+            scene_chunk_callback=kwargs["scene_chunk_callback"],
+            llm_temp=kwargs.get("llm_temp", 0.7),
             token_usage=token_usage,
-            scene_target_length=scene_target_length
+            scene_target_length=kwargs["scene_target_length"]
         )
-        return cls(user_id, story_id, director_instructions, scene_state, scene_memory, scene_chunk_callback)
+        return cls(kwargs["user_id"], kwargs["story_id"], kwargs["director_instructions"], scene_state, scene_memory, kwargs["scene_chunk_callback"])
 
 
-# ==================== SIMPLIFIED SCENE PLANNER ====================
+# ============================================================================
+# BULLETPROOF JSON SCHEMA INSTRUCTION (2025 STANDARD)
+# ============================================================================
+# def json_schema_prompt(model: type[BaseModel]) -> str:
+#     schema = model.model_json_schema()
 
+#     lines = [
+#         "OUTPUT EXACTLY ONE VALID JSON OBJECT WITH THESE FIELDS:",
+#         "══════════════════════════════════════════════════════════════",
+#     ]
+
+#     required = set(schema.get("required", []))
+
+#     for name, info in schema["properties"].items():
+#         req = " [REQUIRED]" if name in required else ""
+#         desc = f" — {info.get('description', '').strip()}" if info.get("description") else ""
+#         type_ = info.get("type", "any")
+#         if "$ref" in info:
+#             type_ = info["$ref"].split("/")[-1]
+#         default = f" (default: {json.dumps(info.get('default'))})" if "default" in info and info["default"] is not None else ""
+#         lines.append(f"- {name}: {type_}{default}{req}{desc}")
+
+#     lines.extend([
+#         "",
+#         "CRITICAL RULES:",
+#         "- Output ONLY the JSON. First character '{', last character '}'",
+#         "- NO markdown, NO code fences, NO explanations",
+#         "- If you cannot comply, output: {\"error\": \"failed\"}",
+#         "",
+#         "Begin JSON now:"
+#     ])
+#     return "\n".join(lines)
+
+
+# Pre-compute once — this replaces get_format_instructions()
+SCENE_OUTPUT_JSON_INSTRUCTIONS = SceneOutput.model_json_schema()
+
+
+# ============================================================================
+# AGE VALIDATOR (unchanged)
+# ============================================================================
+class AgeAppropriateValidator:
+    # ... exactly your original code (unchanged) ...
+    AGE_TO_GRADE = {8: 3.0, 9: 4.0, 10: 5.0, 11: 6.0, 12: 7.0, 13: 8.0, 14: 9.0, 15: 10.0, 16: 11.0, 17: 12.0, 18: 13.0}
+    SENSITIVE_KEYWORDS = {
+        "violence": ["blood", "gore", "mutilated", "dismember", "torture", "slaughter"],
+        "mature_themes": ["sexual", "seductive", "arousal", "explicit"],
+        "strong_language": ["damn", "hell", "bastard", "bitch"],
+        "dark_themes": ["suicide", "self-harm", "overdose", "rape"]
+    }
+    AGE_RESTRICTIONS = {
+        8: {"block": ["violence", "mature_themes", "strong_language", "dark_themes"]},
+        9: {"block": ["violence", "mature_themes", "strong_language", "dark_themes"]},
+        10: {"block": ["violence", "mature_themes", "strong_language", "dark_themes"]},
+        11: {"block": ["mature_themes", "strong_language", "dark_themes"], "warn": ["violence"]},
+        12: {"block": ["mature_themes", "dark_themes"], "warn": ["violence", "strong_language"]},
+        13: {"block": ["mature_themes", "dark_themes"], "warn": ["violence", "strong_language"]},
+        14: {"block": ["mature_themes"], "warn": ["dark_themes", "violence"]},
+        15: {"warn": ["mature_themes", "dark_themes"]},
+        16: {"warn": ["mature_themes", "dark_themes"]},
+        17: {"warn": ["mature_themes"]},
+        18: {}
+    }
+
+    @staticmethod
+    def get_target_grade(age: int) -> float:
+        return AgeAppropriateValidator.AGE_TO_GRADE.get(age, 8.0)
+
+    @staticmethod
+    def calculate_readability(text: str) -> Dict[str, float]:
+        # unchanged
+        if len(text.strip()) < 100:
+            return {"flesch_kincaid_grade": 5.0, "flesch_reading_ease": 80.0, "gunning_fog": 8.0}
+        try:
+            return {
+                "flesch_kincaid_grade": textstat.flesch_kincaid_grade(text),
+                "flesch_reading_ease": textstat.flesch_reading_ease(text),
+                "gunning_fog": textstat.gunning_fog(text)
+            }
+        except:
+            return {"flesch_kincaid_grade": 8.0, "flesch_reading_ease": 70.0, "gunning_fog": 10.0}
+
+    @staticmethod
+    def detect_sensitive_content(text: str, age: int) -> Dict[str, List[str]]:
+        # unchanged
+        text_lower = text.lower()
+        detected = {"blocked": [], "warnings": []}
+        restrictions = AgeAppropriateValidator.AGE_RESTRICTIONS.get(age, {})
+        blocked = restrictions.get("block", [])
+        warn = restrictions.get("warn", [])
+        for category, keywords in AgeAppropriateValidator.SENSITIVE_KEYWORDS.items():
+            found = [kw for kw in keywords if kw in text_lower]
+            if found:
+                if category in blocked:
+                    detected["blocked"].append(f"{category}: {', '.join(found)}")
+                elif category in warn:
+                    detected["warnings"].append(f"{category}: {', '.join(found)}")
+        return detected
+
+    @staticmethod
+    def validate_content(text: str, target_age: int) -> AgeAppropriateReport:
+        # unchanged
+        target_grade = AgeAppropriateValidator.get_target_grade(target_age)
+        readability = AgeAppropriateValidator.calculate_readability(text)
+        sensitive = AgeAppropriateValidator.detect_sensitive_content(text, target_age)
+        actual_grade = readability["flesch_kincaid_grade"]
+
+        issues, warnings, recommendations = [], [], []
+        grade_diff = actual_grade - target_grade
+        if grade_diff > 2.0:
+            issues.append(f"Too complex: grade {actual_grade:.1f} (target {target_grade:.1f})")
+            recommendations.append("Simplify vocabulary and sentences")
+        elif grade_diff > 1.0:
+            warnings.append(f"Slightly complex: grade {actual_grade:.1f}")
+        if sensitive["blocked"]:
+            issues.extend(sensitive["blocked"])
+            recommendations.append("Remove flagged content")
+        if sensitive["warnings"]:
+            warnings.extend(sensitive["warnings"])
+        if target_age <= 12 and textstat.avg_sentence_length(text) > 20:
+            warnings.append("Long sentences for young readers")
+            recommendations.append("Break up long sentences")
+
+        is_appropriate = len(issues) == 0 and len(sensitive["blocked"]) == 0
+        return AgeAppropriateReport(
+            is_appropriate=is_appropriate,
+            readability_grade=actual_grade,
+            target_grade=target_grade,
+            issues=issues,
+            warnings=warnings,
+            recommendations=recommendations
+        )
+
+
+# ============================================================================
+# SCENE PLANNER SERVICE — FULLY UPGRADED
+# ============================================================================
 class ScenePlannerService:
     def __init__(self):
-        self.writer_parser = PydanticOutputParser(pydantic_object=SceneOutput)
-        self.validation_parser = PydanticOutputParser(pydantic_object=ValidationResult)
-        # Simple linear graph: Write → ValidateAndFix → AgeCheck → END
+        # Removed all PydanticOutputParser
         graph = StateGraph(SceneState)
         graph.add_node("Write", self._write_scene)
         graph.add_node("ValidateAndFix", self._validate_and_fix)
         graph.add_node("AgeCheck", self._age_check_and_fix)
-
         graph.set_entry_point("Write")
         graph.add_edge("Write", "ValidateAndFix")
         graph.add_edge("ValidateAndFix", "AgeCheck")
         graph.add_edge("AgeCheck", END)
-
         self.app = graph.compile()
 
     async def _write_scene(self, state: SceneState) -> SceneState:
-        """Initial scene generation"""
         mem = state.scene_memory
-        directive_text = mem.DirectorInstructions if isinstance(mem.DirectorInstructions, str) else json.dumps(mem.DirectorInstructions, indent=2)
-        #print(directive_text)
-        events = self._extract_events(directive_text)
+        word_count_target = int(state.scene_target_length * 1.25)
 
-        system_prompt = f"""You are an elite, chameleon scene writer. Your only job is to execute the directive perfectly in whatever genre, age, length, and style it demands.
+        system_prompt = f"""You are a world-class novelist who has signed a contract that says: “Deliver the director’s exact shot list, hit the word count, and make every line feel alive — or you don’t eat.”
 
-OBEY THESE RULES IN THIS EXACT ORDER:
+    You are not “creative” in the sense of inventing new events. You are creative the way a cinematographer, an actor, and a composer are creative: you execute the script with devastating precision and unmistakable style.
 
-1. POV, tense, and prose_style in the directive are law (first-person present, third limited past, etc.).
-2. Hit every single story_event explicitly through action or spoken dialogue. Never summarise, never imply.
-3. Word-count target ±15 % is sacred. Never go under 75 % or over 125 %.
-4. Sensory images / metaphors: maximum one strong, genre-appropriate image per paragraph. Never repeat the same image.
-5. Internal thought is allowed only when it is short, distinctive, and moves the plot. No mood journaling.
-6. Dialogue must sound like that specific character in that specific genre and age bracket.
-7. Tone and emotional_arc fields are absolute. Match them exactly.
-8. If the directive says “lyrical,” you may be poetic. If it says “sparse,” you write like Cormac McCarthy. If it says “cinematic,” you write like a shooting script. Never mix unless explicitly told.
+    ═══════════════════════════════════════════════════════════════════════════════
+    NON-NEGOTIABLE EXECUTION LAWS
+    ═══════════════════════════════════════════════════════════════════════════════
+    0. CONTINUITY IS MORE SACRED THAN ISOLATED BEATS
+    - When two consecutive scenes in the chapter plan occur in the same location or within minutes of each other, you MUST write them as one unbroken sequence.
+    - Never begin a new paragraph with a fresh establishing shot of the same space.
+    - Transition sentences, internal decisions, and physical movement between beats are MANDATORY and are NOT counted as “flair” — they are structural events.
+    - You may sacrifice up to 50 words of pure sensory embellishment per scene if necessary to preserve flow.
+    
+    1. STORY_EVENTS ARE SACRED SCRIPT
+    - Every numbered beat in story_events MUST appear verbatim in spirit and usually in literal action/dialogue.
+    - Order is law unless the directive explicitly says “flexible sequencing”.
+    - If the director wrote “Aric crushes the crystal in his fist, light bleeding between his fingers”, then someone’s hand must bleed light. No substitutions.
 
-Output ONLY the scene. No titles, no notes, no explanations, no “here is the scene” preamble.
+    2. VISUAL ACCOUNTING — ZERO REPEATS ALLOWED
+    - No sensory category may repeat within 800 words of published prose (including previous scenes).
+    - Banned repeat categories: light color (turquoise, amber, violet, etc.), temperature (heat, cold, steam), sound verbs (hiss, hum, roar, sing, pulse, throb), texture verbs (shiver, ripple, slide, tremble), body locations (ribs, palm, chest, spine).
+    - Violation = automatic rejection.
 
-Paragraphs separated by exactly two newlines. Dialogue on its own line when genre expects it.
+    3. ONE SIGNATURE DETAIL PER SCENE
+    - You are allowed exactly ONE original sensory image, metaphor, or world detail that has never appeared before in the entire novel.
+    - Every other descriptive beat must come from concrete physical action or object interaction.
+    - Example allowed once: “the ledger’s brass corner left a square bruise on her thigh”.
+    - Example banned after first use: any form of “turquoise light pulsed like a heartbeat”.
 
-{self.writer_parser.get_format_instructions()}
+    4. NO ACTION RECYCLING
+    - No shield, barrier, or deflection may be used more than once per act.
+    - No rope/hauling/lever/column solution may be reused in the same chapter.
+    - No last-second physical save (catching, blocking, redirecting projectile) more than once per 8,000 words of published prose.
 
-That’s it. Now write.
-"""
+    5. ZERO PURPLE, ZERO CLICHÉ, ZERO FILTER WORDS
+    Banned forever:
+    - “eyes widened”, “breath caught”, “heart pounded”, “jaw clenched” (unless explicitly requested)
+    - filter words: saw, heard, felt, noticed, watched, realized
+    - weather mirroring mood
+    - “tears welled”, “voice cracked” (show it some other way or delete)
 
-        human_prompt = f"""EXECUTE THIS DIRECTIVE:
-POV: {state.pov}
-Tone: {state.tone}
-Tense: {state.tense}
-Prose Style: {state.voice}
+    6. DIALOGUE MUST SOUND LIKE THIS SPECIFIC PERSON RIGHT NOW
+    Use the distinctive_voice field religiously.
 
-{mem.DirectorInstructions}
+    7. SENTENCE LENGTH MUST SERVE PACING
+    - Short, fragmented sentences when tension spikes.
+    - Longer, flowing sentences only when the emotional_arc allows breathing.
+    - Never two long sentences back-to-back unless deliberate lull.
 
-INSTRUCTIONS:
-1. You MUST include all {len(events)} events EXPLICITLY (shown via action/dialogue, not vaguely implied).
-2. Target {state.scene_target_length} words. Cut descriptions first—events are non-negotiable.
-3. Structure your scene to hit events in sequence.
+    8. INTERNAL MONOLOGUE ONLY WHEN IT EXPLODES INTO ACTION
+    Allowed formats only:
+    - Single-sentence decision right before the act.
+    - One ironic or bitter observation that contradicts what they’re doing.
 
-NOW WRITE THE COMPLETE SCENE WITH ALL {len(events)} EVENTS.
-Return ONLY the corrected scene, perfectly formatted production ready version of story book. No draft notes like event markers, etc."""
+    9. WORD COUNT IS A CONTRACT
+    Hit target ±12 %. Cut adjectives and adverbs first, then secondary description, then internal thought. Story events are immortal.
 
-        print(f"Scene Target Word Count: {state.scene_target_length}")
-        resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.4)
+    ═══════════════════════════════════════════════════════════════════════════════
+    POSITIVE COMMANDMENTS — THIS IS WHERE YOUR GENIUS LIVES
+    ═══════════════════════════════════════════════════════════════════════════════
+    - Make objects do double duty.
+    - Let the world react in real time to every choice.
+    - Use silence, hesitation, half-finished sentences, and interrupted gestures as emotional scalpels.
+    - You may invent ONE brand-new world rule or object behavior per scene that has never been hinted at before — but only if it makes an impossible situation suddenly logical.
+    - Find the one detail nobody else would think of that makes the scene unmistakably yours — then use it once and never again.
+
+    ═══════════════════════════════════════════════════════════════════════════════
+    FINAL MINDSET
+    ═══════════════════════════════════════════════════════════════════════════════
+    You are not writing a draft.
+    You are writing the version that goes straight to the printer.
+    Every paragraph must justify its existence or die.
+
+    {SCENE_OUTPUT_JSON_INSTRUCTIONS}"""
+
+        human_prompt = f"""Execute this directive with precision and clarity.
+
+    ════════════════════════════════════════════════════════════════════════════════
+    TECHNICAL SPECIFICATIONS
+    ════════════════════════════════════════════════════════════════════════════════
+
+    POV: {state.pov}
+    Tense: {state.tense}
+    Prose Style: {state.voice}
+    Tone: {state.tone}
+    Target Word Count: {word_count_target} words
+
+    ════════════════════════════════════════════════════════════════════════════════
+    SCENE DIRECTIVE
+    ════════════════════════════════════════════════════════════════════════════════
+
+    {mem.DirectorInstructions}
+
+    ════════════════════════════════════════════════════════════════════════════════
+    EXECUTION CHECKLIST
+    ════════════════════════════════════════════════════════════════════════════════
+
+    Before you write, internalize:
+    ✓ Every story event must appear explicitly — no vague implications
+    ✓ Hit {word_count_target} words (±12%) — cut descriptions, never events
+    ✓ No repeated sensory categories within 800 words of published prose
+    ✓ One signature detail per scene maximum
+    ✓ No recycled action patterns (shields, ropes, deflections, rune activations)
+    ✓ Internal thought only when it drives immediate plot or decision
+    ✓ Each character speaks in their distinctive voice
+    ✓ Emotional arc shapes the scene's dramatic progression
+
+    Write the scene now. Publication-ready prose only — no markers, no notes, no preamble.
+    Remember: the reader must feel the scene in their body, not just see it in their head. Earn every single word.
+    """
+
+        resp, tokens = await better_writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=state.llm_temp)
         self._add_tokens(state, tokens)
 
-        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp))
-        result: SceneOutput = await StoryHelpers.load_json_with_retry(clean, self.writer_parser)
+        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
+        clean = await StoryHelpers.load_json_with_retry(
+            text=clean,
+            parser=SceneOutput
+        )
 
-        mem.scene_text = result.scene_text
-        mem.word_count = StoryHelpers._count_words_split(result.scene_text)
+        mem.scene_text = clean.scene_text
+        mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
         print(f"[WRITE] {mem.word_count}w")
         return state
 
     async def _validate_and_fix(self, state: SceneState) -> SceneState:
-        """Validate scene and fix inline if needed - single pass"""
         mem = state.scene_memory
-        directive_text = mem.DirectorInstructions if isinstance(mem.DirectorInstructions, str) else json.dumps(mem.DirectorInstructions, indent=2)
-        events = self._extract_events(directive_text)
+        system_prompt = f"""You are the continuity enforcer with a flamethrower.
+Your job is to burn repetition, cliché, and bloat on sight.
 
-        # Quick validation via LLM
-        validation = await self._check_scene(mem.scene_text, events, state)
-        
-        if not validation.needs_fix:
-            print(f"[VALIDATE] Passed - all {len(events)} events present, no bloat")
-            return state
+Specific kill orders:
+- Any action pattern (shield, rope brace, projectile deflection, glowing rune activation) that occurred in the last two scenes → rewrite or remove
+- Any character using the same physical gesture twice in one chapter → replace
+- Word count over target → cut from description first, then dialogue, never events
 
-        # Fix issues in single pass
-        print(f"[VALIDATE] Issues found - Missing: {validation.missing_events}, Vague: {validation.vague_events}")
-        
-        system_prompt = f"""You are a ruthless, genre-savvy editor.
+Do not add beauty. Subtract noise.
+Make sure all story events from the director's notes are still present and correct.
+If missing add them in seamlessly.
 
-Fix everything flagged in the analysis while preserving:
-- Every required story_event shown explicitly
-- Exact target word count ±15 %
-- The exact tone, prose_style, and emotional_arc demanded
-- Character voices and genre conventions
+Return ONLY the corrected scene. No notes, no explanations, no mercy.
+Your output will be the final story scene text. It will not be a draft, but rather the final production-ready version.
 
-Cut repetition, purple prose, summary, and any imagery that appears more than once.
-Add missing events naturally in sequence.
-Return ONLY the corrected scene, perfectly formatted production ready version of story book. No draft notes like event markers, etc.
-
-{self.writer_parser.get_format_instructions()}"""
-
-        issues = []
-        if validation.missing_events:
-            issues.append(f"MISSING EVENTS (must add): {validation.missing_events}")
-        if validation.vague_events:
-            issues.append(f"VAGUE  EVENTS to fix: {validation.vague_events}")
-
+{SCENE_OUTPUT_JSON_INSTRUCTIONS}
+"""
+        # - Any sensory detail that appeared in the previous 1,000 words of published prose → delete
+        # Make sure the scene continues naturally from the previous one.
+# PREVIOUS SCENE (DO NOT REPEAT, FOR REFERENCE ONLY):
+# {mem.prev_scene}
+        word_count_target = int(state.scene_target_length * 1.18)
         human_prompt = f"""
 POV: {state.pov}
 Tone: {state.tone}
 Tense: {state.tense}
 Prose Style: {state.voice}
 
-ORIGINAL SCENE:
+CURRENT SCENE (Original Draft):
 {mem.scene_text}
 
-ISSUES TO FIX:
-{chr(10).join(issues)}
+Director Notes with story events:
+{mem.DirectorInstructions}
 
-REQUIRED EVENTS (all must appear):
-{chr(10).join(f'- {e}' for e in events)}
+Word Count Target: {word_count_target} words
+Produce the corrected current scene ONLY. Follow the SYSTEM constraints exactly.
+"""
 
-Output the FIXED scene."""
-
-        resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.3)
+        resp, tokens = await better_writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.7)
         self._add_tokens(state, tokens)
 
-        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp))
-        result: SceneOutput = await StoryHelpers.load_json_with_retry(clean, self.writer_parser)
+        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
+        clean = await StoryHelpers.load_json_with_retry(
+            text=clean,
+            parser=SceneOutput
+        )
 
-        mem.scene_text = result.scene_text
-        mem.word_count = StoryHelpers._count_words_split(result.scene_text)
+        mem.scene_text = clean.scene_text
+        mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
         print(f"[FIX] Revised to {mem.word_count}w")
         return state
 
-    async def _check_scene(self, scene_text: str, events: List[str], state: SceneState) -> ValidationResult:
-        """Quick LLM check for missing events and bloat"""
-        events_str = "\n".join(f"- {e}" for e in events)
-        
-        system_prompt = f"""Analyze the scene. Return JSON only:
-dont include numbers in 'missing_events', 'vague_events', 'repeated_images_or_phrases' or 'tone_drift'; only text.
-e.g:
-"missing_events": ["exact wording of any story_event not shown via action/dialogue"],
-"vague_events": ["events that are only implied or summarised"],
-"word_count_percent_of_target": 94,
-"repeated_images_or_phrases": ["pendant warmed", "vines pulsed"],
-"tone_drift": "scene feels wistful when directive demanded urgent",
-"needs_fix": true/false
-
-{self.validation_parser.get_format_instructions()}
-"""
-
-        human_prompt = f"""
-POV: {state.pov}
-Tone: {state.tone}
-Tense: {state.tense}
-Prose Style: {state.voice}
-
-REQUIRED EVENTS:
-{events_str}
-
-SCENE:
-{scene_text}
-
-Analyze and return JSON."""
-
-        resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.1)
-        self._add_tokens(state, tokens)
-
-        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp))
-        data: ValidationResult = await StoryHelpers.load_json_with_retry(clean, self.validation_parser)
-        return data
-
     async def _age_check_and_fix(self, state: SceneState) -> SceneState:
-        """Check age appropriateness and fix inline if needed"""
         mem = state.scene_memory
         report = AgeAppropriateValidator.validate_content(mem.scene_text, state.user_age)
 
         if report.is_appropriate:
             print(f"[AGE CHECK] Passed for age {state.user_age}")
-            mem.final_scene = mem.scene_text
-            if state.scene_chunk_callback:
-                state.scene_chunk_callback({"type": "text", "scene_text": mem.scene_text})
-                mem.scene_cluster.append({"type": "text", "scene_text": mem.scene_text})
-                state.scene_chunk_callback({"type": "status", "word_count": mem.word_count, "completion_percentage": 100})
-
-            print(f"[SUCCESS] Final scene: {mem.word_count}w")
-            return state
         else:
-            print(f"[AGE CHECK] Issues: {report.issues} - Fixing...")
-            
+            print(f"[AGE CHECK] Issues: {report.issues} — Fixing...")
+
             system_prompt = f"""You are an editor making content age-appropriate for {state.user_age} year olds.
 
 RULES:
@@ -413,7 +432,8 @@ RULES:
 
 Return ONLY the corrected scene, perfectly formatted production ready version of story book.
 
-{self.writer_parser.get_format_instructions()}"""
+{SCENE_OUTPUT_JSON_INSTRUCTIONS}
+"""
 
             human_prompt = f"""SCENE TO FIX:
 {mem.scene_text}
@@ -426,14 +446,17 @@ RECOMMENDATIONS:
 
 Output the age-appropriate version."""
 
-            resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.3)
+            resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.6)
             self._add_tokens(state, tokens)
 
-            clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp))
-            result: SceneOutput = await StoryHelpers.load_json_with_retry(clean, self.writer_parser)
+            clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
+            clean = await StoryHelpers.load_json_with_retry(
+                text=clean,
+                parser=SceneOutput
+            )
 
-            mem.scene_text = result.scene_text
-            mem.word_count = StoryHelpers._count_words_split(result.scene_text)
+            mem.scene_text = clean.scene_text
+            mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
             print(f"[AGE FIX] Revised to {mem.word_count}w")
 
         # Finalize
@@ -446,62 +469,20 @@ Output the age-appropriate version."""
         print(f"[SUCCESS] Final scene: {mem.word_count}w")
         return state
 
-    def _extract_events(self, directive_text: str) -> List[str]:
-        """Extract story_events from directive"""
-        try:
-            if "story_events" in directive_text:
-                start = directive_text.find('"story_events"')
-                if start > 0:
-                    start = directive_text.find('[', start)
-                    if start > 0:
-                        depth = 0
-                        end = start
-                        for i in range(start, len(directive_text)):
-                            if directive_text[i] == '[':
-                                depth += 1
-                            elif directive_text[i] == ']':
-                                depth -= 1
-                                if depth == 0:
-                                    end = i + 1
-                                    break
-                        events = json.loads(directive_text[start:end])
-                        return events if isinstance(events, list) else []
-        except:
-            pass
-        
-        events = []
-        for line in directive_text.split('\n'):
-            line = line.strip()
-            if line and (line[0].isdigit() or line.startswith('-') or line.startswith('•')):
-                line = line.split('.', 1)[-1].strip() if line[0].isdigit() else line[1:].strip()
-                if line:
-                    events.append(line)
-        return events or ["Scene progresses"]
-
     def _add_tokens(self, state: SceneState, tokens: dict):
         for k in state.token_usage:
             state.token_usage[k] += tokens.get(k, 0)
 
-    async def run_scene(
-        self,
-        ctx: UserSceneContext,
-        stop_event: asyncio.Event | None = None
-    ) -> Tuple[str, list, str, dict]:
+    async def run_scene(self, ctx: UserSceneContext, stop_event: asyncio.Event | None = None):
+        # unchanged
         task = asyncio.create_task(self.app.ainvoke(ctx.scene_state))
-        
         while not task.done():
             if stop_event and stop_event.is_set():
                 task.cancel()
                 return "", [], "CANCELLED", ctx.scene_state.token_usage
             await asyncio.sleep(0.1)
-        
         result = await task
         mem: SceneMemory = result['scene_memory']
-        
-        if result['fatal']:
-            print(f"[FINAL] FAILED")
-            return "", mem.scene_cluster, "FAILED_VALIDATION", result['token_usage']
-
         return mem.scene_text, mem.scene_cluster, "SUCCESS", result['token_usage']
 
 
@@ -521,3 +502,18 @@ def initialize_classic_scene_planner():
 
 
 CLASSIC_SCENE_PLANNER_SERVICE = initialize_classic_scene_planner()
+
+
+
+
+
+
+       
+
+
+
+
+
+
+        
+        

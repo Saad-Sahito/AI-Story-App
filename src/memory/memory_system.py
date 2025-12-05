@@ -198,29 +198,24 @@ class StoryMemorySystem:
         )
         return episodic_raw
 
-    async def get_director_context(self, current_act_number: int, current_chapter_number: int, query: str, k: int = 5) -> dict:
+    async def get_director_context(self, current_act_number: int, current_chapter_number: int) -> dict:
         #char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, 50)
         all_characters = await self.get_all_episodic_characters()
         all_worlds = await self.get_all_episodic_world_elements()
-        chapters_context = await self.search_multiple_episodic_story(
-            query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
-        )
+        # chapters_context = await self.search_multiple_episodic_story(
+        #     query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
+        # )
 
-        prev_act_summaries = []
         last_few_chapters_summaries = []
-
+        act_text = ""
         # --- Collect summaries of all previous acts (from 1 to current - 1) ---
         if current_act_number > 1:
-            for act_num in range(1, current_act_number):
-                act_text = await self.search_single_episodic_story(
-                    act_number=act_num,
-                    chapter_number=0,
-                    summary_type="act summary"
-                )
-                if act_text:
-                    text_extract = f"Act number: {act_num}\n{act_text}"
-                    prev_act_summaries.append(text_extract)
-                del act_text, text_extract
+            act_text = await self.search_single_episodic_story(
+                act_number=current_act_number-1,
+                chapter_number=0,
+                summary_type="act summary"
+            )
+
 
         # --- Collect summaries for the past 3 chapters only (relative to current act) ---
         for offset in range(3, 0, -1):  # 3, 2, 1
@@ -237,14 +232,61 @@ class StoryMemorySystem:
                 
 
         chapters_combined_string = '\n'.join(last_few_chapters_summaries)
-        acts_combined_string = '\n'.join(prev_act_summaries)
+
         return {
-            "previous act summaries":acts_combined_string,
+            "previous act summary": act_text,
             "last few chapter summaries from current act": chapters_combined_string,
             "all characters": all_characters,
             "all worlds": all_worlds,
-            "relevant chapter context": chapters_context}
+            }
     
+    async def get_author_context(self, current_act_number: int) -> dict:
+        #char_world_context = await self.get_char_world_context_for_scene(current_chapter_number, query, 50)
+        all_characters = await self.get_all_episodic_characters()
+        all_worlds = await self.get_all_episodic_world_elements()
+        # chapters_context = await self.search_multiple_episodic_story(
+        #     query, metadata={"chapter_id": current_chapter_number, "type": "chapter summary"}, k=k
+        # )
+
+        prev_act_summaries = []
+        # last_few_chapters_summaries = []
+
+        # --- Collect summaries of all previous acts (from 1 to current - 1) ---
+        if current_act_number > 1:
+            for act_num in range(1, current_act_number):
+                act_text = await self.search_single_episodic_story(
+                    act_number=act_num,
+                    chapter_number=0,
+                    summary_type="act summary"
+                )
+                if act_text:
+                    text_extract = f"Act number: {act_num}\n{act_text}"
+                    prev_act_summaries.append(text_extract)
+                del act_text, text_extract
+
+        # --- Collect summaries for the past 3 chapters only (relative to current act) ---
+        # for offset in range(3, 0, -1):  # 3, 2, 1
+        #     if current_chapter_number > offset:
+        #         chapt_num = current_chapter_number - offset
+        #         chapt_text = await self.search_single_episodic_story(
+        #             act_number=current_act_number,
+        #             chapter_number=chapt_num,
+        #             summary_type="chapter summary"
+        #         )
+        #         if chapt_text:
+        #             text_extract = f"Chapter number: {chapt_num}\n{chapt_text}"
+        #             last_few_chapters_summaries.append(text_extract)
+                
+
+        # chapters_combined_string = '\n'.join(last_few_chapters_summaries)
+        acts_combined_string = '\n'.join(prev_act_summaries)
+        return {
+            "previous act summaries":acts_combined_string,
+            # "last few chapter summaries from current act": chapters_combined_string,
+            "all characters": all_characters,
+            "all worlds": all_worlds,
+            # "relevant chapter context": chapters_context
+            }
     # ---------- Long-Term (SQLite) operations ----------
     async def add_story_scene_cluster(self, text: list, metadata: dict[str, Any] = None):
         store = await self.long_term_story()
@@ -346,6 +388,7 @@ class StoryMemorySystem:
             await self.add_character_detail(scene_bundle["character_details"], metadata)
         if scene_bundle.get("world_details"):
             await self.add_world_detail(scene_bundle["world_details"], metadata)
+        # print("Ingested scene")
 
     async def add_post_chapter_bundle(self, parts: Dict[str, Dict], metadata: Dict[str, Any]):
         if parts.get("summary"):

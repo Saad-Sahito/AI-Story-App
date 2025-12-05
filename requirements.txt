@@ -5,7 +5,7 @@ torchvision==0.22.1
 transformers>=4.40,<4.46
 sentence-transformers>=2.2,<3.0
 
-# === LangChain ecosystem (pinned and mutually compatible) ===
+# === LangChain ecosystem (pinned and mutually compatible - 0.3.x series) ===
 langchain==0.3.27
 langchain-core==0.3.79
 langchain-community==0.3.31
@@ -13,6 +13,7 @@ langchain-openai==0.3.28
 langchain-anthropic==0.2.3
 langchain-xai==0.2.5
 langchain-groq==0.2.3
+langchain-google-genai==2.1.5        # compatible with langchain-core 0.3.x
 
 # === LLM orchestration and agent graph ===
 langgraph>=0.3.27
@@ -25,9 +26,9 @@ redis
 aiosqlite
 supabase
 
-# === Web frameworks and APIs ===
-fastapi[all]
-uvicorn
+# === Web frameworks and APIs (upgraded for anyio>=4 compatibility) ===
+fastapi>=0.115.0,<0.117.0            # modern, secure, anyio>=4 compatible
+uvicorn[standard]>=0.30.0           # matches fastapi
 gunicorn
 websockets
 httpx
@@ -36,11 +37,11 @@ python-dotenv
 python-jose
 replicate
 
-
 # === Others ===
 better-profanity
 textstat
 deepdiff
+json-repair
 
 # === Optional / debugging ===
 #memory-profiler

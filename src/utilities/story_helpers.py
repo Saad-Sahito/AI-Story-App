@@ -3,10 +3,10 @@
 import re
 import json
 from typing import Any, Dict, Tuple, Optional
-from langchain_core.messages import AIMessage
-from src.llm_client.llm_client import ingestor_client
-from pydantic import BaseModel, Field
-from langchain_core.output_parsers import PydanticOutputParser
+from src.llm_client.llm_client import ingestor_client, enhanced_ingestor_client
+from json_repair import repair_json
+from pydantic import BaseModel
+
 
 class StoryHelpers:
     @staticmethod
@@ -21,41 +21,49 @@ class StoryHelpers:
             # remove leading/trailing ```json ... ```
             return re.sub(r"^```[a-zA-Z]*\n|\n```$", "", text).strip()
         return text
-
+    
     @staticmethod
     def _extract_content(resp: Any) -> str:
-        """
-        Normalize LLM responses to plain string content.
-        Handles LangChain AIMessage, dicts, objects with .content,
-        and plain strings.
-        """
-        # LangChain AIMessage
-        try:
-            if isinstance(resp, AIMessage):
-                return resp.content
-        except Exception:
-            # If AIMessage isn't available or isinstance throws, continue
-            pass
-
-        # dict response (some SDKs return {"content": "..."} or {"text": "..."})
+        if hasattr(resp, "content"):
+            return str(getattr(resp, "content", "") or "")
         if isinstance(resp, dict):
-            if "content" in resp and isinstance(resp["content"], str):
-                return resp["content"]
-            if "text" in resp and isinstance(resp["text"], str):
-                return resp["text"]
-            # fallback: dump dict
-            return json.dumps(resp)
-
-        # object with .content attribute
-        if hasattr(resp, "content") and isinstance(getattr(resp, "content"), str):
-            return resp.content
-
-        # already a string
-        if isinstance(resp, str):
-            return resp
-
-        # fallback: stringify anything else
+            return resp.get("content") or resp.get("text") or json.dumps(resp)
         return str(resp)
+    
+    # @staticmethod
+    # def _extract_content(resp: Any) -> str:
+    #     """
+    #     Normalize LLM responses to plain string content.
+    #     Handles LangChain AIMessage, dicts, objects with .content,
+    #     and plain strings.
+    #     """
+    #     # LangChain AIMessage
+    #     try:
+    #         if isinstance(resp, AIMessage):
+    #             return resp.content
+    #     except Exception:
+    #         # If AIMessage isn't available or isinstance throws, continue
+    #         pass
+
+    #     # dict response (some SDKs return {"content": "..."} or {"text": "..."})
+    #     if isinstance(resp, dict):
+    #         if "content" in resp and isinstance(resp["content"], str):
+    #             return resp["content"]
+    #         if "text" in resp and isinstance(resp["text"], str):
+    #             return resp["text"]
+    #         # fallback: dump dict
+    #         return json.dumps(resp)
+
+    #     # object with .content attribute
+    #     if hasattr(resp, "content") and isinstance(getattr(resp, "content"), str):
+    #         return resp.content
+
+    #     # already a string
+    #     if isinstance(resp, str):
+    #         return resp
+
+    #     # fallback: stringify anything else
+    #     return str(resp)
 
     @staticmethod
     def _coerce_character_world_field(val: Any) -> Dict[str, Any]:
@@ -173,70 +181,212 @@ class StoryHelpers:
         return False, None, last_exc
     
     @staticmethod
-    async def load_json_with_retry(text: str, parser, max_attempts: int = 10):
-        """Generic JSON loader with self-healing retry logic"""
+    async def load_json_with_retry(text: str, parser: Any, max_attempts: int = 6) -> Any:
+        """
+        Robust JSON + Pydantic parser with smart retries:
+        1. Try direct parse using best available parser method
+        2. Try json-repair
+        3. Use LLM fix (regular → enhanced)
+        """
+        current_text = (text or "").strip()
 
-        attempt = 0
-        current_text = text
+        async def try_parse(text_or_obj, parser):
+            last_exc = None
 
-        while attempt < max_attempts:
+            # Handle LangChain's PydanticOutputParser specifically
+            if hasattr(parser, "parse") and callable(getattr(parser, "parse")):
+                try:
+                    # PydanticOutputParser expects a JSON *string*, not a dict
+                    if isinstance(text_or_obj, (dict, list)):
+                        text_or_obj = json.dumps(text_or_obj)
+                    return parser.parse(text_or_obj)
+                except Exception as e:
+                    last_exc = e
+
+            # If parser has pydantic_model attribute (common in PydanticOutputParser), use that
+            actual_model = getattr(parser, "pydantic_model", None) or getattr(parser, "_pydantic_model", None)
+            if actual_model:
+                parser = actual_model  # redirect to real model
+
+            # Now proceed with standard Pydantic model parsing methods
             try:
-                data = parser.parse(current_text)
-                return data
-            
+                if hasattr(parser, "model_validate_json") and isinstance(text_or_obj, str):
+                    return parser.model_validate_json(text_or_obj)
             except Exception as e:
-                print("attempting _json_fixer...")
-                current_text = await StoryHelpers._json_fixer(
-                    parser=parser,
-                    exc=e
-                )
-                attempt += 1
+                last_exc = e
 
-        raise ValueError("❌ JSON parsing failed after maximum attempts")
+            try:
+                if hasattr(parser, "parse_raw") and isinstance(text_or_obj, str):
+                    return parser.parse_raw(text_or_obj)
+            except Exception as e:
+                last_exc = e
+
+            try:
+                if not isinstance(text_or_obj, str):
+                    if hasattr(parser, "model_validate"):
+                        return parser.model_validate(text_or_obj)
+                    if hasattr(parser, "parse_obj"):
+                        return parser.parse_obj(text_or_obj)
+            except Exception as e:
+                last_exc = e
+
+            # Remove this line entirely — dangerous and caused the crash!
+            # try:
+            #     return parser(text_or_obj)
+            # except Exception as e:
+            #     last_exc = e
+
+            raise last_exc or ValueError("No parser method succeeded")
+        # main retry loop
+        for attempt in range(max_attempts):
+            # 1) Try direct parse attempt
+            try:
+                if isinstance(current_text, str) and current_text.strip().startswith(('{', '[')):
+                    try:
+                        # First try as raw JSON string (many parsers accept this)
+                        result = await try_parse(current_text, parser)
+                        return result
+                    except Exception:
+                        pass
+
+                # Fall back to loading JSON first then parsing object
+                try:
+                    obj = json.loads(current_text)
+                    return await try_parse(obj, parser)
+                except Exception as e:
+                    last_error = e
+
+            except Exception as e:
+                # move on to repair attempts
+                last_error = e
+
+            # 2) Attempts 0-1: try json-repair
+            if attempt < 2:
+                try:
+                    repaired = repair_json(current_text, return_objects=False)
+                    # if repair_json returned a new string, validate it
+                    if repaired and repaired != current_text:
+                        current_text = repaired.strip()
+                        try:
+                            obj = json.loads(current_text)
+                            return await try_parse(obj, parser)
+                        except Exception as e:
+                            # keep going to further repairs if parse fails
+                            last_error = e
+                except Exception:
+                    # ignore repair_json internal errors, continue
+                    pass
+
+            # 3) Attempts >= 2: use LLM fix (regular first, enhanced for later attempts)
+            if attempt >= 2:
+                enhanced = attempt >= 4
+                try:
+                    current_text = await StoryHelpers._repair_json_with_llm(
+                        current_text, parser, enhanced=enhanced, exc=last_error
+                    )
+                    # validate produced JSON before handing to parser
+                    obj = json.loads(current_text)
+                    return await try_parse(obj, parser)
+                except Exception as e:
+                    # on failure, continue to next loop iteration (retry)
+                    last_error = e
+                    continue
+
+            # loop continues automatically; no manual attempt increment
+
+        # After exhausting attempts, raise informative error
+        raise ValueError(f"Failed to parse JSON after {max_attempts} attempts. Last error: {last_error}")
+    
+    # @staticmethod
+    # def _generate_json_schema_for_llm(model: type[BaseModel]) -> str:
+    #     """Generate clean, LLM-friendly schema with field names, types, and descriptions."""
+    #     schema = model.model_json_schema()
+    #     lines = ["REQUIRED JSON STRUCTURE (exact field names):", ""]
+
+    #     required = set(schema.get("required", []))
+
+    #     for name, info in schema["properties"].items():
+    #         req = " [REQUIRED]" if name in required else ""
+    #         desc = f" — {info.get('description', '').strip()}" if info.get("description") else ""
+    #         type_ = info.get("type", "any")
+    #         if "$ref" in info:
+    #             type_ = info["$ref"].split("/")[-1]
+    #         elif "anyOf" in info:
+    #             refs = [r["$ref"].split("/")[-1] for r in info["anyOf"] if "$ref" in r]
+    #             type_ = " | ".join(refs) if refs else "union"
+            
+    #         default = ""
+    #         if "default" in info and info["default"] is not None:
+    #             default = f" (default: {json.dumps(info['default'])})"
+
+    #         lines.append(f"- {name}: {type_}{default}{req}{desc}")
+
+    #         # Show nested structure for complex fields
+    #         if info.get("type") == "object" and "properties" in info:
+    #             lines.append("  Contains:")
+    #             for sub_name, sub_info in info["properties"].items():
+    #                 sub_req = f" [REQUIRED]" if sub_name in info.get("required", []) else ""
+    #                 sub_desc = f" — {sub_info.get('description', '')}" if sub_info.get("description") else ""
+    #                 lines.append(f"    - {sub_name}: {sub_info.get('type', 'any')}{sub_req}{sub_desc}")
+    #         elif info.get("type") == "array" and "items" in info and "$ref" in info["items"]:
+    #             ref_name = info["items"]["$ref"].split("/")[-1]
+    #             lines.append(f"  → List of {ref_name} objects")
+
+    #     lines.extend([
+    #         "",
+    #         "Output ONLY valid JSON matching this exact structure.",
+    #         "No extra fields. No renamed fields. No missing required fields."
+    #     ])
+    #     return "\n".join(lines)
     
     @staticmethod
-    async def _json_fixer(parser, exc = None) -> str:
+    async def _repair_json_with_llm(text: str, parser, enhanced: bool = False, exc: Exception = None) -> str:
         """
-        Uses the provided llm client to repair malformed JSON strings.
+        Unified JSON repair using LLM — now works perfectly with raw Pydantic models.
         """
-        # Safely get format instructions – they are very useful for repair quality,
-        # but we must not crash if the parser doesn't have the method (e.g. JsonOutputParser,
-        # custom parser, or someone accidentally passed the pydantic class itself).
-        format_instructions = ""
-        if hasattr(parser, "get_format_instructions"):
-            try:
-                format_instructions = parser.get_format_instructions()
-            except Exception:
-                # Some parsers have the method but it can still raise – be defensive
-                format_instructions = ""
+        print("Attempting LLM JSON repair" + (" (enhanced)" if enhanced else ""))
 
-        system_prompt = f"""
-You are an expert JSON repair agent. Your only job is to output valid JSON.
+        # if hasattr(parser, "get_format_instructions") and callable(getattr(parser, "get_format_instructions")):
+        #     format_instructions = parser.get_format_instructions()
+        # else:
+        #     # Raw Pydantic model → use our beautiful schema printer
+        format_instructions = parser.model_json_schema()
 
-Rules (follow exactly):
-- Output ONLY the repaired JSON. No explanations, no markdown, no wrappers, no extra text.
-- Never wrap the JSON in a string or add extra nesting.
-- Preserve the exact same top-level keys as the original.
-- If the input is already valid JSON, return it unchanged.
-- Convert any null/None in string fields to empty string "".
-- Fix trailing commas, missing quotes, unescaped characters, etc.
-- Do not add, remove, or rename any fields.
+        system_prompt = f"""You are an expert JSON repair agent. Your job is to fix broken JSON and make it 100% valid.
 
-Expected format (strictly adhere to this):
+CRITICAL RULES:
+- Output ONLY valid JSON. No explanations, no markdown, no extra text.
+- Fix syntax: missing commas, quotes, brackets, trailing commas
+- Preserve ALL existing data
+- Do NOT add, remove, or rename any fields
+- Convert null/None/"null" in strings → ""
+- If a field is missing but required → you may NOT guess it
+- The JSON must exactly match this schema:
+
 {format_instructions}
-""".strip()
 
-        prompt = f"""
-Repair the following text into valid JSON.
+Fix the broken JSON below and return ONLY the corrected version.
+"""
 
-{"Error that occurred during previous parsing attempt: " + str(exc) if exc else ""}
-Output the fixed JSON now. Remember: ONLY the JSON, nothing else.
-""".strip()
+        human_prompt = f"""Broken JSON to fix:
+{text}
 
-        resp = await ingestor_client(system_prompt=system_prompt, human_prompt=prompt)
-        raw_text = StoryHelpers._extract_content(resp)
-        clean_resp = StoryHelpers._strip_code_fences(raw_text)
+Last error (for context):
+{str(exc) if exc else "Unknown parsing error"}
+
+Return only the fixed JSON."""
         
-        # Clean up big variables immediately – important when dealing with long stories
-        del resp, raw_text, prompt, system_prompt 
-        return clean_resp
+        client = enhanced_ingestor_client if enhanced else ingestor_client
+        resp, _ = await client(system_prompt=system_prompt, human_prompt=human_prompt)
+
+        content = StoryHelpers._extract_content(resp)
+        cleaned = StoryHelpers._strip_code_fences(content.strip())
+
+        # Final sanity check
+        try:
+            json.loads(cleaned)
+        except Exception as e:
+            raise ValueError("LLM repair failed — returned invalid JSON") from e
+
+        del resp, content
+        return cleaned

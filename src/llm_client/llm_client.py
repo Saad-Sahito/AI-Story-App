@@ -1,21 +1,18 @@
 #from urllib import response
 #from langchain_ollama import ChatOllama  # for local deployment only not render
 from langchain_openai import ChatOpenAI
-#from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_anthropic import ChatAnthropic
-from langchain_xai import ChatXAI
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
 import replicate
 import os
 import requests
 import asyncio
 from asyncio import Semaphore
-import time
 from dotenv import load_dotenv
 from langchain_groq import ChatGroq
-from langchain_community.callbacks import get_openai_callback
+# from langchain_community.callbacks import get_openai_callback
 from openai import AsyncOpenAI
-from langchain_openai import OpenAI  # Optional, for prompt refinement
+# from langchain_openai import OpenAI  # Optional, for prompt refinement
 
 SHARED_LLM_CLIENT = None
 
@@ -91,31 +88,31 @@ class OpenAIWrapper(BaseWrapper):
         return token_usage
 
 
-# class GoogleWrapper(BaseWrapper):
-#     """Wrapper for Google (Gemini) provider."""
-#     def __init__(self, api_key: str):
-#         super().__init__(api_key)
-#         # Token keys specific to Google Gemini (assuming langchain_google_genai)
-#         self.token_keys = {"prompt": "prompt_token_count", "completion": "candidates_token_count", "total": "total_token_count"}
-#         self.usage_key = "usage_metadata"  # Gemini stores it directly on response sometimes
+class GoogleWrapper(BaseWrapper):
+    """Wrapper for Google (Gemini) provider."""
+    def __init__(self, api_key: str):
+        super().__init__(api_key)
+        # Token keys specific to Google Gemini (assuming langchain_google_genai)
+        self.token_keys = {"prompt": "prompt_token_count", "completion": "candidates_token_count", "total": "total_token_count"}
+        self.usage_key = "usage_metadata"  # Gemini stores it directly on response sometimes
 
-#     async def ainvoke(self, messages, temperature: float, model: str):
-#         from langchain_google_genai import ChatGoogleGenerativeAI  # Lazy import
-#         self.client = ChatGoogleGenerativeAI(model=model, temperature=temperature, google_api_key=self.api_key)
-#         return await self.client.ainvoke(messages)
+    async def ainvoke(self, messages, temperature: float, model: str):
+        from langchain_google_genai import ChatGoogleGenerativeAI  # Lazy import
+        self.client = ChatGoogleGenerativeAI(model=model, temperature=temperature, google_api_key=self.api_key)
+        return await self.client.ainvoke(messages)
 
-#     def get_token_usage(self, response) -> dict:
-#         token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-#         # Gemini might have usage_metadata directly on response
-#         usage = getattr(response, self.usage_key, {})
-#         if not usage:
-#             meta = getattr(response, "response_metadata", {})
-#             usage = meta.get(self.usage_key, {})
-#         if usage:
-#             token_usage["prompt_tokens"] = usage.get(self.token_keys["prompt"], 0)
-#             token_usage["completion_tokens"] = usage.get(self.token_keys["completion"], 0)
-#             token_usage["total_tokens"] = usage.get(self.token_keys["total"], 0)
-#         return token_usage
+    def get_token_usage(self, response) -> dict:
+        token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        # Gemini might have usage_metadata directly on response
+        usage = getattr(response, self.usage_key, {})
+        if not usage:
+            meta = getattr(response, "response_metadata", {})
+            usage = meta.get(self.usage_key, {})
+        if usage:
+            token_usage["prompt_tokens"] = usage.get(self.token_keys["prompt"], 0)
+            token_usage["completion_tokens"] = usage.get(self.token_keys["completion"], 0)
+            token_usage["total_tokens"] = usage.get(self.token_keys["total"], 0)
+        return token_usage
 
 
 class GroqWrapper(BaseWrapper):
@@ -150,6 +147,7 @@ class XAIWrapper(BaseWrapper):
         self.usage_key = "token_usage"
 
     async def ainvoke(self, messages, temperature: float, model: str):
+        from langchain_xai import ChatXAI
         self.client = ChatXAI(xai_api_key=self.api_key, temperature=temperature, model=model)
         return await self.client.ainvoke(messages)
 
@@ -201,7 +199,7 @@ class LLMClient:
             self.claude_api_key = os.environ.get("CLAUDE_API_KEY")
             self.groq_api_key = os.environ.get("GROQ_API_KEY")
             self.openai_api_key = os.environ.get("OPENAI_API_KEY")
-            #self.google_api_key = os.environ.get("GOOGLE_API_KEY")
+            self.google_api_key = os.environ.get("GOOGLE_API_KEY")
             self.xai_api_key = os.environ.get("XAI_API_KEY")
             # No API key for Ollama
         except Exception as e:
@@ -273,8 +271,48 @@ class LLMClient:
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
             ], temperature=0.8, model="llama-3.3-70b-versatile")
+        token_usage = wrapper.get_token_usage(response)
+                # Validate token usage
+        if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+            print(f"Warning: Invalid token usage values for model: {token_usage}")
+        return response, token_usage
 
-        return response
+    async def _better_author_client(
+        self,
+        system_prompt: str = "",
+        human_prompt: str = "",
+        llm_temp: float = 0.7,
+        #model: str = "None"
+        ):
+        try:
+            # model = "grok-4-0709"
+            # wrapper = XAIWrapper(self.xai_api_key)
+            # model = "claude-sonnet-4-5-20250929"
+            # model = "claude-haiku-4-5-20251001"
+            # wrapper = AnthropicWrapper(self.claude_api_key)
+            model = "llama-3.3-70b-versatile"
+            wrapper = GroqWrapper(self.groq_api_key)
+            # model = "gemini-3-pro-preview"
+            # wrapper = GoogleWrapper(self.google_api_key)
+            async with self.sem:
+                    response = await wrapper.ainvoke([
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=human_prompt)
+                    ], temperature=llm_temp, model=model)
+            token_usage = wrapper.get_token_usage(response)
+            # print(f"Better Author Client used tokens: {token_usage}")
+            # Validate token usage
+            if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+                print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
+
+            # Delay for rate limiting safety
+            await asyncio.sleep(2)
+
+            return response, token_usage
+        
+        except Exception as e:
+            print(f"Error in _author_client for model {model}: {str(e)}")
+            raise
 
     async def _author_client(
         self,
@@ -284,18 +322,59 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
-            model = "grok-4-fast-reasoning"
-            # Replace with XAIWrapper
-            wrapper = XAIWrapper(self.xai_api_key)
+            # model = "grok-4-fast-reasoning"
+            # wrapper = XAIWrapper(self.xai_api_key)
+            # model = "claude-sonnet-4-5-20250929"
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
+            model = "openai/gpt-oss-120b"
+            wrapper = GroqWrapper(self.groq_api_key)
+            # model = "gemini-3-pro-preview"
+            # wrapper = GoogleWrapper(self.google_api_key)
             async with self.sem:
                     response = await wrapper.ainvoke([
                         SystemMessage(content=system_prompt),
                         HumanMessage(content=human_prompt)
                     ], temperature=llm_temp, model=model)
             token_usage = wrapper.get_token_usage(response)
+            # print(f"Author Client Token Usage: {token_usage}")
+            # Validate token usage
+            if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+                print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
 
+            # Delay for rate limiting safety
+            await asyncio.sleep(2)
+
+            return response, token_usage
+        
+        except Exception as e:
+            print(f"Error in _author_client for model {model}: {str(e)}")
+            raise
+    
+    async def _author_fast_client(
+        self,
+        system_prompt: str = "",
+        human_prompt: str = "",
+        llm_temp: float = 0.7,
+        #model: str = "None"
+        ):
+        try:
+            # model = "grok-4-fast-reasoning"
+            # wrapper = XAIWrapper(self.xai_api_key)
+            # model = "claude-sonnet-4-5-20250929"
+            # model = "claude-haiku-4-5-20251001"
+            # wrapper = AnthropicWrapper(self.claude_api_key)
+            model = "openai/gpt-oss-120b"
+            wrapper = GroqWrapper(self.groq_api_key)
+            # model = "gemini-3-pro-preview"
+            # wrapper = GoogleWrapper(self.google_api_key)
+            async with self.sem:
+                    response = await wrapper.ainvoke([
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=human_prompt)
+                    ], temperature=llm_temp, model=model)
+            token_usage = wrapper.get_token_usage(response)
+            # print(f"Author Client Token Usage: {token_usage}")
             # Validate token usage
             if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
                 print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
@@ -317,11 +396,12 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
-            model = "grok-4-fast-reasoning"
-            # Replace with XAIWrapper
-            wrapper = XAIWrapper(self.xai_api_key)
+            # model = "grok-4-fast-reasoning"
+            # wrapper = XAIWrapper(self.xai_api_key)
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
+            model = "openai/gpt-oss-120b"
+            wrapper = GroqWrapper(self.groq_api_key)
             async with self.sem:
                     response = await wrapper.ainvoke([
                         SystemMessage(content=system_prompt),
@@ -340,6 +420,41 @@ class LLMClient:
         
         except Exception as e:
             print(f"Error in _director_client for model {model}: {str(e)}")
+            raise
+
+    async def _better_writer_client(
+        self,
+        system_prompt: str = "",
+        human_prompt: str = "",
+        llm_temp: float = 0.7,
+        #model: str = "None"
+        ):
+        try:
+            #model = "claude-3-haiku-20240307"
+            
+            #wrapper = XAIWrapper(self.xai_api_key)
+            model = "claude-haiku-4-5-20251001"
+            wrapper = AnthropicWrapper(self.claude_api_key)
+            # model = "openai/gpt-oss-120b"
+            # wrapper = GroqWrapper(self.groq_api_key)
+            async with self.sem:
+                    response = await wrapper.ainvoke([
+                        SystemMessage(content=system_prompt),
+                        HumanMessage(content=human_prompt)
+                    ], temperature=llm_temp, model=model)
+            token_usage = wrapper.get_token_usage(response)
+
+            # Validate token usage
+            if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+                print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
+
+            # Delay for rate limiting safety
+            await asyncio.sleep(2)
+
+            return response, token_usage
+        
+        except Exception as e:
+            print(f"Error in _writer_client for model {model}: {str(e)}")
             raise
 
     async def _writer_client(
@@ -378,7 +493,7 @@ class LLMClient:
             raise
 
     async def _ingestor_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
-        """Blocking call to Gemini LLM – returns the full response."""
+        """Blocking call to LLM – returns the full response."""
         # Use GroqWrapper as example; replace with GoogleWrapper if needed
         #wrapper = GoogleWrapper(self.google_api_key)
         wrapper = GroqWrapper(self.groq_api_key)
@@ -388,54 +503,33 @@ class LLMClient:
             response = await wrapper.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
-            ], temperature=0.1, model="openai/gpt-oss-120b")  # Adjust model
-        time.sleep(1)  # delay to avoid rate limits
-        return response
+            ], temperature=0.1, model="openai/gpt-oss-120b")
+        token_usage = wrapper.get_token_usage(response)
+        # Validate token usage
+        if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+            print(f"Warning: Invalid token usage values for model: {token_usage}")
+        await asyncio.sleep(1)
+        return response, token_usage
 
-    # async def _story_client(
-    #     self,
-    #     system_prompt: str = "",
-    #     human_prompt: str = "",
-    #     llm_temp: float = 0.7,
-    #     model: str = "None"
-    # ) -> tuple[AIMessage, dict]:
-    #     try:
-    #         # Select wrapper based on model/provider
-    #         if model in GROQ_MODELS:
-    #             wrapper = GroqWrapper(self.groq_api_key)
-    #         elif model in GPT_MODELS:
-    #             wrapper = OpenAIWrapper(self.openai_api_key)
-    #         elif model in CLAUDE_MODELS:
-    #             wrapper = AnthropicWrapper(self.claude_api_key)
-    #         elif model in GEMINI_MODELS:
-    #             wrapper = GoogleWrapper(self.google_api_key)
-    #         elif model in GROK_MODELS:
-    #             wrapper = XAIWrapper(self.xai_api_key)
-    #         else:
-    #             raise ValueError(f"Unknown model: {model}")
 
-    #         # --- Invoke the model ---
-    #         async with self.sem:
-    #             response = await wrapper.ainvoke([
-    #                 SystemMessage(content=system_prompt),
-    #                 HumanMessage(content=human_prompt)
-    #             ], temperature=llm_temp, model=model)
-
-    #         # --- Extract token usage ---
-    #         token_usage = wrapper.get_token_usage(response)
-
-    #         # --- Validate token usage ---
-    #         if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
-    #             print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
-
-    #         # --- Delay for rate limiting safety ---
-    #         await asyncio.sleep(2)
-
-    #         return response, token_usage
-
-    #     except Exception as e:
-    #         print(f"Error in _story_client for model {model}: {str(e)}")
-    #         raise
+    async def _enhanced_ingestor_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+        """Blocking call to LLM – returns the full response."""
+        # Use GroqWrapper as example; replace with GoogleWrapper if needed
+        #wrapper = GoogleWrapper(self.google_api_key)
+        # wrapper = GroqWrapper(self.groq_api_key)
+        #wrapper = XAIWrapper(self.xai_api_key)
+        wrapper = OpenAIWrapper(self.openai_api_key)
+        async with self.sem:
+            response = await wrapper.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=human_prompt)
+            ], temperature=0.1, model="gpt-4o-2024-08-06")
+        token_usage = wrapper.get_token_usage(response)
+        # Validate token usage
+        if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+            print(f"Warning: Invalid token usage values for model: {token_usage}")
+        await asyncio.sleep(1)
+        return response, token_usage
     
     
 
@@ -450,10 +544,20 @@ async def get_shared_client():
         return SHARED_LLM_CLIENT
 
 # Convenience wrapper functions for easy access
+async def better_author_client(system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7, model: str = "No model given") -> AIMessage:
+    """Convenience function to access groq_client through shared instance."""
+    client = await get_shared_client()
+    return await client._better_author_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=llm_temp)
+
 async def author_client(system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7, model: str = "No model given") -> AIMessage:
     """Convenience function to access groq_client through shared instance."""
     client = await get_shared_client()
     return await client._author_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=llm_temp)
+
+async def author_fast_client(system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7, model: str = "No model given") -> AIMessage:
+    """Convenience function to access groq_client through shared instance."""
+    client = await get_shared_client()
+    return await client._author_fast_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=llm_temp)
 
 async def director_client(system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7, model: str = "No model given") -> AIMessage:
     """Convenience function to access groq_client through shared instance."""
@@ -465,10 +569,20 @@ async def writer_client(system_prompt: str = "", human_prompt: str = "", llm_tem
     client = await get_shared_client()
     return await client._writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=llm_temp)
 
+async def better_writer_client(system_prompt: str = "", human_prompt: str = "", llm_temp: float = 0.7, model: str = "No model given") -> AIMessage:
+    """Convenience function to access groq_client through shared instance."""
+    client = await get_shared_client()
+    return await client._better_writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=llm_temp)
+
 async def ingestor_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access gemini_client through shared instance."""
     client = await get_shared_client()
     return await client._ingestor_client(system_prompt, human_prompt)
+
+async def enhanced_ingestor_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+    """Convenience function to access gemini_client through shared instance."""
+    client = await get_shared_client()
+    return await client._enhanced_ingestor_client(system_prompt, human_prompt)
 
 async def utility_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access model through shared instance."""

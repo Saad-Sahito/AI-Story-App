@@ -503,7 +503,7 @@ class ClassicStorySetup:
         del user_context
         print(f"✅ Story initialization complete: {final_plot.title}")
         print(f"   - Type: {story_type}")
-        print(f"   - Acts planned: {minimal_plot.act_count}")
+        print(f"   - Acts planned: {story_seed.act_count}")
         print(f"   - Target length: {story_seed.target_length} words")
         print(f"   - Total tokens used: {tokens_usage}")
 
@@ -525,7 +525,7 @@ class ClassicStorySetup:
                 "story_word_count": 0,
                 "chapter_word_count": 0,
                 "current_act_id": 1,
-                "total_acts": minimal_plot.act_count,
+                "total_acts": story_seed.act_count,
                 "tone_temp": mapped_tone_temp,
                 "model": model,
                 "author_token_usage": tokens_usage,
@@ -721,9 +721,21 @@ class ClassicStorySetup:
                             
                             # Update progress with new act
                             await memory_system.increment_act(new_act_number=next_act)
-            
+
+                            def _parse_tokens(value):
+                                default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+                                if not value:
+                                    return default
+                                try:
+                                    parsed = json.loads(value) if isinstance(value, str) else value
+                                    if isinstance(parsed, dict) and all(k in parsed for k in default):
+                                        return parsed
+                                except:
+                                    pass
+                                return default
+                            
                             # Update token usage
-                            author_tokens = progress.get("author_token_usage")
+                            author_tokens = _parse_tokens(progress.get("author_token_usage"))
                             if isinstance(author_tokens, dict):
                                 author_tokens["prompt_tokens"] = tokens["prompt_tokens"] + author_tokens["prompt_tokens"]
                                 author_tokens["completion_tokens"] = tokens["completion_tokens"] + author_tokens["completion_tokens"]

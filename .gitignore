@@ -212,6 +212,8 @@ __marimo__/
 
 # Ignore specific app scripts
 main_nicegui.py
+desktop.ini
+test.py
 # data/story_memory.db
 # data/story_memory.db-shm
 # data/story_memory.db-wal

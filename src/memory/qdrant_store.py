@@ -224,7 +224,8 @@ class QdrantStore:
                 points=[models.PointStruct(id=str(uuid.uuid4()), vector=vec, payload=payload)],
             )
 
-
+    
+    
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put_dict_replace_character(self, data: Dict[str, dict], metadata: Dict[str, Any] = None):
         client = await get_redis_client()
@@ -248,16 +249,77 @@ class QdrantStore:
 
                     # --- 2️⃣ Prepare embedding text ---
                     # Convert structured info into a text summary for embeddings
-                    embed_text = (
-                        f"Name: {info.get('name')}\n"
-                        f"Progression: {', '.join(info.get('progression', []))}\n"
-                        f"Summary: {info.get('current_summary', '')}\n"
-                        f"Traits: {', '.join(info.get('current_traits', []))}\n"
-                        f"Relationships: {json.dumps(info.get('current_relationships', {}))}\n"
-                        f"Emotional State: {info.get('current_emotional_state', '')}\n"
-                        f"Goals: {info.get('current_goals', '')}\n"
-                        f"Status: {info.get('current_status', '')}"
-                    )
+                    def _build_embedding_text(info: Dict[str, Any]) -> str:
+                        """
+                        Ultra-smart, fully dynamic embedding text builder.
+                        - Every key → becomes a heading (Title Cased)
+                        - Every value → formatted cleanly (lists, dicts, strings)
+                        - Zero assumptions. 100% future-proof.
+                        - Perfect for vector search & retrieval
+                        """
+                        if not info or not isinstance(info, dict):
+                            return "Name: Unknown Entity\nSummary: No data available"
+
+                        lines = []
+
+                        # Special: always put 'name' first if exists
+                        if "name" in info:
+                            name = str(info["name"]).strip() or "Unknown"
+                            lines.append(f"Name: {name}")
+                        
+                        # Process all fields dynamically
+                        for raw_key, value in info.items():
+                            # Skip the name again if already added
+                            if raw_key == "name":
+                                continue
+                                
+                            if value is None or value == "" or value == [] or value == {}:
+                                continue  # skip empty
+
+                            # Clean and title-case the key
+                            key = raw_key.strip()
+                            if key.startswith("current_"):
+                                key = key.replace("current_", "", 1)
+                            key = key.replace("_", " ").strip()
+                            key = key.title()
+                            if key.endswith("s") and not key.endswith("ss"):  # rough plural fix
+                                key = key.rstrip("s") + "s"  # keep it plural but clean
+
+                            # Format value intelligently
+                            if isinstance(value, (list, tuple)):
+                                clean_items = [str(i).strip() for i in value if i and str(i).strip()]
+                                if clean_items:
+                                    formatted = ", ".join(clean_items)
+                                else:
+                                    continue  # skip empty lists
+                            elif isinstance(value, dict):
+                                try:
+                                    formatted = json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # compact
+                                except:
+                                    formatted = "complex data"
+                            else:
+                                formatted = str(value).strip()
+
+                            if formatted and formatted not in ["none", "null", "{}", "[]"]:
+                                lines.append(f"{key}: {formatted}")
+
+                        # Fallback if somehow empty
+                        if len(lines) <= 1:
+                            lines.append("Summary: No significant details available")
+
+                        return "\n".join(lines).strip()
+                
+                    embed_text = _build_embedding_text(info=info)
+                    # (
+                    #     f"Name: {info.get('name')}\n"
+                    #     f"Progression: {', '.join(info.get('progression', []))}\n"
+                    #     f"Summary: {info.get('current_summary', '')}\n"
+                    #     f"Traits: {', '.join(info.get('current_traits', []))}\n"
+                    #     f"Relationships: {json.dumps(info.get('current_relationships', {}))}\n"
+                    #     f"Emotional State: {info.get('current_emotional_state', '')}\n"
+                    #     f"Goals: {info.get('current_goals', '')}\n"
+                    #     f"Status: {info.get('current_status', '')}"
+                    # )
                     vec = await self._embed_text(embed_text)
 
                     # --- 3️⃣ Create full payload ---
@@ -300,16 +362,77 @@ class QdrantStore:
                         limit=1,
                     )
                     point_id = search_results[0].id if search_results else str(uuid.uuid4())
+                    
+                    def _build_embedding_text(info: Dict[str, Any]) -> str:
+                        """
+                        Ultra-smart, fully dynamic embedding text builder.
+                        - Every key → becomes a heading (Title Cased)
+                        - Every value → formatted cleanly (lists, dicts, strings)
+                        - Zero assumptions. 100% future-proof.
+                        - Perfect for vector search & retrieval
+                        """
+                        if not info or not isinstance(info, dict):
+                            return "Name: Unknown Entity\nSummary: No data available"
 
-                    embed_text = (
-                        f"Name: {info.get('name')}\n"
-                        f"Progression: {', '.join(info.get('progression', []))}\n"
-                        f"Summary: {info.get('current_summary', '')}\n"
-                        f"Atmosphere: {info.get('current_atmosphere', '')}\n"
-                        f"Culture: {info.get('current_culture', '')}\n"
-                        f"Events: {info.get('current_events', '')}\n"
-                        f"Connections: {json.dumps(info.get('current_connections', {}))}"
-                    )
+                        lines = []
+
+                        # Special: always put 'name' first if exists
+                        if "name" in info:
+                            name = str(info["name"]).strip() or "Unknown"
+                            lines.append(f"Name: {name}")
+                        
+                        # Process all fields dynamically
+                        for raw_key, value in info.items():
+                            # Skip the name again if already added
+                            if raw_key == "name":
+                                continue
+                                
+                            if value is None or value == "" or value == [] or value == {}:
+                                continue  # skip empty
+
+                            # Clean and title-case the key
+                            key = raw_key.strip()
+                            if key.startswith("current_"):
+                                key = key.replace("current_", "", 1)
+                            key = key.replace("_", " ").strip()
+                            key = key.title()
+                            if key.endswith("s") and not key.endswith("ss"):  # rough plural fix
+                                key = key.rstrip("s") + "s"  # keep it plural but clean
+
+                            # Format value intelligently
+                            if isinstance(value, (list, tuple)):
+                                clean_items = [str(i).strip() for i in value if i and str(i).strip()]
+                                if clean_items:
+                                    formatted = ", ".join(clean_items)
+                                else:
+                                    continue  # skip empty lists
+                            elif isinstance(value, dict):
+                                try:
+                                    formatted = json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # compact
+                                except:
+                                    formatted = "complex data"
+                            else:
+                                formatted = str(value).strip()
+
+                            if formatted and formatted not in ["none", "null", "{}", "[]"]:
+                                lines.append(f"{key}: {formatted}")
+
+                        # Fallback if somehow empty
+                        if len(lines) <= 1:
+                            lines.append("Summary: No significant details available")
+
+                        return "\n".join(lines).strip()
+                
+                    embed_text = _build_embedding_text(info=info)
+                    # embed_text = (
+                    #     f"Name: {info.get('name')}\n"
+                    #     f"Progression: {', '.join(info.get('progression', []))}\n"
+                    #     f"Summary: {info.get('current_summary', '')}\n"
+                    #     f"Atmosphere: {info.get('current_atmosphere', '')}\n"
+                    #     f"Culture: {info.get('current_culture', '')}\n"
+                    #     f"Events: {info.get('current_events', '')}\n"
+                    #     f"Connections: {json.dumps(info.get('current_connections', {}))}"
+                    # )
                     vec = await self._embed_text(embed_text)
 
                     payload = metadata.copy() if metadata else {}

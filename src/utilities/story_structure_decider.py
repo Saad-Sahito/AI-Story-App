@@ -899,39 +899,10 @@ def find_best_structure_name(input_genres: list[str]) -> str:
     # Fallback for arbitrary
     return "Three Act Structure"
 
-def find_best_structure(input_genres: list[str]) -> str:
-    """
-    Smartly pick the best structure:
-    1. Look for exact combo match.
-    2. If no exact, look for structures where the input is a subset of a combo (for arbitrary scenarios).
-    3. If multiple, pick the first in order of STRUCTURES keys.
-    4. If none, default to 'Three Act Structure' as a versatile fallback.
-    """
-    if not 1 <= len(input_genres) <= 3:
-        raise ValueError("Input must be 1-3 genres.")
+def find_best_structure(structure_name: str) -> str:
     
-    # Validate genres
-    for genre in input_genres:
-        if genre not in VALID_GENRES:
-            raise ValueError(f"Invalid genre: {genre}")
-    
-    combo = normalize_combo(input_genres)
-    
-    # First pass: exact match
-    for struct, combos in STRUCTURES.items():
-        if combo in combos:
-            return get_structure(struct)
-    
-    # Second pass: subset match (input genres all in a combo's genres)
-    for struct, combos in STRUCTURES.items():
-        for c in combos:
-            c_genres = set(c.split(" + "))
-            input_set = set(input_genres)
-            if input_set.issubset(c_genres):
-                return get_structure(struct)
-    
-    # Fallback for arbitrary
-    return get_structure("Three Act Structure")
+    return get_structure(structure_name)
+
 
 # if __name__ == "__main__":
 #     # Expect input as space-separated genres, e.g., python script.py Horror Thriller/Suspense

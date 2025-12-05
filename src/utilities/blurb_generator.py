@@ -33,7 +33,7 @@ Central Question: {minimal_plot.central_question}
 Narrative Arc: {minimal_plot.narrative_arc}
 """
         
-        response = await utility_client(
+        response, _ = await utility_client(
             system_prompt=system_prompt,
             human_prompt=f"Create a blurb for:\n\n{plot_summary}"
         )
