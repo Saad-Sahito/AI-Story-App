@@ -1,181 +1,157 @@
 """
-Highly Flexible Ingestor with adaptive schemas
-- progression lists are strictly preserved and appended
-- all other fields are dynamic/optional — LLM decides what's relevant
-- OPTIMIZED: World elements are now hierarchical and selective
+Balanced & Highly Flexible Story Ingestor v2
+- Equal weight on characters AND world elements
+- All progression entries are tagged with Act/Chapter(/Scene)
+- Smart consolidation & pruning for both entities and locations
+- Minimal enforced structure, maximum adaptability
 """
 
 import json
-import asyncio
 import gc
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional
 from pydantic import BaseModel, Field
-from langchain_core.output_parsers import PydanticOutputParser
 from src.utilities.story_helpers import StoryHelpers
 from src.llm_client.llm_client import ingestor_client
 
 
 # ============================================================================
-# FLEXIBLE & MINIMAL PYDANTIC MODELS
+# FLEXIBLE & BALANCED PYDANTIC MODELS
 # ============================================================================
 
 class EntityDetails(BaseModel):
-    old_name: str = Field(description="Previous or current name of the character or world element")
-    new_name: str = Field(description="New name if changed, otherwise same as old_name")
-    details: str = Field(description="Scene-relevant summary details")
-    significance: Optional[str] = Field(
-        default=None,
-        description="Why this location matters (for world elements only)"
-    )
+    name: str = Field(description="Current name of the character or world element")
+    previous_names: List[str] = Field(default=[], description="Former names if renamed")
+    details: str = Field(description="Concise, scene-relevant description or change summary")
+    significance: Optional[str] = Field(default=None, description="Why this entity/location is important in this scene (if applicable)")
 
 
 class SceneBundle(BaseModel):
-    story_summary: str = Field(description="Detailed summary of the scene")
-    character_details: Dict[str, EntityDetails] = Field(
+    act_id: int
+    chapter_id: int
+    scene_id: int
+    story_summary: str = Field(description="Rich, detailed summary of the scene")
+
+    # Only include entities that actually appear or are meaningfully referenced
+    characters: Dict[str, EntityDetails] = Field(
         default_factory=dict,
-        description="Dictionary: {character_key: {old_name, new_name, details}} — only include entities that appear or are referenced"
+        description="Key: character identifier. Only significant appearances."
     )
-    world_details: Dict[str, EntityDetails] = Field(
+    locations: Dict[str, EntityDetails] = Field(
         default_factory=dict,
-        description="""Dictionary: {world_key: {old_name, new_name, details, significance}} 
-        IMPORTANT: Extract ONLY significant locations following these rules:
-        1. Use BROAD geographic areas (e.g., 'northern_district', 'harbor_quarter') NOT specific buildings
-        2. Extract specific locations ONLY if they are:
-           - Recurring across multiple scenes
-           - Central to plot events
-           - Symbolically/thematically important
-        3. Consolidate similar locations (e.g., multiple taverns → 'tavern_district' or just the main tavern)
-        4. Prefer 3-7 world elements per scene maximum
-        5. When in doubt, go broader rather than more specific"""
+        description="""Key: location identifier. STRICT rules:
+        - Prefer BROAD areas (e.g., 'harbor_district', 'capital_city')
+        - Specific places ONLY if recurring, plot-central, or thematically vital
+        - Consolidate similar locations
+        - Max 5–8 locations per scene (fewer = better)"""
     )
 
-# scene_parser = PydanticOutputParser(pydantic_object=SceneBundle)
 
-
-# === FLEXIBLE CHARACTER MEMORY (only progression is enforced) ===
 class CharacterMemory(BaseModel):
-    name: str = Field(description="Exact name of the character")
+    name: str = Field(description="Canonical name of the character")
     progression: List[str] = Field(
         default_factory=list,
-        description="""MUST follow format: 'Act {act} Chapter {chapter}: {detailed change description}'.
-        This list MUST be cumulative — include all previous entries + new one."""
+        description="""Cumulative list. Every entry MUST be formatted as:
+        'Act {act} Chapter {chap} Scene {scene}: {what changed or was revealed}' 
+        or 'Act {act} Chapter {chap}: {chapter-level change}' for chapter/act summaries.
+        NEVER break cumulative order."""
     )
-    # Everything else is optional and free-form
-    current_summary: Optional[str] = None
-    current_traits: Optional[List[str]] = None
+    frequency: Optional[int] = Field(default=0, description="Total scenes this character has appeared/referenced in")
+    current_role: Optional[str] = None
+    current_motivation: Optional[str] = None
     current_relationships: Optional[Dict[str, str]] = None
-    current_emotional_state: Optional[str] = None
-    current_goals: Optional[str] = None
     current_status: Optional[str] = None
-    # Allow any additional dynamic fields
+    current_location: Optional[str] = None
+    # Fully dynamic beyond this
     model_config = {"extra": "allow"}
 
 
-# === FLEXIBLE WORLD MEMORY (only progression enforced) ===
-class WorldElementMemory(BaseModel):
-    name: str = Field(description="Exact name of the world element")
+class LocationMemory(BaseModel):
+    name: str = Field(description="Canonical name of the location")
     progression: List[str] = Field(
         default_factory=list,
-        description="""MUST follow format: 'Act {act} Chapter {chapter}: {detailed change description}'.
-        Cumulative — include all prior entries + new one."""
+        description="""Cumulative. Format:
+        'Act {act} Chapter {chap} Scene {scene}: {what happened or changed here}'
+        or broader for chapter/act level."""
     )
-    hierarchy_level: Optional[str] = Field(
-        default=None,
-        description="'broad' (regions/districts) or 'specific' (individual important locations)"
-    )
-    frequency: Optional[int] = Field(
-        default=None,
-        description="Number of times referenced across the story"
-    )
-    current_summary: Optional[str] = None
+    hierarchy: Optional[str] = Field(default=None, description="'broad' (region/district) or 'specific' (named landmark)")
+    frequency: Optional[int] = Field(default=0, description="Total scenes this location has been mentioned in")
+    current_state: Optional[str] = None
     current_atmosphere: Optional[str] = None
-    current_culture: Optional[str] = None
-    current_events: Optional[str] = None
-    current_connections: Optional[Union[Dict[str, str], str]] = None
-    # Allow any additional dynamic fields
+    connected_to: Optional[List[str]] = None
+    thematic_role: Optional[str] = None
+    # Fully dynamic
     model_config = {"extra": "allow"}
 
 
-# === FLEXIBLE CHAPTER BUNDLE ===
 class ChapterBundle(BaseModel):
-    summary: str = Field(description="Detailed summary of the entire chapter")
-    character_summary: Dict[str, CharacterMemory] = Field(default_factory=dict)
-    world_summary: Dict[str, WorldElementMemory] = Field(default_factory=dict)
-    # Allow any extra top-level fields (e.g. themes, foreshadowing, etc.)
+    act_id: int
+    chapter_id: int
+    summary: str = Field(description="Comprehensive chapter summary")
+    characters: Dict[str, CharacterMemory] = Field(default_factory=dict)
+    locations: Dict[str, LocationMemory] = Field(default_factory=dict)
     model_config = {"extra": "allow"}
 
 
-# chapter_parser = PydanticOutputParser(pydantic_object=ChapterBundle)
-
-
-# === FLEXIBLE ACT SUMMARY ===
 class ActSummary(BaseModel):
-    act_summary: str = Field(description="High-level summary of the entire Act")
-    character_progressions: Dict[str, CharacterMemory] = Field(default_factory=dict)
-    world_progressions: Dict[str, WorldElementMemory] = Field(default_factory=dict)
+    act_id: int
+    act_summary: str = Field(description="High-level summary of the entire act")
+    characters: Dict[str, CharacterMemory] = Field(default_factory=dict)
+    locations: Dict[str, LocationMemory] = Field(default_factory=dict)
     model_config = {"extra": "allow"}
-
-
-# act_ingestor_parser = PydanticOutputParser(pydantic_object=ActSummary)
 
 
 class Ingestor:
 
+    # ============================================================================
+    # SCENE INGESTION – Balanced character & location focus
+    # ============================================================================
     @staticmethod
     async def ingest_scene(
         act_id: int,
         chapter_id: int,
         scene_id: int,
         scene_text: str,
-        chars: List[str],
-        worlds: List[str],
+        known_characters: List[str],
+        known_locations: List[str],
     ) -> Optional[Dict[str, Any]]:
-        """Enhanced scene ingestion with smarter world element extraction"""
-        
-        # Build context of existing world elements with their hierarchy
-        world_context = ""
-        if worlds:
-            world_context = "\n".join([f"  - {world} (already tracked)" for world in worlds])
 
-        system_prompt = f"""You are a precise Scene Breakdown Agent with SMART location extraction.
+        known_chars = ", ".join(known_characters) if known_characters else "None"
+        known_locs = "\n".join([f"  - {loc}" for loc in known_locations]) if known_locations else "None yet"
 
-**CRITICAL WORLD ELEMENT RULES:**
-1. Extract BROAD locations by default (districts, regions, general areas)
-2. Extract SPECIFIC locations ONLY if they meet AT LEAST ONE of these criteria:
-   - Appears in multiple scenes (recurring)
-   - Central to a major plot event
-   - Has strong thematic/symbolic significance
-   - A named, story-critical landmark
+        system_prompt = f"""You are a precision Scene Analyst. Your job is to extract ONLY meaningful characters and locations from the scene with equal rigor.
 
-3. CONSOLIDATION RULES:
-   - Multiple small locations in same area → Use the broader area name
-   - Generic places (random tavern, unnamed alley) → Skip or use district name
-   - "The marketplace in the eastern quarter" → Just "eastern_quarter"
+CHARACTER RULES (as strict as location rules):
+- Only include characters who speak, act, are described in detail, or are meaningfully referenced
+- Minor unnamed guards, passersby, crowds → ignore unless plot-relevant
+- Consolidate: e.g "the three assassins" → treat as one entity if they function as a unit
+- Describe exactly why and when the character is significant or when describing it in 'details', dont just mention 'in this scene', but rather precise context, as the scene would be lost afterwards. MUST also mention Act/Chapter/Scene number, with every detail/significance.
 
-4. TARGET: 3-7 world elements per scene maximum (fewer is better)
 
-5. Use hierarchical naming:
-   - Broad: "harbor_district", "northern_territories", "capital_city"
-   - Specific: "ivory_tower", "blacksmith_forge_of_theron" (only if truly important)
+LOCATION RULES:
+- Prefer broad geographic areas (districts, forests, cities)
+- Specific buildings/landmarks only if recurring, plot-critical, or symbolically loaded
+- Consolidate similar places
+- Describe exactly why and when the location is significant or when describing it in 'details', dont just mention 'in this scene', but rather precise context, as the scene would be lost afterwards. MUST also mention Act/Chapter/Scene number, with every detail/significance.
 
-Existing tracked worlds:
-{world_context if world_context else 'None yet'}
 
-Output valid JSON only. No markdown. No explanations.
+Existing tracked characters: {known_chars}
+Existing tracked locations:
+{known_locs}
+
+Every progression entry must include Act/Chapter/Scene numbers.
+
+Output VALID JSON only. No markdown.
 
 {SceneBundle.model_json_schema()}"""
 
         human_prompt = f"""Act {act_id} Chapter {chapter_id} Scene {scene_id}
 
-Known Characters: {', '.join(chars) if chars else 'None predefined'}
-
-Scene Text:
+Scene text:
 {scene_text}
 
-Extract structured data. Remember: BE SELECTIVE with world elements. Quality over quantity.
-Focus on significant, recurring, or broadly-defined locations."""
+Extract structured scene data. Be highly selective with both characters and locations.
+Tag all changes with full Act/Chapter/Scene context."""
 
-        
         resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
@@ -183,62 +159,68 @@ Focus on significant, recurring, or broadly-defined locations."""
         gc.collect()
 
         try:
-            fixed_resp = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=SceneBundle)
-            return fixed_resp.model_dump()
-        except BaseException as e:
-            raise f"[Scene Ingestor] Fixer failed: {e}"
+            parsed = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=SceneBundle)
+            result = parsed.model_dump()
+            # print("INGEST SCENE: ", result)
+            result["act_id"] = act_id
+            result["chapter_id"] = chapter_id
+            result["scene_id"] = scene_id
+            return result
+        except Exception as e:
+            raise RuntimeError(f"[Scene Ingestor] JSON fixing failed: {e}")
 
 
-        
-
+    # ============================================================================
+    # CHAPTER INGESTION – Cumulative + balanced consolidation
+    # ============================================================================
     @staticmethod
     async def ingest_chapter(
         act_id: int,
         chapter_id: int,
-        current_chap_summary: str,
-        char_details: Dict[str, Any],
-        world_details: Dict[str, Any],
+        chapter_text: str,
+        current_characters: Dict[str, Any],
+        current_locations: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Chapter ingestion with world element consolidation"""
-        
-        char_context = json.dumps(char_details, indent=2) if char_details else "None"
-        world_context = json.dumps(world_details, indent=2) if world_details else "None"
 
-        system_prompt = f"""You are a Chapter Progression Tracker with INTELLIGENT location consolidation.
+        char_ctx = json.dumps(current_characters, indent=2) if current_characters else "None"
+        loc_ctx = json.dumps(current_locations, indent=2) if current_locations else "None"
 
-**MANDATORY RULES:**
-1. Every character and world element MUST have a "progression" list that includes ALL previous entries + one new entry:
-   "Act {act_id} Chapter {chapter_id}: [description of what changed or remained stable]"
+        system_prompt = f"""You are a Chapter Memory Consolidator.
 
-2. **WORLD ELEMENT CONSOLIDATION:**
-   - Merge similar/adjacent locations into broader areas when appropriate
-   - Track frequency: increment count for recurring locations
-   - Mark hierarchy_level: "broad" or "specific"
-   - Drop world elements that appeared once and had no significant impact
-   - Aim for 5-12 world elements per chapter (consolidate more if needed)
+MANDATORY:
+- Every character and location MUST have a "progression" list that includes ALL prior entries + ONE new entry tagged:
+  "Act {act_id} Chapter {chapter_id}: [summary of change/development in this chapter]"
 
-3. Everything else is flexible: Include only relevant fields.
-
-Previous state (build upon this exactly for progression lists):
+SMART CONSOLIDATION:
 Characters:
-{char_context}
+- Merge one-off nameless characters into archetypes if needed
+- Drop characters who appeared once and had zero impact
+- Increment frequency counters
 
-World Elements:
-{world_context}
+Locations:
+- Merge minor locations into broader areas
+- Drop one-off insignificant places
+- Prefer broad regions; keep specific ones only if recurring or pivotal
+- Target: 8–18 total locations by end of chapter
 
-Output valid JSON only. No markdown.
+Previous state (extend progression lists exactly):
+Characters:
+{char_ctx}
+
+Locations:
+{loc_ctx}
+
+Output valid JSON only.
 
 {ChapterBundle.model_json_schema()}"""
 
         human_prompt = f"""Act {act_id} - Chapter {chapter_id}
 
-Full Chapter Text:
-{current_chap_summary}
+Full chapter summary:
+{chapter_text}
 
-Generate cumulative chapter breakdown.
-**CONSOLIDATE world elements:** Merge minor locations into broader areas. Keep only significant ones.
-Preserve and extend all progression lists.
-Update frequency counts for recurring locations."""
+Update cumulative memory. Extend every progression list with a new "Act {act_id} Chapter {chapter_id}: ..." entry.
+Consolidate ruthlessly but intelligently — keep only what matters long-term."""
 
         resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
@@ -247,61 +229,55 @@ Update frequency counts for recurring locations."""
         gc.collect()
 
         try:
-            fixed_resp = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ChapterBundle)
-            return fixed_resp.model_dump()
-        except BaseException as e:
-            raise f"[Chapter Ingestor] Fixer failed: {e}"
+            parsed = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ChapterBundle)
+            return parsed.model_dump()
+        except Exception as e:
+            raise RuntimeError(f"[Chapter Ingestor] JSON fixing failed: {e}")
 
 
-
-
+    # ============================================================================
+    # ACT INGESTION – Final pruning, equal character/location treatment
+    # ============================================================================
     @staticmethod
     async def ingest_act(
         act_id: int,
-        chapters_text: str,
-        char_details: Dict[str, Any],
-        world_details: Dict[str, Any],
+        all_chapter_summaries: str,
+        final_characters: Dict[str, Any],
+        final_locations: Dict[str, Any],
     ) -> Optional[Dict[str, Any]]:
-        """Act ingestor with final world element pruning"""
-        
-        char_context = json.dumps(char_details, indent=2) if char_details else "None"
-        world_context = json.dumps(world_details, indent=2) if world_details else "None"
 
-        system_prompt = f"""You are an Act-Level Story Architect with STRATEGIC location curation.
+        char_ctx = json.dumps(final_characters, indent=2) if final_characters else "None"
+        loc_ctx = json.dumps(final_locations, indent=2) if final_locations else "None"
 
-**Critical Rules:**
-1. Every character and world element MUST have a "progression" list with:
-   - All prior act-level entries
-   - ONE new entry: "Act {act_id}: [major arc transformation across this act, referencing key chapters]"
+        system_prompt = f"""You are an Act-Level Story Architect.
 
-2. **WORLD ELEMENT PRUNING:**
-   - Keep ONLY locations that:
-     a) Appear in 3+ chapters, OR
-     b) Are central to act-level plot developments, OR
-     c) Have strong thematic significance
-   - Remove one-off or minor locations
-   - Prefer broad geographic areas over specific buildings
-   - Target: 8-15 world elements per act maximum
+RULES:
+1. Extend every progression list with exactly one new entry:
+   "Act {act_id}: [major arc transformation or stabilization across the entire act]"
 
-3. All other fields optional and adaptive.
+2. FINAL PRUNING (applied equally to characters and locations):
+   - Keep characters who appeared in 3+ chapters OR drive major plot/theming
+   - Keep locations that appeared in 3+ chapters OR are act-defining
+   - Remove one-off or peripheral entities
+   - Target: 12–25 characters and 10–20 locations max per act
 
-Previous Progressions (preserve and extend):
+Previous state (preserve and extend):
 Characters:
-{char_context}
+{char_ctx}
 
-World (prune and consolidate):
-{world_context}
+Locations:
+{loc_ctx}
 
 Output valid JSON only.
 
 {ActSummary.model_json_schema()}"""
 
-        human_prompt = f"""Act {act_id} - All Chapter Summaries:
-{chapters_text}
+        human_prompt = f"""Act {act_id} - Complete Act Content:
+{all_chapter_summaries}
 
-Synthesize into act-level summary with cumulative progressions.
-**PRUNE world elements:** Keep only truly significant locations.
-Extend progression lists with one new Act {act_id} entry per entity."""
+Synthesize act-level summary.
+Add one final progression entry per entity tagged with "Act {act_id}: ...".
+Prune aggressively but fairly — only enduring characters and locations survive."""
 
         resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
@@ -310,9 +286,9 @@ Extend progression lists with one new Act {act_id} entry per entity."""
         gc.collect()
 
         try:
-            fixed_resp = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ActSummary)
-            
-            return fixed_resp.model_dump()
-            
-        except BaseException as e:
-            raise f"[Act Ingestor] Fixer failed: {e}"
+            parsed = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ActSummary)
+            result = parsed.model_dump()
+            result["act_id"] = act_id
+            return result
+        except Exception as e:
+            raise RuntimeError(f"[Act Ingestor] JSON fixing failed: {e}")

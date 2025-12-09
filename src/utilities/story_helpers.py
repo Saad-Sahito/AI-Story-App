@@ -3,7 +3,7 @@
 import re
 import json
 from typing import Any, Dict, Tuple, Optional
-from src.llm_client.llm_client import ingestor_client, enhanced_ingestor_client
+from src.llm_client.llm_client import utility_client, enhanced_ingestor_client
 from json_repair import repair_json
 from pydantic import BaseModel
 
@@ -357,7 +357,7 @@ class StoryHelpers:
 CRITICAL RULES:
 - Output ONLY valid JSON. No explanations, no markdown, no extra text.
 - Fix syntax: missing commas, quotes, brackets, trailing commas
-- Preserve ALL existing data
+- Preserve ALL existing data (VERY IMPORTANT)
 - Do NOT add, remove, or rename any fields
 - Convert null/None/"null" in strings → ""
 - If a field is missing but required → you may NOT guess it
@@ -368,15 +368,17 @@ CRITICAL RULES:
 Fix the broken JSON below and return ONLY the corrected version.
 """
 
-        human_prompt = f"""Broken JSON to fix:
+        human_prompt = f"""{f"Error, please fix this:{str(exc)}" if exc else "Unknown parsing error"}
+
+
+Broken JSON to fix:
 {text}
 
-Last error (for context):
-{str(exc) if exc else "Unknown parsing error"}
+
 
 Return only the fixed JSON."""
         
-        client = enhanced_ingestor_client if enhanced else ingestor_client
+        client = enhanced_ingestor_client if enhanced else utility_client
         resp, _ = await client(system_prompt=system_prompt, human_prompt=human_prompt)
 
         content = StoryHelpers._extract_content(resp)

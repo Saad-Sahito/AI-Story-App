@@ -421,7 +421,7 @@ OUTPUT FORMAT (JSON):
 
 // Be creative! Add what makes each agent vivid and functional
 
-Create one agent per required role. Most should be individual characters unless the role explicitly describes a group/system.
+Create one agent per required role. MUST Include their gender. Most should be individual characters unless the role explicitly describes a group/system.
 Use protagonist specs if provided.
 Age-appropriate for: {seed.target_audience_age} year old audience.
 
@@ -504,7 +504,7 @@ OUTPUT FORMAT (JSON):
 
 Find ORGANIC connections between agents' existing psychology and the plot.
 Don't change their core nature - show how their desires naturally engage with conflicts.
-Prose style: {prose_style}
+MUST Include their gender. 
 
 Output clean JSON with no markdown fences."""
         
@@ -1062,39 +1062,39 @@ class StoryAuthor:
         self.memory = memory_system
         
         # Initialize component systems
-        self.world_builder = WorldBuilder(self._cached_author_llm_call)
+        self.world_builder = WorldBuilder(better_author_client)
         self.agent_genesis = AgentGenesis(author_fast_client)
-        self.conflict_architect = ConflictArchitect(self._cached_author_llm_call)
-        self.quality_controller = QualityController(self._cached_author_llm_call)
-        self.tracker_manager = StoryTrackerManager(self._cached_author_llm_call)
+        self.conflict_architect = ConflictArchitect(author_client)
+        self.quality_controller = QualityController(author_fast_client)
+        self.tracker_manager = StoryTrackerManager(author_fast_client)
         
         # LLM cache
         self.llm_cache = {}
     
-    async def _cached_author_llm_call(
-        self,
-        system_prompt: str,
-        human_prompt: str,
-        llm_temp: float,
-        model: str = "None"
-    ):
-        """Cached LLM wrapper"""
-        key = hashlib.md5(
-            (system_prompt + human_prompt + str(llm_temp) + model).encode()
-        ).hexdigest()
+    # async def _cached_author_llm_call(
+    #     self,
+    #     system_prompt: str,
+    #     human_prompt: str,
+    #     llm_temp: float,
+    #     model: str = "None"
+    # ):
+    #     """Cached LLM wrapper"""
+    #     key = hashlib.md5(
+    #         (system_prompt + human_prompt + str(llm_temp) + model).encode()
+    #     ).hexdigest()
         
-        if key in self.llm_cache:
-            return self.llm_cache[key], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+    #     if key in self.llm_cache:
+    #         return self.llm_cache[key], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
-        response, tokens = await author_client(
-            system_prompt=system_prompt,
-            human_prompt=human_prompt,
-            llm_temp=llm_temp,
-            model=model
-        )
+    #     response, tokens = await author_client(
+    #         system_prompt=system_prompt,
+    #         human_prompt=human_prompt,
+    #         llm_temp=llm_temp,
+    #         model=model
+    #     )
         
-        self.llm_cache[key] = response
-        return response, tokens
+    #     self.llm_cache[key] = response
+    #     return response, tokens
     
     def validate_act_count(self, act_count: int, structure_name: str) -> int:
         if structure_name == "Three Act Structure":
@@ -1137,10 +1137,10 @@ class StoryAuthor:
         word_count_map = {
             "Short Long Story (7,500 - 15,000 words)": 12000,
             "Novelette (15,000 - 25,000 words)": 20000,
-            "Novella (25,000 - 40,000 words)": 32000,
+            "Novella (25,000 - 40,000 words)": 35000,
             "Novel Chapter (40,000 - 60,000 words)": 50000,
-            "Full Novel (60,000 - 90,000 words)": 75000,
-            "Epic / Series (90,000 - 150,000+ words)": 120000
+            "Full Novel (60,000 - 90,000 words)": 80000,
+            "Epic / Series (90,000 - 150,000+ words)": 135000
         }
         
         target_length_str = user_context.get('Length', 'Novelette (15,000 - 25,000 words)')
@@ -1158,6 +1158,9 @@ class StoryAuthor:
             act_count = 3
         else:
             act_count = 5
+        if genres == []:
+            genres = ["Fiction"]
+        
         story_structure = find_best_structure_name(genres)
         act_count_validated = self.validate_act_count(act_count=act_count, structure_name=story_structure)
         act_count = act_count_validated
@@ -1433,7 +1436,7 @@ Be bold. Be specific. Make me care."""
 
         system_prompt = f"""
 You are a disciplined narrative generator.
-Expand this minimal plot outline into a FULL story blueprint (novel).
+Expand this minimal plot outline into a FULL story blueprint (for a story novel).
 You have full creative freedom within these boundaries, make it unique and compelling.
 Do not add content outside the requested JSON. 
 Use only information provided through variables.
@@ -1554,13 +1557,15 @@ ADDITIONAL FIELDS: Add whatever makes THIS story sing
 - Suspense architecture if tension is king
 - INVENT fields I haven't thought of
 
-MAINTAIN VOICE: {seed.prose_style}
+Generate the plot keeping the desired story length in mind. Make sure it is compatible with the target length.
+Target Length: {seed.target_length} words across {target_act_count} acts
+
 HONOR THEMES: {', '.join(seed.themes)}
 EARN EMOTION: Every beat must RESONATE
 
 Don't report—ENCHANT. Don't list—BEWITCH. 
 
-This is the story that will haunt them. Make it worthy."""
+This is the story that will make people be in awe. Make it worthy."""
 
         attempt = 0
         last_tokens = {}
@@ -1638,7 +1643,7 @@ Plot to check:
 
 Review and sanitize if needed."""
 
-        response, tokens = await self._cached_author_llm_call(
+        response, tokens = await author_fast_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.6,
@@ -1695,7 +1700,6 @@ REPLACE:
 Address specific concerns while maintaining story integrity.
 Only fix what's flagged, but be SPECIFIC and CONCRETE where you make changes.
 
-The story must have EXACTLY {act_count_target} acts in act_summaries. Adjust accordingly if act_summaries length is different.
 OUTPUT: Same JSON structure as input.
 Output clean JSON with no markdown fences."""
     
@@ -1705,6 +1709,7 @@ Output clean JSON with no markdown fences."""
 Quality Concerns (ADDRESS ALL):
 {json.dumps(quality_report.concerns, indent=2)}
 
+The story must have EXACTLY {act_count_target} acts in act_summaries. Adjust accordingly if act_summaries length is different.
 If suggestions include changes length of act_summaries or narrative flow, adjust accordingly. You may add or delete act_summaries from its list as needed.
 You have creative freedom to enhance the plot. If you feel its missing elements not mentioned in the report, improve them too.
 
@@ -1717,22 +1722,49 @@ World: {world.model_dump_json(indent=2)}
 Conflicts: {conflict_matrix.model_dump_json(indent=2)}
 
 Refine the plot with specific names, locations, and concrete events."""
-        
-        response, tokens = await author_fast_client(
-            system_prompt=system_prompt,
-            human_prompt=human_prompt,
-            llm_temp=0.75
-        )
+        max_retries = 4
+        attempt = 0
+        while attempt <= max_retries:
+            attempt += 1
+            print(f"\n📘 LLM Refined outline expansion attempt {attempt}/{max_retries + 1}")
 
-        clean_resp = StoryHelpers._extract_content(response)
-        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+            # --- LLM CALL ---
+            response, tokens = await better_author_client(
+                system_prompt=system_prompt,
+                human_prompt=human_prompt,
+                llm_temp=0.75,
+                model=model
+            )
+            last_tokens = tokens
 
-        json_data = await StoryHelpers.load_json_with_retry(
-            text=clean_resp,
-            parser=ExpandedPlotOutline
-        )
+            clean_resp = StoryHelpers._extract_content(response)
+            clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        return json_data, tokens
+            # --- Parse JSON output ---
+            try:
+                json_data: ExpandedPlotOutline = await StoryHelpers.load_json_with_retry(
+                    text=clean_resp,
+                    parser=ExpandedPlotOutline
+                )
+            except Exception as e:
+                print(f"⚠️ Parsing failed ({e}). Retrying...")
+                await asyncio.sleep(0.6 * attempt)
+                continue
+
+            # --- VALIDATION: ACT COUNT ---
+            generated_count = len(json_data.act_summaries)
+            print(f"→ Generated {generated_count} act summaries (target: {act_count_target})")
+
+            if generated_count == act_count_target:
+                print("✓ Accepted. Act summary count matches the target.")
+                return json_data, tokens
+
+            print(f"⚠️ Act count mismatch ({generated_count} != {act_count_target}). Retrying...")
+            await asyncio.sleep(0.8 * attempt)
+
+        # --- MAX RETRIES EXHAUSTED ---
+        print("🚨 Max retries exhausted. Returning last generated outline (mismatch unresolved).")
+        return json_data, last_tokens
     
     async def _create_story_tracker(
         self,
@@ -2180,6 +2212,7 @@ Flexible Structure Guidelines (Adapt as needed for creativity):
 - Anchors per chapter: {structure_config['anchors_per_chapter']} (vary for pacing variety)
 - Scenes per anchor: {structure_config['scenes_per_anchor']} (expand for complexity)
 - Words across all chapters: ~{target_act_word_count} (flexible for narrative flow)
+- Words per chapter: Should be decent, not too short or too long, prefer chapter count over chapter length
 
 ═══════════════════════════════════════════════════════════════════════════════
 ANCHOR POINT GUIDELINES (FLEXIBLE FOR CREATIVITY)
@@ -2281,6 +2314,9 @@ For each anchor, aim to:
 ☐ ESTIMATED_SCENES fits the beat's epic or intimate scale
 ☐ If multi-scene, SCENE_BREAKDOWN inspires dramatic arcs
 
+Generate the Act keeping the desired act word length in mind. Make sure it is compatible with the target length.
+Target Length: {suggested_words} words
+
 ═══════════════════════════════════════════════════════════════════════════════
 CREATIVE EXPECTATIONS (UNLEASH IMAGINATION)
 ═══════════════════════════════════════════════════════════════════════════════
@@ -2294,40 +2330,74 @@ Dream big:
 - Infuse world-building, subplots, and thematic echoes for richness"""
     
     @staticmethod
-    def calculate_chapter_structure(total_story_length: int) -> dict:
-        """Calculate optimal chapter/anchor structure"""
-        if total_story_length < 15000:
-            return {
-                # "words_per_chapter": 1800,
+    def calculate_chapter_structure(total_story_length: int, structure_name: str) -> dict:
+        """
+        Smart chapter structure:
+        - Base ranges from total word count (original logic)
+        - Adjusts min/max chapters based on narrative structure complexity
+        - Output format stays EXACTLY the same as before
+        """
+
+        # 1. BASE CHAPTER TIERS (original behaviour)
+        if total_story_length < 15_000:
+            base = {
                 "anchors_per_chapter": "1-2",
                 "scenes_per_anchor": 1,
                 "min_chapters": 2,
                 "max_chapters": 4
             }
-        elif total_story_length < 40000:
-            return {
-                # "words_per_chapter": 2500,
+        elif total_story_length < 40_000:
+            base = {
                 "anchors_per_chapter": "2-3",
                 "scenes_per_anchor": 1,
-                "min_chapters": 2,
-                "max_chapters": 5
-            }
-        elif total_story_length < 75000:
-            return {
-                # "words_per_chapter": 3000,
-                "anchors_per_chapter": "3-4",
-                "scenes_per_anchor": 1,
-                "min_chapters": 3,
+                "min_chapters": 4,
                 "max_chapters": 6
             }
+        elif total_story_length < 75_000:
+            base = {
+                "anchors_per_chapter": "3-4",
+                "scenes_per_anchor": 1,
+                "min_chapters": 6,
+                "max_chapters": 10
+            }
         else:
-            return {
-                # "words_per_chapter": 3500,
+            base = {
                 "anchors_per_chapter": "4-5",
                 "scenes_per_anchor": 2,
-                "min_chapters": 4,
-                "max_chapters": 8
+                "min_chapters": 8,
+                "max_chapters": 16
             }
+
+        # 2. STRUCTURE-BASED WEIGHTING
+        # More complex structures get more chapters
+        structure_complexity = {
+            "Three Act Structure": 1.0,          # simple, balanced
+            "Fichtean Curve": 1.0,               # still simple
+            "Save the Cat Beat Sheet": 1.1,      # midpoint & beats = slightly more
+            "Dan Harmon's Story Circle": 1.15,   # cycles & internal change = more
+            "Seven-Point Story Structure": 1.2,  # more plot points, expand slightly
+            "The Hero's Journey": 1.3,           # 12-step monomyth → needs space
+            "Freytag's Pyramid": 1.3             # exposition → climax → fall → denouement
+        }
+
+        factor = structure_complexity.get(structure_name, 1.0)
+
+        # 3. APPLY STRUCTURE WEIGHT TO CHAPTER RANGE
+        min_ch = round(base["min_chapters"] * factor)
+        max_ch = round(base["max_chapters"] * factor)
+
+        # hard limits (keep logic sane)
+        min_ch = max(1, min_ch)
+        max_ch = max(min_ch + 1, max_ch)
+
+        # 4. RETURN IN ORIGINAL FORMAT
+        return {
+            "anchors_per_chapter": base["anchors_per_chapter"],
+            "scenes_per_anchor": base["scenes_per_anchor"],
+            "min_chapters": min_ch,
+            "max_chapters": max_ch
+        }
+
         
     async def plan_act(
         self,
@@ -2404,7 +2474,8 @@ Dream big:
             suggested_word_count = int(remaining_words * word_percentage)
 
         structure_config = self.calculate_chapter_structure(
-            total_story_length=target_total
+            total_story_length=target_total,
+            structure_name=structure_name
         )
 
         # suggested_chapters = max(
@@ -2471,7 +2542,7 @@ Dream big:
             attempt += 1
             print(f"\n📘 Act Planning LLM Attempt {attempt}/{max_retries + 1}")
 
-            response, tokens = await self._cached_author_llm_call(
+            response, tokens = await better_author_client(
                 system_prompt=system_prompt,
                 human_prompt=human_prompt,
                 llm_temp=0.8,
@@ -2505,15 +2576,17 @@ Dream big:
                 continue
 
             # --- Validation #2: Non-zero word counts ---
-            zero_word_chapters = [
-                c.chapter_number for c in act_plan.chapter_outlines
-                if (c.target_word_count is None or c.target_word_count <= 0)
-            ]
+            missing = [c for c in act_plan.chapter_outlines if not c.target_word_count]
 
-            if zero_word_chapters:
-                print(f"⚠️ Chapters with zero target_word_count: {zero_word_chapters}. Retrying...")
-                await asyncio.sleep(0.8 * attempt)
-                continue
+            if missing:
+                per_chapter = suggested_word_count / len(act_plan.chapter_outlines)
+                for c in missing:
+                    c.target_word_count = per_chapter
+
+            # if zero_word_chapters:
+            #     print(f"⚠️ Chapters with zero target_word_count: {zero_word_chapters}. Retrying...")
+            #     await asyncio.sleep(0.8 * attempt)
+            #     continue
 
             # --- Passed all checks ---
             print("✓ Act validated. Correct chapter count + valid word counts.")

@@ -48,7 +48,7 @@ class AnthropicWrapper(BaseWrapper):
         self.usage_key = "usage"
 
     async def ainvoke(self, messages, temperature: float, model: str):
-        self.client = ChatAnthropic(model_name=model, temperature=temperature, api_key=self.api_key)
+        self.client = ChatAnthropic(model_name=model, temperature=temperature, api_key=self.api_key, max_tokens_to_sample=7000)
         return await self.client.ainvoke(messages)
 
     def get_token_usage(self, response) -> dict:
@@ -270,7 +270,7 @@ class LLMClient:
             response = await wrapper.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
-            ], temperature=0.8, model="llama-3.3-70b-versatile")
+            ], temperature=0.1, model="openai/gpt-oss-120b")
         token_usage = wrapper.get_token_usage(response)
                 # Validate token usage
         if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
@@ -290,7 +290,8 @@ class LLMClient:
             # model = "claude-sonnet-4-5-20250929"
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
-            model = "llama-3.3-70b-versatile"
+            model = "openai/gpt-oss-120b"
+            # model = "llama-3.3-70b-versatile"
             wrapper = GroqWrapper(self.groq_api_key)
             # model = "gemini-3-pro-preview"
             # wrapper = GoogleWrapper(self.google_api_key)
@@ -450,7 +451,7 @@ class LLMClient:
 
             # Delay for rate limiting safety
             await asyncio.sleep(2)
-
+            # print("WRTIER RESPONSE: ", response.content)
             return response, token_usage
         
         except Exception as e:
@@ -503,12 +504,13 @@ class LLMClient:
             response = await wrapper.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
-            ], temperature=0.1, model="openai/gpt-oss-120b")
+            ], temperature=0.4, model="openai/gpt-oss-120b")
         token_usage = wrapper.get_token_usage(response)
         # Validate token usage
         if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
             print(f"Warning: Invalid token usage values for model: {token_usage}")
         await asyncio.sleep(1)
+        # print("INGESTOR RESPONSE: ", response.content)
         return response, token_usage
 
 
@@ -523,7 +525,7 @@ class LLMClient:
             response = await wrapper.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
-            ], temperature=0.1, model="gpt-4o-2024-08-06")
+            ], temperature=0.4, model="gpt-4o-2024-08-06")
         token_usage = wrapper.get_token_usage(response)
         # Validate token usage
         if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):

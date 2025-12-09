@@ -5,10 +5,11 @@ import asyncio
 import gc
 import traceback
 import re
+from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Literal
 from langgraph.graph import StateGraph, END
 from dataclasses import dataclass, field
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 # from langchain_core.output_parsers import StringOutputParser
 from .shared_scene_planner import UserSceneContext
 from src.utilities.story_helpers import StoryHelpers
@@ -53,9 +54,9 @@ class SceneWriterDirective(BaseModel):
         description="What changes as result of this scene (characters, world, plot)"
     )
     
-    targets: Dict[str, Any] = Field(
+    targets: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
-        description="Optional: paragraph_count, dialogue_ratio, pov, etc."
+        description="paragraph_count, dialogue_ratio, pov, etc."
     )
     
     notes: str = Field(default="", description="Freeform notes from Director")
@@ -284,6 +285,7 @@ class DirectorGraph:
 
         self.compiled = self.graph.compile()
 
+        self.user_id = None
         self.llm_temp = 0.7
         self.act_title = ""
         self.min_age = 13
@@ -394,24 +396,33 @@ class DirectorGraph:
         system_prompt = f"""You are the Director — a merciless cinematic surgeon who turns story anchors into tight, filmable, irreversible scenes, no matter the genre or tone.
 
 YOUR NON-NEGOTIABLE LAWS (apply to every genre, every time)
+1. ONE DRAMATIC FUNCTION PER SCENE — FULL STOP  
+   If a previous scene in this chapter already did “prove the magic key works”, “trade an object for access”, “disable surveillance”, or “receive a new McGuffin”, you are FORBIDDEN to do it again.  
+   Invent a new function or merge with an existing scene. Repetition = instant death.
 
-1. MINIMAL INTERNAL STATES IN NARRATION
+2. MINIMAL INTERNAL STATES IN NARRATION
    Never name emotions, thoughts, or realisations. Never use physical clichés as shorthand for feeling.
    Emotion and thought ONLY exist when they erupt into observable behaviour, dialogue, or world reaction.
 
-2. THE PROTAGONIST (or current POV character) MUST HAVE AGENCY
+3. THE PROTAGONIST (or current POV character) MUST HAVE AGENCY
    In every scene containing the focal character, they MUST perform at least one deliberate, concrete action that creates a new fact in the world. No passive witnessing.
 
-3. NO REPETITION OF DRAMATIC FUNCTION
+4. EVERY SCENE MUST CREATE AT LEAST ONE IRREVERSIBLE CHANGE  
+   Something must break, burn, die, get pregnant, get broadcast, get tattooed, get sold, get publicly confessed — anything that cannot be undone by the end of the book, let alone the chapter.
+
+5. NO REPETITION OF DRAMATIC FUNCTION
    Never create two scenes in the same chapter that serve the same purpose 
    (“someone delivers bad news”, “someone tempts the hero”, “someone explains lore”, etc.).
 
-4. GENRE DICTATES FLAVOUR, NOT RULES
+6. GENRE DICTATES FLAVOUR, NOT RULES
    - In comedy: irreversible change can be a pie in the face that starts a food fight that gets someone fired.
    - In romance: it can be the first kiss that immediately gets interrupted by an ex walking in.
    - In cozy mystery: it can be knocking over a teacup that reveals a hidden letter.
    - In tragedy: it can be blood on the floor.
    The laws stay identical; only the texture changes.
+
+7. DIALOGUE MUST HAVE A WINNER AND A LOSER  
+   Every line is an attempt to dominate, seduce, blackmail, beg, or lie. Never neutral exposition.
 
 POSITIVE COMMANDMENTS (always)
 
@@ -425,6 +436,7 @@ OUTPUT RULES (unchanged schema)
 - story_events: 4–6 numbered, filmable beats of action or exact dialogue
 - emotional_arc: always phrased as observable shift (“Fidgeting with ring → Ring thrown into the fire”)
 - state_changes: must contain at least one bullet starting with “IRREVERSIBLE:” (funny or devastating, doesn’t matter)
+- must inlude gender with each agent mentioned under 'agents_in_scene'
 
 Total chapter word target: {total_chapter_words}
 
@@ -453,7 +465,7 @@ Full story context (never contradict):
 # - Character Positions: {json.dumps(anchor.get('character_positions', {}), indent=2)}
 # - Transition from previous: {anchor.get('transition_from_previous', 'N/A')}
 # - Required character states: {json.dumps(anchor.get('required_character_states', {}), indent=2)}
-            human_prompt = f"""Convert this anchor into {scenes_per_anchor} concrete, filmable scene(s).
+            human_prompt = f"""Convert this anchor into {scenes_per_anchor} concrete, executable scene(s) for a novel.
 ENTIRE CHAPTER ANCHOR POINTS (For Context Reference):
 {json.dumps(anchor_points, indent=2)}
 
@@ -499,10 +511,10 @@ This is your chance to elevate the material:
 - If it's rushed, break the moment into beats that breathe
 - If it's safe, find the surprising-yet-logical choice
 
-Ask yourself: "Could I film this scene with the details I've provided?"
+Ask yourself: "Could I write this scene with the details I've provided?"
 If not, add more concrete specificity.
 
-This is a text-based story not a movie or screenplay.
+This is a text-based novel not a movie or screenplay.
 
 No markdown. No code fences. No explanations. Just pure JSON.
 """
@@ -589,19 +601,22 @@ No markdown. No code fences. No explanations. Just pure JSON.
             
             if directive.scene_id != state.scene_id:
                 continue
+            # Check monthly word count
+            monthly_wc_data = await self.memory.get_monthly_word_count()
+            if monthly_wc_data.get('tier') == 1:
+                if monthly_wc_data.get('monthly_word_count') >= tier_1_monthly_words_limit:
+                    self.scene_chunk_callback({"type": "error", "message": "User monthly word count limit reached for tier 'free'"})
+                    raise
+            elif monthly_wc_data.get('tier') == 2:
+                if monthly_wc_data.get('monthly_word_count') >= tier_2_monthly_words_limit:
+                    self.scene_chunk_callback({"type": "error", "message": "User monthly word count limit reached for tier 'scribe'"})
+                    raise
+            del monthly_wc_data
+        
             scene_target_length: int = int(directive.target_word_count)
-            # print(directive)
             directive_text = ContextFormatter.format_any(directive)
-            # print(directive_text)
-            # NEW: Format complete directive for Scene Writer
-            # directive_for_writer = format_scene_directive_for_scene_writer(directive)
-            
-            # print(f"  Scene {state.scene_id}: {directive.scene_purpose}")
-            # print(f"  Events: {', '.join(directive.story_events[:2])}")
-            
-            # Pass FORMATTED directive (not raw JSON)
+
             prev_scene = await self.memory.get_story_cluster(chapter_id=state.current_chapter_id) if state.scene_id > 1 else ""
-            # print(prev_scene)
             if prev_scene != "":
                 prev_scene = prev_scene['text'][-1]
                 if prev_scene['type'] == 'text':
@@ -665,12 +680,21 @@ No markdown. No code fences. No explanations. Just pure JSON.
                 chapter_id=state.current_chapter_id,
                 scene_id=state.scene_id,
                 scene_text=scene_text,
-                chars=chars,
-                worlds=worlds
+                known_characters=chars,
+                known_locations=worlds
             )
 
             state.current_chapter_word_count += word_count
             state.story_word_count += word_count
+            await self.memory.add_post_scene_bundle(
+                    scene_bundle=scene_bundle or {},
+                    metadata={
+                        "chapter_id": state.current_chapter_id,
+                        "scene_id": state.scene_id,
+                        "story_title": state.story_title,
+                        "act_id": state.current_act_id
+                    }
+                )
 
             await self.memory.add_story_scene_cluster(
                 text=scene_cluster,
@@ -684,16 +708,7 @@ No markdown. No code fences. No explanations. Just pure JSON.
                 }
             )
             
-            await self.memory.add_post_scene_bundle(
-                scene_bundle=scene_bundle or {},
-                metadata={
-                    "chapter_id": state.current_chapter_id,
-                    "scene_id": state.scene_id,
-                    "story_title": state.story_title,
-                    "act_id": state.current_act_id
-                }
-            )
-
+           
             await self.memory.update_story_progress({
                 "latest_chapter_id": state.current_chapter_id,
                 "continue_scene_id": state.scene_id + 1,
@@ -703,6 +718,8 @@ No markdown. No code fences. No explanations. Just pure JSON.
             })
 
             state.scene_id += 1
+            self.scene_chunk_callback({"type": "saved", "message": "story saved"})
+
             gc.collect()
 
         state.next_action = "quality_validate_node"
@@ -725,9 +742,9 @@ No markdown. No code fences. No explanations. Just pure JSON.
         chapter_bundle = await Ingestor.ingest_chapter(
             act_id=state.current_act_id,
             chapter_id=state.current_chapter_id,
-            current_chap_summary=current_chap_summary,
-            char_details=char_details,
-            world_details=world_details
+            chapter_text=current_chap_summary,
+            current_characters=char_details,
+            current_locations=world_details
         )
 
         if chapter_bundle:
@@ -739,6 +756,22 @@ No markdown. No code fences. No explanations. Just pure JSON.
                     "act_id": state.current_act_id
                 }
             )
+
+            chapter_outlines = [
+                c for c in self.story_context.act_plan.get("chapter_outlines", []) 
+            ]
+            highest_chapter = 0
+            if chapter_outlines:
+                highest_chapter_dict = max(chapter_outlines, key=lambda c: c.get("chapter_number", 0))
+                highest_chapter = highest_chapter_dict.get("chapter_number")
+                # print(f"The highest chapter number found is: {highest_chapter}")
+            else:
+                highest_chapter = 0
+                print("The chapter_outlines list is empty or could not be found.")
+            
+            if state.current_chapter_id == highest_chapter:
+                self.scene_chunk_callback({"type": "act_complete", "message": "complete"})
+
             await self.memory.increment_chapter(word_count_delta=0, scene_id=1)
             state.current_chapter_id += 1
             state.scene_id = 1
@@ -763,10 +796,10 @@ No markdown. No code fences. No explanations. Just pure JSON.
     # ============================================================================
     # RUN
     # ============================================================================
-    async def run(self, scene_chunk_callback, stop_event: asyncio.Event | None = None):
+    async def run(self, scene_chunk_callback, user_id, stop_event: asyncio.Event | None = None):
         self.scene_chunk_callback = scene_chunk_callback
         self.stop_event = stop_event or asyncio.Event()
-
+        self.user_id = user_id
         try:
             progress = await self.memory.get_story_progress()
             if not progress:
@@ -819,218 +852,3 @@ No markdown. No code fences. No explanations. Just pure JSON.
         except:
             pass
         return default
-
-
-
-
- 
-#     async def scene_planner_node(self, state: StoryState) -> Dict:
-#         print(f"Scene Planner: Chapter {state.current_chapter_id}")
-
-#         # ─── CACHED DIRECTIVES? ─────────────────────────────────────────────────────
-#         cached = await self.memory.get_long_term_document(metadata={
-#             "type": "director_scene_directives",
-#             "act_id": state.current_act_id,
-#             "chapter_id": state.current_chapter_id,
-#             "story_title": state.story_title
-#         })
-#         if cached:
-#             print("Using cached scene directives")
-#             state.next_action = "generate_scenes"
-#             return state.__dict__
-
-#         # ─── NO anchorS → SKIP ───────────────────────────────────────────────────────
-#         anchor_points = getattr(self.story_context, "current_chapter_anchors", [])
-#         if not anchor_points:
-#             print("No anchor points found → skipping to generate_scenes")
-#             state.next_action = "generate_scenes"
-#             return state.__dict__
-
-#         total_chapter_words: int = self.story_context.chapter_word_count_target
-#         # ─── PARSER FOR FULL RICH DIRECTIVES ────────────────────────────────────────
-#         # We'll trick the parser: tell it to output DirectorOutput, but with scenes as SceneWriterDirective
-#         # This works because DirectorOutput.scenes is List[ConcreteSceneDirective], but we override instructions
-#         #rich_director_parser = PydanticOutputParser(pydantic_object=DirectorOutput)
-
-
-#         system_prompt = f"""You are the Director — a merciless cinematic surgeon who turns story anchors into tight, filmable, irreversible scenes, no matter the genre or tone.
-
-# YOUR NON-NEGOTIABLE LAWS (apply to every genre, every time)
-
-# 1. ZERO INTERNAL STATES IN NARRATION
-#    Never name emotions, thoughts, or realisations. Never use physical clichés as shorthand for feeling.
-#    Emotion and thought ONLY exist when they erupt into observable behaviour, dialogue, or world reaction.
-
-# 2. THE PROTAGONIST (or current POV character) MUST HAVE AGENCY
-#    In every scene containing the focal character, they MUST perform at least one deliberate, concrete action that creates a new fact in the world. No passive witnessing.
-
-# 3. EVERY SCENE ENDS WITH IRREVERSIBLE CHANGE
-#    When the scene cuts, at least one of these must now be true (scaled to genre):
-#    - Something is broken / built / stolen / revealed / signed / kissed / killed / confessed
-#    - A boundary has been crossed that cannot be uncrossed
-#    - A timer has started or expired
-#    - A relationship has visibly shifted (new closeness, new fracture, new secret shared)
-
-# 4. NO REPETITION OF DRAMATIC FUNCTION
-#    Never create two scenes in the same chapter that serve the same purpose 
-#    (“someone delivers bad news”, “someone tempts the hero”, “someone explains lore”, etc.).
-
-# 5. GENRE DICTATES FLAVOUR, NOT RULES
-#    - In comedy: irreversible change can be a pie in the face that starts a food fight that gets someone fired.
-#    - In romance: it can be the first kiss that immediately gets interrupted by an ex walking in.
-#    - In cozy mystery: it can be knocking over a teacup that reveals a hidden letter.
-#    - In tragedy: it can be blood on the floor.
-#    The laws stay identical; only the texture changes.
-
-# POSITIVE COMMANDMENTS (always)
-
-# - Use specific, tactile objects as turning points.
-# - Make the environment react to choices in real time (weather, lights, animals, technology, magic, social media notifications — whatever fits the genre).
-# - Dialogue must sound like people trying to win, seduce, survive, or lie — never like exposition.
-# - Heighten pressure appropriate to tone (a ticking bomb, an awkward silence, a phone about to vibrate, a cat about to knock over a vase).
-
-# OUTPUT RULES (unchanged schema)
-
-# - story_events: 4–6 numbered, filmable beats of action or exact dialogue
-# - emotional_arc: always phrased as observable shift (“Fidgeting with ring → Ring thrown into the fire”)
-# - state_changes: must contain at least one bullet starting with “IRREVERSIBLE:” (funny or devastating, doesn’t matter)
-
-# Total chapter word target: {total_chapter_words}
-
-# Full story context (never contradict):
-# {ContextFormatter.full_context(self.story_context)}
-
-# {director_parser.get_format_instructions()}
-# """
-
-#         all_rich_directives = []
-#         scene_id_counter = state.scene_id
-        
-#         total_anchors = len(anchor_points)
-
-#         for idx, anchor in enumerate(anchor_points, 1):
-#             print(f"  Planning anchor {idx}/{total_anchors}: {anchor.get('anchor_type', 'unknown')}")
-
-#             scenes_per_anchor: int = 1 if total_anchors >= 6 else 2
-#             words_per_scene = max(300, int(total_chapter_words / (scenes_per_anchor * total_anchors)))
-            
-#             print(f"  → Generating {scenes_per_anchor} scene(s) @ ~{words_per_scene} words each")
-
-#             human_prompt = f"""Convert this anchor into {scenes_per_anchor} concrete, filmable scene(s).
-
-# ANCHOR CONTEXT:
-# - Location: {anchor.get('location', 'Not specified')}
-# - Time: {anchor.get('time_context', 'Not specified')}
-# - Character Positions: {json.dumps(anchor.get('character_positions', {}), indent=2)}
-# - Transition from previous: {anchor.get('transition_from_previous', 'N/A')}
-# - Required character states: {json.dumps(anchor.get('required_character_states', {}), indent=2)}
-
-
-
-# ════════════════════════════════════════════════════════════════════════════════
-# ANCHOR TO DRAMATIZE
-# ════════════════════════════════════════════════════════════════════════════════
-
-# {json.dumps(anchor, indent=2)}
-
-# ════════════════════════════════════════════════════════════════════════════════
-# SCENE SPECIFICATIONS
-# ════════════════════════════════════════════════════════════════════════════════
-
-# Target word count per scene: {words_per_scene} words (±15% acceptable)
-
-# Story events requirements:
-# - 3-5 concrete, observable actions or lines of dialogue
-# - Each must be specific enough that a writer knows EXACTLY what to show
-# - If the anchor suggests emotion or thought, convert to: body language, objects, environmental reactions, or dialogue
-# - Order events for maximum dramatic impact (not necessarily chronological with anchor)
-
-# Context fields to populate:
-# - Include only fields relevant to THIS scene's genre/needs
-# - Prioritize: location, atmosphere, pacing, emotional_arc
-# - Add genre-specific fields as appropriate (clues, magic_effects, combat_details, romantic_tension, etc.)
-
-# Agent profiles:
-# - All five core fields are MANDATORY: role, objective, current_status, distinctive_voice, relationships
-# - Add optional fields that create dramatic specificity (hidden_agenda, physical_tells, secrets_kept, etc.)
-
-# State changes:
-# - What do characters LEARN (concrete facts, not feelings)?
-# - How do relationships SHIFT (observable behavioral changes)?
-# - What physical/world changes occur?
-
-# ════════════════════════════════════════════════════════════════════════════════
-# CREATIVE EXPECTATIONS
-# ════════════════════════════════════════════════════════════════════════════════
-
-# This is your chance to elevate the material:
-# - If the anchor is flat, add environmental pressure or obstacles
-# - If it's generic, find the specific detail that makes it memorable
-# - If it's rushed, break the moment into beats that breathe
-# - If it's safe, find the surprising-yet-logical choice
-
-# Ask yourself: "Could I film this scene with the details I've provided?"
-# If not, add more concrete specificity.
-
-# No markdown. No code fences. No explanations. Just pure JSON.
-# """
-
-#             try:
-#                 resp, tokens = await director_client(
-#                     system_prompt=system_prompt,
-#                     human_prompt=human_prompt,
-#                     llm_temp=self.llm_temp
-#                 )
-
-#                 self.director_token_usage["prompt_tokens"] += tokens["prompt_tokens"]
-#                 self.director_token_usage["completion_tokens"] += tokens["completion_tokens"]
-#                 self.director_token_usage["total_tokens"] += tokens["total_tokens"]
-
-#                 clean_resp = StoryHelpers._extract_content(resp)
-#                 clean_resp = StoryHelpers._strip_code_fences(clean_resp)
-
-#                 director_output: DirectorOutput = await StoryHelpers.load_json_with_retry(
-#                     text=clean_resp,
-#                     parser=director_parser
-#                 )
-
-#                 rich_scenes: List[dict] = director_output.scenes
-
-#                 for scene_dict in rich_scenes:
-#                     scene_dict = scene_dict.model_dump()
-#                     scene_dict.update({
-#                         "scene_id": scene_id_counter,
-#                         "chapter_id": state.current_chapter_id,
-#                         "act_id": state.current_act_id,
-#                         "target_word_count": words_per_scene
-#                     })
-
-#                     all_rich_directives.append(scene_dict)
-#                     scene_id_counter += 1
-
-#                 print(f"    → Generated {len(rich_scenes)} rich32 rich scenes")
-
-#             except Exception as e:
-#                 print(f"    anchor {idx} failed: {e}")
-#                 traceback.print_exc()
-#                 state.error_message = f"Rich scene planning failed on anchor {idx}: {e}"
-#                 state.next_action = "ERROR"
-#                 return state.__dict__
-
-#         # ─── PERSIST FINAL RICH DIRECTIVES ──────────────────────────────────────────
-#         await self.memory.update_story_progress({
-#                 "director_token_usage": self.director_token_usage
-#             })
-#         await self.memory.add_long_term_document(
-#             text=json.dumps(all_rich_directives, indent=2),
-#             metadata={
-#                 "type": "director_scene_directives",
-#                 "act_id": state.current_act_id,
-#                 "chapter_id": state.current_chapter_id,
-#                 "story_title": state.story_title
-#             }
-#         )
-
-#         print(f"Chapter {state.current_chapter_id}: {len(all_rich_directives)} FULL rich scene directives ready")
-#         state.next_action = "generate_scenes"
-#         return state.__dict__

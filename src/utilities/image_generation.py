@@ -18,9 +18,11 @@ async def generate_cover_image(blurb: str) -> str:
     Focus on mood, setting, color palette, and atmosphere. 
     
     The image should feel like a real book cover concept, artistic and marketable, with strong composition and emotional tone. 
-    Output should be in 1024x1024 resolution.\n\n{blurb}"""
+    Output should be in 1024x1024 resolution.\n\n{blurb}
+    
+    Do NOT include any text"""
 )
-#f"Do NOT include any text, titles, signatures, or images of an actual book. "
+#f", titles, signatures, or images of an actual book. "
         
         image_data = await image_client(image_prompt)
         image_data_base64 = base64.b64encode(image_data).decode('utf-8')

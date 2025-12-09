@@ -225,7 +225,6 @@ class QdrantStore:
             )
 
     
-    
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put_dict_replace_character(self, data: Dict[str, dict], metadata: Dict[str, Any] = None):
         client = await get_redis_client()
@@ -233,115 +232,91 @@ class QdrantStore:
             for name, info in data.items():
                 lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:character:{name}"
                 async with redis_lock(client=client, lock_key=lock_key):
-                    # --- 1️⃣ Find existing point ---
+
+                    # ---------------------- 1️⃣ FIND EXISTING POINT ----------------------
                     filter_conds = [
                         models.FieldCondition(key="character_name", match=models.MatchValue(value=name)),
                         models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                         models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                         models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
                     ]
+
                     search_results, _ = await self.client.scroll(
                         collection_name=self.collection,
                         scroll_filter=models.Filter(must=filter_conds),
                         limit=1,
                     )
+
                     point_id = search_results[0].id if search_results else str(uuid.uuid4())
 
-                    # --- 2️⃣ Prepare embedding text ---
-                    # Convert structured info into a text summary for embeddings
+                    # ---------------------- 2️⃣ EMBEDDING TEXT BUILDER ----------------------
                     def _build_embedding_text(info: Dict[str, Any]) -> str:
-                        """
-                        Ultra-smart, fully dynamic embedding text builder.
-                        - Every key → becomes a heading (Title Cased)
-                        - Every value → formatted cleanly (lists, dicts, strings)
-                        - Zero assumptions. 100% future-proof.
-                        - Perfect for vector search & retrieval
-                        """
                         if not info or not isinstance(info, dict):
-                            return "Name: Unknown Entity\nSummary: No data available"
+                            return "Name: Unknown\nSummary: No data available"
 
                         lines = []
 
-                        # Special: always put 'name' first if exists
-                        if "name" in info:
-                            name = str(info["name"]).strip() or "Unknown"
-                            lines.append(f"Name: {name}")
-                        
-                        # Process all fields dynamically
+                        # Always include name first
+                        char_name = info.get("name", name)
+                        lines.append(f"Name: {char_name}")
+
                         for raw_key, value in info.items():
-                            # Skip the name again if already added
                             if raw_key == "name":
                                 continue
-                                
-                            if value is None or value == "" or value == [] or value == {}:
-                                continue  # skip empty
+                            if value in (None, "", [], {}):
+                                continue
 
-                            # Clean and title-case the key
-                            key = raw_key.strip()
-                            if key.startswith("current_"):
-                                key = key.replace("current_", "", 1)
-                            key = key.replace("_", " ").strip()
-                            key = key.title()
-                            if key.endswith("s") and not key.endswith("ss"):  # rough plural fix
-                                key = key.rstrip("s") + "s"  # keep it plural but clean
+                            # Clean key
+                            key = raw_key.replace("current_", "").replace("_", " ").strip().title()
 
-                            # Format value intelligently
+                            # Format value
                             if isinstance(value, (list, tuple)):
-                                clean_items = [str(i).strip() for i in value if i and str(i).strip()]
-                                if clean_items:
-                                    formatted = ", ".join(clean_items)
-                                else:
-                                    continue  # skip empty lists
+                                value = ", ".join(str(v).strip() for v in value if v)
                             elif isinstance(value, dict):
-                                try:
-                                    formatted = json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # compact
-                                except:
-                                    formatted = "complex data"
+                                value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                             else:
-                                formatted = str(value).strip()
+                                value = str(value).strip()
 
-                            if formatted and formatted not in ["none", "null", "{}", "[]"]:
-                                lines.append(f"{key}: {formatted}")
+                            if value:
+                                lines.append(f"{key}: {value}")
 
-                        # Fallback if somehow empty
                         if len(lines) <= 1:
                             lines.append("Summary: No significant details available")
 
-                        return "\n".join(lines).strip()
-                
-                    embed_text = _build_embedding_text(info=info)
-                    # (
-                    #     f"Name: {info.get('name')}\n"
-                    #     f"Progression: {', '.join(info.get('progression', []))}\n"
-                    #     f"Summary: {info.get('current_summary', '')}\n"
-                    #     f"Traits: {', '.join(info.get('current_traits', []))}\n"
-                    #     f"Relationships: {json.dumps(info.get('current_relationships', {}))}\n"
-                    #     f"Emotional State: {info.get('current_emotional_state', '')}\n"
-                    #     f"Goals: {info.get('current_goals', '')}\n"
-                    #     f"Status: {info.get('current_status', '')}"
-                    # )
+                        return "\n".join(lines)
+
+                    embed_text = _build_embedding_text(info)
                     vec = await self._embed_text(embed_text)
 
-                    # --- 3️⃣ Create full payload ---
-                    payload = metadata.copy() if metadata else {}
-                    payload.update({
+                    # ---------------------- 3️⃣ HUMAN-READABLE VALUE ----------------------
+                    human_summary = (
+                        info.get("current_status")
+                        or info.get("current_role")
+                        or info.get("current_motivation")
+                        or f"Character: {name}"
+                    )
+
+                    # ---------------------- 4️⃣ BUILD PAYLOAD ----------------------
+                    payload = {
+                        **(metadata or {}),
                         "key": name,
-                        "value": info["current_summary"],  # human-readable search value
-                        "text": embed_text,        # full text used for vector embedding
+                        "value": human_summary,
+                        "text": embed_text,
                         "character_name": name,
-                        "structured_data": info,   # <-- full structured object here
+                        "structured_data": info,
                         "user_id": self.user_id,
                         "story_id": self.story_id,
                         "namespace": self.namespace,
-                        "type": "character"
-                    })
+                        "type": "character",
+                    }
 
-                    # --- 4️⃣ Upsert into Qdrant ---
+                    # ---------------------- 5️⃣ UPSERT ----------------------
                     await self.client.upsert(
                         collection_name=self.collection,
-                        points=[models.PointStruct(id=point_id, vector=vec, payload=payload)]
+                        points=[models.PointStruct(id=point_id, vector=vec, payload=payload)],
                     )
 
+            print("Characters added")
 
     @retry(stop=stop_after_attempt(3), wait=wait_exponential(multiplier=1, min=1, max=3))
     async def put_dict_replace_world(self, data: Dict[str, dict], metadata: Dict[str, Any] = None):
@@ -350,107 +325,86 @@ class QdrantStore:
             for name, info in data.items():
                 lock_key = f"lock:qdrant:{self.user_id}:{self.story_id}:{self.namespace}:world:{name}"
                 async with redis_lock(client=client, lock_key=lock_key):
+
+                    # ---------------------- 1️⃣ FIND EXISTING POINT ----------------------
                     filter_conds = [
                         models.FieldCondition(key="world_element", match=models.MatchValue(value=name)),
                         models.FieldCondition(key="user_id", match=models.MatchValue(value=self.user_id)),
                         models.FieldCondition(key="story_id", match=models.MatchValue(value=self.story_id)),
                         models.FieldCondition(key="namespace", match=models.MatchValue(value=self.namespace)),
                     ]
+
                     search_results, _ = await self.client.scroll(
                         collection_name=self.collection,
                         scroll_filter=models.Filter(must=filter_conds),
                         limit=1,
                     )
+
                     point_id = search_results[0].id if search_results else str(uuid.uuid4())
-                    
+
+                    # ---------------------- 2️⃣ EMBEDDING TEXT BUILDER ----------------------
                     def _build_embedding_text(info: Dict[str, Any]) -> str:
-                        """
-                        Ultra-smart, fully dynamic embedding text builder.
-                        - Every key → becomes a heading (Title Cased)
-                        - Every value → formatted cleanly (lists, dicts, strings)
-                        - Zero assumptions. 100% future-proof.
-                        - Perfect for vector search & retrieval
-                        """
                         if not info or not isinstance(info, dict):
-                            return "Name: Unknown Entity\nSummary: No data available"
+                            return "Name: Unknown\nSummary: No data available"
 
                         lines = []
 
-                        # Special: always put 'name' first if exists
-                        if "name" in info:
-                            name = str(info["name"]).strip() or "Unknown"
-                            lines.append(f"Name: {name}")
-                        
-                        # Process all fields dynamically
+                        # Include name first
+                        loc_name = info.get("name", name)
+                        lines.append(f"Name: {loc_name}")
+
                         for raw_key, value in info.items():
-                            # Skip the name again if already added
                             if raw_key == "name":
                                 continue
-                                
-                            if value is None or value == "" or value == [] or value == {}:
-                                continue  # skip empty
+                            if value in (None, "", [], {}):
+                                continue
 
-                            # Clean and title-case the key
-                            key = raw_key.strip()
-                            if key.startswith("current_"):
-                                key = key.replace("current_", "", 1)
-                            key = key.replace("_", " ").strip()
-                            key = key.title()
-                            if key.endswith("s") and not key.endswith("ss"):  # rough plural fix
-                                key = key.rstrip("s") + "s"  # keep it plural but clean
+                            key = raw_key.replace("current_", "").replace("_", " ").strip().title()
 
-                            # Format value intelligently
                             if isinstance(value, (list, tuple)):
-                                clean_items = [str(i).strip() for i in value if i and str(i).strip()]
-                                if clean_items:
-                                    formatted = ", ".join(clean_items)
-                                else:
-                                    continue  # skip empty lists
+                                value = ", ".join(str(v).strip() for v in value if v)
                             elif isinstance(value, dict):
-                                try:
-                                    formatted = json.dumps(value, ensure_ascii=False, separators=(",", ":"))  # compact
-                                except:
-                                    formatted = "complex data"
+                                value = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
                             else:
-                                formatted = str(value).strip()
+                                value = str(value).strip()
 
-                            if formatted and formatted not in ["none", "null", "{}", "[]"]:
-                                lines.append(f"{key}: {formatted}")
+                            if value:
+                                lines.append(f"{key}: {value}")
 
-                        # Fallback if somehow empty
                         if len(lines) <= 1:
                             lines.append("Summary: No significant details available")
 
-                        return "\n".join(lines).strip()
-                
-                    embed_text = _build_embedding_text(info=info)
-                    # embed_text = (
-                    #     f"Name: {info.get('name')}\n"
-                    #     f"Progression: {', '.join(info.get('progression', []))}\n"
-                    #     f"Summary: {info.get('current_summary', '')}\n"
-                    #     f"Atmosphere: {info.get('current_atmosphere', '')}\n"
-                    #     f"Culture: {info.get('current_culture', '')}\n"
-                    #     f"Events: {info.get('current_events', '')}\n"
-                    #     f"Connections: {json.dumps(info.get('current_connections', {}))}"
-                    # )
+                        return "\n".join(lines)
+
+                    embed_text = _build_embedding_text(info)
                     vec = await self._embed_text(embed_text)
 
-                    payload = metadata.copy() if metadata else {}
-                    payload.update({
+                    # ---------------------- 3️⃣ HUMAN-READABLE VALUE ----------------------
+                    human_summary = (
+                        info.get("current_state")
+                        or info.get("current_atmosphere")
+                        or info.get("thematic_role")
+                        or f"Location: {name}"
+                    )
+
+                    # ---------------------- 4️⃣ PAYLOAD ----------------------
+                    payload = {
+                        **(metadata or {}),
                         "key": name,
-                        "value": info["current_summary"],
+                        "value": human_summary,
                         "text": embed_text,
                         "world_element": name,
                         "structured_data": info,
                         "user_id": self.user_id,
                         "story_id": self.story_id,
                         "namespace": self.namespace,
-                        "type": "world"
-                    })
+                        "type": "world",
+                    }
 
+                    # ---------------------- 5️⃣ UPSERT ----------------------
                     await self.client.upsert(
                         collection_name=self.collection,
-                        points=[models.PointStruct(id=point_id, vector=vec, payload=payload)]
+                        points=[models.PointStruct(id=point_id, vector=vec, payload=payload)],
                     )
 
     # ---------- Search ----------

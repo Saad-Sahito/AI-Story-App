@@ -75,7 +75,9 @@ class SQLiteStore:
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    prev_names TEXT,
                     details TEXT,
+                    significance TEXT,
                     chapter_id INTEGER NOT NULL,
                     act_id INTEGER NOT NULL,
                     scene_id INTEGER NOT NULL,
@@ -91,7 +93,9 @@ class SQLiteStore:
                     user_id TEXT NOT NULL,
                     story_id TEXT NOT NULL,
                     name TEXT NOT NULL,
+                    prev_names TEXT,
                     details TEXT,
+                    significance TEXT,
                     chapter_id INTEGER NOT NULL,
                     act_id INTEGER NOT NULL,
                     scene_id INTEGER NOT NULL,
@@ -799,100 +803,165 @@ class SQLiteStore:
 
     async def put_characters_or_world(self, details_dict: Dict[str, Any], metadata: Dict[str, Any]):
         async with self._get_connection() as conn:
+            act_id = metadata.get("act_id", 0)
+            chapter_id = metadata.get("chapter_id", 0)
+            scene_id = metadata.get("scene_id", 0)
+
             for _, entry in details_dict.items():
-                old_name = entry.get("old_name")
-                new_name = entry.get("new_name")
-                details = entry.get("details", "")
+                # Support both 'name'/'new_name' and 'previous_names'/'prev_names'
+                raw_new_name = entry.get("new_name") or entry.get("name")
+                raw_prev_names = entry.get("prev_names") or entry.get("previous_names") or []
+                new_details = str(entry.get("details", "")).strip()
+                new_significance = str(entry.get("significance", "")).strip()
 
-                act_id = metadata.get("act_id", 0)
-                chapter_id = metadata.get("chapter_id", 0)
-                scene_id = metadata.get("scene_id", 0)
+                if not raw_new_name and not new_details:
+                    continue
 
-                # --- Case 1: Renamed ---
-                if old_name != new_name:
-                    # Fetch old details (if any)
-                    cursor = await conn.execute(
-                        f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
-                        (self.user_id, self.story_id, old_name)
-                    )
-                    old_row = await cursor.fetchone()
-                    old_details = old_row['details'] if old_row else ""
+                new_name = str(raw_new_name).strip() if raw_new_name else ""
+                if not new_name:
+                    continue
 
-                    # Fetch new details (if already exists)
-                    cursor = await conn.execute(
-                        f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
-                        (self.user_id, self.story_id, new_name)
-                    )
-                    new_row = await cursor.fetchone()
-                    existing_new_details = new_row['details'] if new_row else ""
+                # Normalize prev_names → comma-separated string
+                prev_names_str = ",".join([n.strip() for n in raw_prev_names if n and str(n).strip()]) if raw_prev_names else ""
 
-                    # Merge all three sources
-                    merged_details = " ".join(
-                        part.strip() for part in [old_details, existing_new_details, details] if part
-                    )
+                # ── Step 1: Try to find if this name already exists as current name ──
+                row = await (await conn.execute(
+                    f"SELECT name, prev_names, details, significance FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
+                    (self.user_id, self.story_id, new_name)
+                )).fetchone()
 
-                    # Delete old record (rename migration)
-                    await conn.execute(
-                        f"DELETE FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
-                        (self.user_id, self.story_id, old_name)
-                    )
+                if row:
+                    # Case A: Name already exists → append details + significance + update prev_names
+                    current_prev = row[1] or ""
+                    current_details = row[2] or ""
+                    current_significance = row[3] or ""
 
-                    # Upsert merged under new name
+                    # Append new details
+                    merged_details = " ".join([s for s in [current_details, new_details] if s]).strip()
+                    
+                    # Append new significance
+                    merged_significance = " ".join([s for s in [current_significance, new_significance] if s]).strip()
+
+                    # Merge prev_names (avoid duplicates)
+                    existing_prev = {p.strip() for p in current_prev.split(",") if p.strip()}
+                    new_prev = {p.strip() for p in prev_names_str.split(",") if p.strip()}
+                    all_prev = existing_prev.union(new_prev)
+                    if new_name in all_prev:
+                        all_prev.remove(new_name)
+                    final_prev_names = ",".join(sorted(all_prev)) if all_prev else ""
+
                     await conn.execute(f"""
-                        INSERT INTO {self.table} 
-                        (user_id, story_id, name, details, act_id, chapter_id, scene_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(user_id, story_id, name) DO UPDATE SET
-                            details = excluded.details,
-                            act_id = excluded.act_id,
-                            chapter_id = excluded.chapter_id,
-                            scene_id = excluded.scene_id,
+                        UPDATE {self.table} SET
+                            prev_names = ?,
+                            details = ?,
+                            significance = ?,
+                            act_id = ?,
+                            chapter_id = ?,
+                            scene_id = ?,
                             updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND story_id = ? AND name = ?
                     """, (
-                        self.user_id,
-                        self.story_id,
-                        new_name,
+                        final_prev_names,
                         merged_details,
-                        act_id,
-                        chapter_id,
-                        scene_id
+                        merged_significance,
+                        act_id, chapter_id, scene_id,
+                        self.user_id, self.story_id, new_name
                     ))
+                    continue
 
-                # --- Case 2: Same name, just append ---
-                else:
-                    cursor = await conn.execute(
-                        f"SELECT details FROM {self.table} WHERE user_id = ? AND story_id = ? AND name = ?",
-                        (self.user_id, self.story_id, new_name)
-                    )
-                    row = await cursor.fetchone()
-                    old_details = row['details'] if row else ""
+                # ── Step 2: Check if new_name exists in anyone's prev_names → promote it ──
+                cursor = await conn.execute(f"""
+                    SELECT name, prev_names, details, significance FROM {self.table}
+                    WHERE user_id = ? AND story_id = ? AND prev_names LIKE ?
+                """, (self.user_id, self.story_id, f"%,{new_name},%"))
 
-                    new_details = " ".join(
-                        part.strip() for part in [old_details, details] if part
-                    )
+                # Also check edges: starts with, ends with, or exact
+                cursor2 = await conn.execute(f"""
+                    SELECT name, prev_names, details, significance FROM {self.table}
+                    WHERE user_id = ? AND story_id = ?
+                    AND (prev_names = ? OR prev_names LIKE ? OR prev_names LIKE ?)
+                """, (
+                    self.user_id, self.story_id,
+                    new_name,
+                    f"{new_name},%",
+                    f"%,{new_name}"
+                ))
+                
+                # Combine results
+                candidate = await cursor.fetchone()
+                if not candidate:
+                    candidate = await cursor2.fetchone()
 
+                if candidate:
+                    old_current_name, old_prev_names_str, old_details, old_significance = candidate
+                    old_details = old_details or ""
+                    old_significance = old_significance or ""
+
+                    # Merge details and significance
+                    merged_details = " ".join([s for s in [old_details, new_details] if s]).strip()
+                    merged_significance = " ".join([s for s in [old_significance, new_significance] if s]).strip()
+
+                    # Update prev_names: add old current name to prev, set new_name as current
+                    prev_set = {p.strip() for p in (old_prev_names_str or "").split(",") if p.strip()}
+                    if old_current_name:
+                        prev_set.add(old_current_name.strip())
+                    if new_name in prev_set:
+                        prev_set.remove(new_name)
+
+                    # Merge incoming prev_names
+                    if prev_names_str:
+                        incoming_prev = {p.strip() for p in prev_names_str.split(",") if p.strip()}
+                        prev_set = prev_set.union(incoming_prev)
+                    
+                    final_prev_names = ",".join(sorted(prev_set)) if prev_set else ""
+
+                    # Promote: change name to new_name
                     await conn.execute(f"""
-                        INSERT INTO {self.table} 
-                        (user_id, story_id, name, details, act_id, chapter_id, scene_id)
-                        VALUES (?, ?, ?, ?, ?, ?, ?)
-                        ON CONFLICT(user_id, story_id, name) DO UPDATE SET
-                            details = excluded.details,
-                            act_id = excluded.act_id,
-                            chapter_id = excluded.chapter_id,
-                            scene_id = excluded.scene_id,
+                        UPDATE {self.table} SET
+                            name = ?,
+                            prev_names = ?,
+                            details = ?,
+                            significance = ?,
+                            act_id = ?,
+                            chapter_id = ?,
+                            scene_id = ?,
                             updated_at = CURRENT_TIMESTAMP
+                        WHERE user_id = ? AND story_id = ? AND name = ?
                     """, (
-                        self.user_id,
-                        self.story_id,
                         new_name,
-                        new_details,
-                        act_id,
-                        chapter_id,
-                        scene_id
+                        final_prev_names,
+                        merged_details,
+                        merged_significance,
+                        act_id, chapter_id, scene_id,
+                        self.user_id, self.story_id, old_current_name
                     ))
+                    continue
+
+                # ── Step 3: Completely new name → insert fresh ──
+                final_prev_names = prev_names_str
+                if final_prev_names and new_name in {p.strip() for p in final_prev_names.split(",")}:
+                    prev_parts = [p.strip() for p in final_prev_names.split(",") if p.strip() != new_name]
+                    final_prev_names = ",".join(prev_parts)
+
+                await conn.execute(f"""
+                    INSERT INTO {self.table}
+                        (user_id, story_id, name, prev_names, details, significance, act_id, chapter_id, scene_id)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(user_id, story_id, name) DO UPDATE SET
+                        prev_names = excluded.prev_names,
+                        details = trim({self.table}.details || ' ' || excluded.details),
+                        significance = trim({self.table}.significance || ' ' || excluded.significance),
+                        act_id = excluded.act_id,
+                        chapter_id = excluded.chapter_id,
+                        scene_id = excluded.scene_id,
+                        updated_at = CURRENT_TIMESTAMP
+                """, (
+                    self.user_id, self.story_id, new_name,
+                    final_prev_names, new_details or "", new_significance or "",
+                    act_id, chapter_id, scene_id
+                ))
 
             await conn.commit()
-
 
 
     async def get_text(self, chapter_id: str) -> Dict[str, Any]:
@@ -1305,7 +1374,7 @@ class SQLiteStore:
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"""
-                SELECT name, details, act_id, chapter_id, scene_id
+                SELECT name, prev_names, details, significance, act_id, chapter_id, scene_id
                 FROM {self.table}
                 WHERE user_id = ? AND story_id = ? AND name = ?
                 """,
@@ -1316,7 +1385,9 @@ class SQLiteStore:
             if row:
                 return {
                     "name": row["name"],
-                    "details": row["details"],
+                    "previous_names": row["prev_names"],
+                    "details": row["details"][:500],
+                    "significance": row["significance"][:500],
                     "act_id": row["act_id"],
                     "chapter_id": row["chapter_id"],
                     "scene_id": row["scene_id"]
@@ -1328,7 +1399,7 @@ class SQLiteStore:
         async with self._get_connection() as conn:
             cursor = await conn.execute(
                 f"""
-                SELECT name, details
+                SELECT name, details, significance
                 FROM {self.table}
                 WHERE user_id = ? AND story_id = ? AND chapter_id = ?
                 """,
@@ -1337,17 +1408,17 @@ class SQLiteStore:
             rows = await cursor.fetchall()
 
             # Return dictionary mapping name → details
-            return {row["name"]: row["details"] for row in rows} if rows else {}
+            return {row["name"]: "Detailes: " + row["details"][:500] + "\nSignificance: " + row["significance"] for row in rows} if rows else {}
 
 
     async def get_all_characters_or_worlds(self) -> Dict[str, Any]:
         async with self._get_connection() as conn:
             cursor = await conn.execute(
-                f"SELECT name, details FROM {self.table} WHERE user_id = ? AND story_id = ?",
+                f"SELECT name, details, significance FROM {self.table} WHERE user_id = ? AND story_id = ?",
                 (self.user_id, self.story_id)
             )
             rows = await cursor.fetchall()
-            return {row["name"]: row["details"] for row in rows}
+            return {row["name"]: "Detailes: " + row["details"][:500] + "\nSignificance: " + row["significance"] for row in rows} if rows else {}
     
     async def get_all_character_or_world_names(self) -> List[str]:
         async with self._get_connection() as conn:

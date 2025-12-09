@@ -876,8 +876,11 @@ def find_best_structure_name(input_genres: list[str]) -> str:
     if not 1 <= len(input_genres) <= 3:
         raise ValueError("Input must be 1-3 genres.")
     
+    
     # Validate genres
     for genre in input_genres:
+        if genre == "Fiction":
+            return "Three Act Structure"
         if genre not in VALID_GENRES:
             raise ValueError(f"Invalid genre: {genre}")
     

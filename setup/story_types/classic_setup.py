@@ -631,8 +631,7 @@ class ClassicStorySetup:
             }
         
         # Initialize author for act management
-        from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
-        story_author = StoryAuthor(memory_system=memory_system)
+ 
         
         try:
             # Check if we need to transition to next act
@@ -684,76 +683,17 @@ class ClassicStorySetup:
                         
                         #if completion_check['next_action'] == 'START_NEXT_ACT':
                         if current_act < total_acts:
-                            text = await memory_system.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=latest_chapter-1)
-                            combined_text = '\n'.join(text)
-                            world_details = await memory_system.get_all_episodic_characters()
-                            char_details = await memory_system.get_all_episodic_world_elements()
-                            ingested = await Ingestor.ingest_act(
-                                act_id=current_act, 
-                                chapters_text=combined_text, 
-                                char_details=char_details, 
-                                world_details=world_details
-                                )
-                            if ingested == "failed":
-                                print("Act Ingestion failed.")
-                                return {
-                                    "status": "error",
-                                    "message": f"Act ingestion failed, for act {current_act}",
-                                    "current_act_id": current_act
-                                }
-                            else:
-                                await memory_system.add_post_act_bundle(
-                                    act_bundle=ingested,
-                                    metadata={
-                                        "act_id": current_act,
-                                        "story_title": story_title,
-                                        "type": "act summary"
-                                    }
-                                )
-                            # Plan next act
-                            next_act = current_act + 1
-                            print(f"🎬 Transitioning to Act {next_act}")
                             
-                            act_plan, tokens = await story_author.plan_act(
-                                story_title=story_title,
-                                act_number=next_act
-                            )
-                            
-                            # Update progress with new act
-                            await memory_system.increment_act(new_act_number=next_act)
-
-                            def _parse_tokens(value):
-                                default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-                                if not value:
-                                    return default
-                                try:
-                                    parsed = json.loads(value) if isinstance(value, str) else value
-                                    if isinstance(parsed, dict) and all(k in parsed for k in default):
-                                        return parsed
-                                except:
-                                    pass
-                                return default
-                            
-                            # Update token usage
-                            author_tokens = _parse_tokens(progress.get("author_token_usage"))
-                            if isinstance(author_tokens, dict):
-                                author_tokens["prompt_tokens"] = tokens["prompt_tokens"] + author_tokens["prompt_tokens"]
-                                author_tokens["completion_tokens"] = tokens["completion_tokens"] + author_tokens["completion_tokens"]
-                                author_tokens["total_tokens"] = tokens["total_tokens"] + author_tokens["total_tokens"]
-
-                            await memory_system.update_story_progress(
-                                metadata={"author_token_usage": author_tokens}
-                            )
                             
                             return {
                                 "status": "act_transition",
-                                "current_act_id": next_act,
-                                "total_acts": total_acts,
-                                "act_title": act_plan.act_title,
-                                "chapter_count": len(act_plan.chapter_outlines),
-                                "message": f"Started Act {next_act}: {act_plan.act_title}",
-                                "tokens_used": tokens,
-                                "progress_percentage": int(act_percentage * 100),
+                                # "current_act_id": next_act,
+                                # "total_acts": total_acts,
+                                # "act_title": act_plan.act_title,
+                                # "chapter_count": len(act_plan.chapter_outlines),
+                                # "message": f"Started Act {next_act}: {act_plan.act_title}",
+                                # "tokens_used": tokens,
+                                # "progress_percentage": int(act_percentage * 100),
                             }
                         else:
                             # All acts complete
@@ -801,9 +741,101 @@ class ClassicStorySetup:
                 "progress_percentage": int(act_percentage * 100),
                 "message": f"Continuing Act {current_act}"
             }
+        except:
+            pass
+
+    async def transition_act(self, user_id: str, story_id: str):
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=403, detail="Invalid user ID")
         
-        finally:
-            del story_author
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=405, detail="Invalid story ID")
+        
+        memory_system = story_data['memory_system']
+        progress = await memory_system.get_story_progress()
+        
+        if not progress:
+            print("❌ No story progress found")
+            return {
+                "status": "error",
+                "message": "No story progress found"
+            }
+        
+        #metadata = progress.get('metadata', {})
+        story_title = progress.get('story_title', 'Untitled Story')
+        current_act = progress.get('current_act_id', 1)
+        # total_acts = progress.get('total_acts', 3)
+        # is_complete = progress.get('complete', False)
+        # target_length = progress.get('target_length', 50000)
+        # current_word_count = progress.get('story_word_count', 0)
+        latest_chapter = progress.get('latest_chapter_id', 1)
+        
+        # act_percentage = current_word_count / target_length if target_length > 0 else 0
+        from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
+        story_author = StoryAuthor(memory_system=memory_system)
+        text = await memory_system.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=latest_chapter-1)
+        combined_text = '\n'.join(text)
+        world_details = await memory_system.get_all_episodic_characters()
+        char_details = await memory_system.get_all_episodic_world_elements()
+        ingested = await Ingestor.ingest_act(
+            act_id=current_act, 
+            all_chapter_summaries=combined_text, 
+            final_characters=char_details, 
+            final_locations=world_details
+            )
+        if ingested == "failed":
+            print("Act Ingestion failed.")
+            return {
+                "status": "error",
+                "message": f"Act ingestion failed, for act {current_act}",
+                "current_act_id": current_act
+            }
+        else:
+            await memory_system.add_post_act_bundle(
+                act_bundle=ingested,
+                metadata={
+                    "act_id": current_act,
+                    "story_title": story_title,
+                    "type": "act summary"
+                }
+            )
+        # Plan next act
+        next_act = current_act + 1
+        print(f"🎬 Transitioning to Act {next_act}")
+        
+        _, tokens = await story_author.plan_act(
+            story_title=story_title,
+            act_number=next_act
+        )
+        
+        # Update progress with new act
+        await memory_system.increment_act(new_act_number=next_act)
+
+        def _parse_tokens(value):
+            default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            if not value:
+                return default
+            try:
+                parsed = json.loads(value) if isinstance(value, str) else value
+                if isinstance(parsed, dict) and all(k in parsed for k in default):
+                    return parsed
+            except:
+                pass
+            return default
+        
+        # Update token usage
+        author_tokens = _parse_tokens(progress.get("author_token_usage"))
+        if isinstance(author_tokens, dict):
+            author_tokens["prompt_tokens"] = tokens["prompt_tokens"] + author_tokens["prompt_tokens"]
+            author_tokens["completion_tokens"] = tokens["completion_tokens"] + author_tokens["completion_tokens"]
+            author_tokens["total_tokens"] = tokens["total_tokens"] + author_tokens["total_tokens"]
+
+        await memory_system.update_story_progress(
+            metadata={"author_token_usage": author_tokens}
+        )
+
 
     async def handle_story_websocket(self, websocket: WebSocket, user_id: str, story_id: str):
         """
@@ -929,16 +961,17 @@ class ClassicStorySetup:
                     # New act started - inform user
                     await websocket.send_json({
                         "type": "act_transition",
-                        "message": act_status.get('message'),
-                        "current_act_id": act_status.get('current_act_id'),
-                        "total_acts": act_status.get('total_acts'),
-                        "act_title": act_status.get('act_title'),
-                        "chapter_count": act_status.get('chapter_count'),
-                        "progress_percentage": act_status.get('progress_percentage', 0),
+                        "message":"transitioning",
+                        # "current_act_id": act_status.get('current_act_id'),
+                        # "total_acts": act_status.get('total_acts'),
+                        # "act_title": act_status.get('act_title'),
+                        # "chapter_count": act_status.get('chapter_count'),
+                        # "progress_percentage": act_status.get('progress_percentage', 0),
 
                         #"tokens_used": act_status.get('tokens_used', 0)
                     })
-                    print(f"✅ {act_status['message']}")
+                    await self.transition_act(user_id=user_id, story_id=story_id)
+                    # print(f"✅ {act_status['message']}")
                 
                 elif act_status['status'] == 'continue_act':
                     # Continue current act
@@ -1050,7 +1083,8 @@ class ClassicStorySetup:
                 try:
                     await story_data["director"].run(
                         scene_chunk_callback=scene_chunk_callback,
-                        stop_event=disconnect_event
+                        stop_event=disconnect_event,
+                        user_id=user_id
                     )
                     #await queue.put({"chapter_complete": True})
                 except Exception as e:

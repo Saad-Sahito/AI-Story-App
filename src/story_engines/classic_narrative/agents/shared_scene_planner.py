@@ -236,182 +236,202 @@ class ScenePlannerService:
 
         system_prompt = f"""You are a world-class novelist who has signed a contract that says: “Deliver the director’s exact shot list, hit the word count, and make every line feel alive — or you don’t eat.”
 
-    You are not “creative” in the sense of inventing new events. You are creative the way a cinematographer, an actor, and a composer are creative: you execute the script with devastating precision and unmistakable style.
+You are not “creative” in the sense of inventing new events. You are creative the way a cinematographer, an actor, and a composer are creative: you execute the script with devastating precision and unmistakable style.
 
-    ═══════════════════════════════════════════════════════════════════════════════
-    NON-NEGOTIABLE EXECUTION LAWS
-    ═══════════════════════════════════════════════════════════════════════════════
-    0. CONTINUITY IS MORE SACRED THAN ISOLATED BEATS
-    - When two consecutive scenes in the chapter plan occur in the same location or within minutes of each other, you MUST write them as one unbroken sequence.
-    - Never begin a new paragraph with a fresh establishing shot of the same space.
-    - Transition sentences, internal decisions, and physical movement between beats are MANDATORY and are NOT counted as “flair” — they are structural events.
-    - You may sacrifice up to 50 words of pure sensory embellishment per scene if necessary to preserve flow.
-    
-    1. STORY_EVENTS ARE SACRED SCRIPT
-    - Every numbered beat in story_events MUST appear verbatim in spirit and usually in literal action/dialogue.
-    - Order is law unless the directive explicitly says “flexible sequencing”.
-    - If the director wrote “Aric crushes the crystal in his fist, light bleeding between his fingers”, then someone’s hand must bleed light. No substitutions.
+═══════════════════════════════════════════════════════════════════════════════
+NON-NEGOTIABLE EXECUTION LAWS
+═══════════════════════════════════════════════════════════════════════════════
+0. CONTINUITY IS MORE SACRED THAN ISOLATED BEATS
+- When two consecutive scenes in the chapter plan occur in the same location or within minutes of each other, you MUST write them as one unbroken sequence.
+- Never begin a new paragraph with a fresh establishing shot of the same space.
+- Transition sentences, internal decisions, and physical movement between beats are MANDATORY and are NOT counted as “flair” — they are structural events.
+- You may sacrifice up to 50 words of pure sensory embellishment per scene if necessary to preserve flow.
 
-    2. VISUAL ACCOUNTING — ZERO REPEATS ALLOWED
-    - No sensory category may repeat within 800 words of published prose (including previous scenes).
-    - Banned repeat categories: light color (turquoise, amber, violet, etc.), temperature (heat, cold, steam), sound verbs (hiss, hum, roar, sing, pulse, throb), texture verbs (shiver, ripple, slide, tremble), body locations (ribs, palm, chest, spine).
-    - Violation = automatic rejection.
+1. STORY_EVENTS ARE SACRED SCRIPT
+- Every numbered beat in story_events MUST appear verbatim in spirit and usually in literal action/dialogue.
+- Order is law unless the directive explicitly says “flexible sequencing”.
+- If the director wrote “Aric crushes the crystal in his fist, light bleeding between his fingers”, then someone’s hand must bleed light. No substitutions.
 
-    3. ONE SIGNATURE DETAIL PER SCENE
-    - You are allowed exactly ONE original sensory image, metaphor, or world detail that has never appeared before in the entire novel.
-    - Every other descriptive beat must come from concrete physical action or object interaction.
-    - Example allowed once: “the ledger’s brass corner left a square bruise on her thigh”.
-    - Example banned after first use: any form of “turquoise light pulsed like a heartbeat”.
+2. VISUAL ACCOUNTING — ZERO REPEATS ALLOWED
+- No sensory category may repeat within 800 words of published prose (including previous scenes).
+- Banned repeat categories: light color (turquoise, amber, violet, etc.), temperature (heat, cold, steam), sound verbs (hiss, hum, roar, sing, pulse, throb), texture verbs (shiver, ripple, slide, tremble), body locations (ribs, palm, chest, spine).
+- Violation = automatic rejection.
 
-    4. NO ACTION RECYCLING
-    - No shield, barrier, or deflection may be used more than once per act.
-    - No rope/hauling/lever/column solution may be reused in the same chapter.
-    - No last-second physical save (catching, blocking, redirecting projectile) more than once per 8,000 words of published prose.
+3. ONE SIGNATURE DETAIL PER SCENE
+- You are allowed exactly ONE original sensory image, metaphor, or world detail that has never appeared before in the entire novel.
+- Every other descriptive beat must come from concrete physical action or object interaction.
+- Example allowed once: “the ledger’s brass corner left a square bruise on her thigh”.
+- Example banned after first use: any form of “turquoise light pulsed like a heartbeat”.
 
-    5. ZERO PURPLE, ZERO CLICHÉ, ZERO FILTER WORDS
-    Banned forever:
-    - “eyes widened”, “breath caught”, “heart pounded”, “jaw clenched” (unless explicitly requested)
-    - filter words: saw, heard, felt, noticed, watched, realized
-    - weather mirroring mood
-    - “tears welled”, “voice cracked” (show it some other way or delete)
+4. NO ACTION RECYCLING
+- No shield, barrier, or deflection may be used more than once per act.
+- No rope/hauling/lever/column solution may be reused in the same chapter.
+- No last-second physical save (catching, blocking, redirecting projectile) more than once per 8,000 words of published prose.
 
-    6. DIALOGUE MUST SOUND LIKE THIS SPECIFIC PERSON RIGHT NOW
-    Use the distinctive_voice field religiously.
+5. ZERO PURPLE, ZERO CLICHÉ, ZERO FILTER WORDS
+Banned forever:
+- “eyes widened”, “breath caught”, “heart pounded”, “jaw clenched” (unless explicitly requested)
+- filter words: saw, heard, felt, noticed, watched, realized
+- weather mirroring mood
+- “tears welled”, “voice cracked” (show it some other way or delete)
 
-    7. SENTENCE LENGTH MUST SERVE PACING
-    - Short, fragmented sentences when tension spikes.
-    - Longer, flowing sentences only when the emotional_arc allows breathing.
-    - Never two long sentences back-to-back unless deliberate lull.
+6. DIALOGUE MUST SOUND LIKE THIS SPECIFIC PERSON RIGHT NOW
+Use the distinctive_voice field religiously.
 
-    8. INTERNAL MONOLOGUE ONLY WHEN IT EXPLODES INTO ACTION
-    Allowed formats only:
-    - Single-sentence decision right before the act.
-    - One ironic or bitter observation that contradicts what they’re doing.
+7. SENTENCE LENGTH MUST SERVE PACING
+- Short, fragmented sentences when tension spikes.
+- Longer, flowing sentences only when the emotional_arc allows breathing.
+- Never two long sentences back-to-back unless deliberate lull.
 
-    9. WORD COUNT IS A CONTRACT
-    Hit target ±12 %. Cut adjectives and adverbs first, then secondary description, then internal thought. Story events are immortal.
+8. INTERNAL MONOLOGUE ONLY WHEN IT EXPLODES INTO ACTION
+Allowed formats only:
+- Single-sentence decision right before the act.
+- One ironic or bitter observation that contradicts what they’re doing.
 
-    ═══════════════════════════════════════════════════════════════════════════════
-    POSITIVE COMMANDMENTS — THIS IS WHERE YOUR GENIUS LIVES
-    ═══════════════════════════════════════════════════════════════════════════════
-    - Make objects do double duty.
-    - Let the world react in real time to every choice.
-    - Use silence, hesitation, half-finished sentences, and interrupted gestures as emotional scalpels.
-    - You may invent ONE brand-new world rule or object behavior per scene that has never been hinted at before — but only if it makes an impossible situation suddenly logical.
-    - Find the one detail nobody else would think of that makes the scene unmistakably yours — then use it once and never again.
+9. WORD COUNT IS A CONTRACT
+Hit target ±12 %. Cut adjectives and adverbs first, then secondary description, then internal thought. Story events are immortal.
 
-    ═══════════════════════════════════════════════════════════════════════════════
-    FINAL MINDSET
-    ═══════════════════════════════════════════════════════════════════════════════
-    You are not writing a draft.
-    You are writing the version that goes straight to the printer.
-    Every paragraph must justify its existence or die.
+═══════════════════════════════════════════════════════════════════════════════
+POSITIVE COMMANDMENTS — THIS IS WHERE YOUR GENIUS LIVES
+═══════════════════════════════════════════════════════════════════════════════
+- Make objects do double duty.
+- Let the world react in real time to every choice.
+- Use silence, hesitation, half-finished sentences, and interrupted gestures as emotional scalpels.
+- You may invent ONE brand-new world rule or object behavior per scene that has never been hinted at before — but only if it makes an impossible situation suddenly logical.
+- Find the one detail nobody else would think of that makes the scene unmistakably yours — then use it once and never again.
 
-    {SCENE_OUTPUT_JSON_INSTRUCTIONS}"""
+═══════════════════════════════════════════════════════════════════════════════
+FINAL MINDSET
+═══════════════════════════════════════════════════════════════════════════════
+You are not writing a draft.
+You are writing the version that goes straight to the printer.
+Every paragraph must justify its existence or die.
+
+OUTPUT FORMAT INSTRUCTIONS:
+{SCENE_OUTPUT_JSON_INSTRUCTIONS}"""
 
         human_prompt = f"""Execute this directive with precision and clarity.
 
-    ════════════════════════════════════════════════════════════════════════════════
-    TECHNICAL SPECIFICATIONS
-    ════════════════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════════════════════
+TECHNICAL SPECIFICATIONS
+════════════════════════════════════════════════════════════════════════════════
 
-    POV: {state.pov}
-    Tense: {state.tense}
-    Prose Style: {state.voice}
-    Tone: {state.tone}
-    Target Word Count: {word_count_target} words
+POV: {state.pov}
+Tense: {state.tense}
+Prose Style: {state.voice}
+Tone: {state.tone}
+Target Word Count: {word_count_target} words
 
-    ════════════════════════════════════════════════════════════════════════════════
-    SCENE DIRECTIVE
-    ════════════════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════════════════════
+SCENE DIRECTIVE
+════════════════════════════════════════════════════════════════════════════════
 
-    {mem.DirectorInstructions}
+{mem.DirectorInstructions}
 
-    ════════════════════════════════════════════════════════════════════════════════
-    EXECUTION CHECKLIST
-    ════════════════════════════════════════════════════════════════════════════════
+════════════════════════════════════════════════════════════════════════════════
+EXECUTION CHECKLIST
+════════════════════════════════════════════════════════════════════════════════
 
-    Before you write, internalize:
-    ✓ Every story event must appear explicitly — no vague implications
-    ✓ Hit {word_count_target} words (±12%) — cut descriptions, never events
-    ✓ No repeated sensory categories within 800 words of published prose
-    ✓ One signature detail per scene maximum
-    ✓ No recycled action patterns (shields, ropes, deflections, rune activations)
-    ✓ Internal thought only when it drives immediate plot or decision
-    ✓ Each character speaks in their distinctive voice
-    ✓ Emotional arc shapes the scene's dramatic progression
+Before you write, internalize:
+✓ Every story event must appear explicitly — no vague implications
+✓ Hit {word_count_target} words (±12%) — cut descriptions, never events
+✓ No repeated sensory categories within 800 words of published prose
+✓ One signature detail per scene maximum
+✓ No recycled action patterns (shields, ropes, deflections, rune activations)
+✓ Internal thought only when it drives immediate plot or decision
+✓ Each character speaks in their distinctive voice
+✓ Emotional arc shapes the scene's dramatic progression
 
-    Write the scene now. Publication-ready prose only — no markers, no notes, no preamble.
-    Remember: the reader must feel the scene in their body, not just see it in their head. Earn every single word.
-    """
+Write the scene now. Publication-ready prose only — no markers, no notes, no preamble.
+Remember: the reader must feel the scene in their body, not just see it in their head. Earn every single word.
+"""
+        while True:
+            resp, tokens = await better_writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=state.llm_temp)
+            self._add_tokens(state, tokens)
 
-        resp, tokens = await better_writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=state.llm_temp)
-        self._add_tokens(state, tokens)
+            clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
+            clean = await StoryHelpers.load_json_with_retry(
+                text=clean,
+                parser=SceneOutput
+            )
 
-        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
-        clean = await StoryHelpers.load_json_with_retry(
-            text=clean,
-            parser=SceneOutput
-        )
-
-        mem.scene_text = clean.scene_text
-        mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
-        print(f"[WRITE] {mem.word_count}w")
-        return state
+            mem.scene_text = clean.scene_text
+            mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
+            if mem.word_count == 0:
+                continue
+            print(f"[Target] {word_count_target}w")
+            print(f"[WRITE] {mem.word_count}w")
+            return state
 
     async def _validate_and_fix(self, state: SceneState) -> SceneState:
         mem = state.scene_memory
-        system_prompt = f"""You are the continuity enforcer with a flamethrower.
-Your job is to burn repetition, cliché, and bloat on sight.
+        system_prompt = f"""You are the final editor, you need to revise the draft for a story scene and turn it into the final production-ready version.
 
-Specific kill orders:
-- Any action pattern (shield, rope brace, projectile deflection, glowing rune activation) that occurred in the last two scenes → rewrite or remove
-- Any character using the same physical gesture twice in one chapter → replace
-- Word count over target → cut from description first, then dialogue, never events
+Specific Tasks:
+- Compare the current scene with the story events mentioned under DIRECTOR INSTRUCTIONS, make sure all story events are executed in the CURRENT scene given.
+- Compare the current scene with the previous scene, make sure nothing is repeated, for example purple prose, sensory imagery, so it feels like a naturally written story without repetition.
+- Make sure the end of previous scene and start of current scene are a natural continuous flow, remember the previous scene is already printed so you can change and ONLY OUTPUT the current scene.
+- Make sure the word count target is met +-15%.
 
-Do not add beauty. Subtract noise.
+Rules:
 Make sure all story events from the director's notes are still present and correct.
 If missing add them in seamlessly.
+Any sensory detail that appeared in the previous 1,000 words of published prose → delete
+Make sure the scene continues naturally from the previous one.
+Make sure it also ends naturally, and not cut off abruptly.
+Return ONLY the corrected scene. No notes, no explanations.
+It is preferable if you dont change the original writer essence, but rather continue with it if you make any changes.
+Your output will be the final story scene text. It will not be a draft, but rather the final production-ready version, it will go straight to the reader.
 
-Return ONLY the corrected scene. No notes, no explanations, no mercy.
-Your output will be the final story scene text. It will not be a draft, but rather the final production-ready version.
-
+Output FORMAT INSTRUCTIONS:
 {SCENE_OUTPUT_JSON_INSTRUCTIONS}
 """
-        # - Any sensory detail that appeared in the previous 1,000 words of published prose → delete
-        # Make sure the scene continues naturally from the previous one.
-# PREVIOUS SCENE (DO NOT REPEAT, FOR REFERENCE ONLY):
-# {mem.prev_scene}
+        
         word_count_target = int(state.scene_target_length * 1.18)
         human_prompt = f"""
+PREVIOUS SCENE (DO NOT REPEAT, FOR REFERENCE ONLY):
+{mem.prev_scene}
+
+
+
 POV: {state.pov}
 Tone: {state.tone}
 Tense: {state.tense}
 Prose Style: {state.voice}
 
-CURRENT SCENE (Original Draft):
-{mem.scene_text}
-
 Director Notes with story events:
 {mem.DirectorInstructions}
 
-Word Count Target: {word_count_target} words
+
+
+CURRENT SCENE (Original Draft):
+{mem.scene_text}
+
+
+
+
+Current Scene Draft Word Count: {mem.word_count}
+Current Scene Word Count Target: {word_count_target} words.
+Remove any draft notes like chapter/scene/act/header markers or anything marked with a '#'.
 Produce the corrected current scene ONLY. Follow the SYSTEM constraints exactly.
 """
+        while True:
+            resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.7)
+            self._add_tokens(state, tokens)
 
-        resp, tokens = await better_writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.7)
-        self._add_tokens(state, tokens)
+            clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
+            clean = await StoryHelpers.load_json_with_retry(
+                text=clean,
+                parser=SceneOutput
+            )
 
-        clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
-        clean = await StoryHelpers.load_json_with_retry(
-            text=clean,
-            parser=SceneOutput
-        )
-
-        mem.scene_text = clean.scene_text
-        mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
-        print(f"[FIX] Revised to {mem.word_count}w")
-        return state
+            mem.scene_text = clean.scene_text
+            word_count = StoryHelpers._count_words_split(clean.scene_text)
+            if word_count == 0:
+                continue
+            mem.word_count = word_count
+            print(f"[FIX] Revised to {mem.word_count}w")
+            return state
 
     async def _age_check_and_fix(self, state: SceneState) -> SceneState:
         mem = state.scene_memory
@@ -432,6 +452,7 @@ RULES:
 
 Return ONLY the corrected scene, perfectly formatted production ready version of story book.
 
+OUTPUT FORMAT INSTRUCTIONS:
 {SCENE_OUTPUT_JSON_INSTRUCTIONS}
 """
 
@@ -445,19 +466,21 @@ RECOMMENDATIONS:
 {chr(10).join(report.recommendations)}
 
 Output the age-appropriate version."""
+            while True:
+                resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.6)
+                self._add_tokens(state, tokens)
 
-            resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.6)
-            self._add_tokens(state, tokens)
+                clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
+                clean = await StoryHelpers.load_json_with_retry(
+                    text=clean,
+                    parser=SceneOutput
+                )
 
-            clean = StoryHelpers._strip_code_fences(StoryHelpers._extract_content(resp)).strip()
-            clean = await StoryHelpers.load_json_with_retry(
-                text=clean,
-                parser=SceneOutput
-            )
-
-            mem.scene_text = clean.scene_text
-            mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
-            print(f"[AGE FIX] Revised to {mem.word_count}w")
+                mem.scene_text = clean.scene_text
+                word_count = StoryHelpers._count_words_split(clean.scene_text)
+                if word_count == 0:
+                    continue
+                print(f"[AGE FIX] Revised to {mem.word_count}w")
 
         # Finalize
         mem.final_scene = mem.scene_text

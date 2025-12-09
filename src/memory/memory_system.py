@@ -154,11 +154,13 @@ class StoryMemorySystem:
         await self.episodic_story.put(summary, metadata=metadata or {})
 
     async def add_character_summary(self, summary: Dict[str, dict], metadata: dict[str, Any] = None):
+        # print("Character adding...")
         await self.episodic_characters.put_dict_replace_character(
             data=summary, metadata=metadata or {}
         )
 
     async def add_world_summary(self, summary: Dict[str, dict], metadata: dict[str, Any] = None):
+        # print("World adding...")
         await self.episodic_worlds.put_dict_replace_world(data=summary, metadata=metadata or {})
 
     # ---------- Episodic search methods ----------
@@ -384,27 +386,27 @@ class StoryMemorySystem:
     async def add_post_scene_bundle(self, scene_bundle: Dict[str, Any], metadata: Dict[str, Any]):
         if scene_bundle.get("story_summary"):
             await self.add_story_summary(scene_bundle["story_summary"], metadata={"chapter_id": metadata.get("chapter_id", 0),"scene_id": metadata.get("scene_id", 0), "type": "scene summary", "act_id": metadata.get("act_id", 0)})
-        if scene_bundle.get("character_details"):
-            await self.add_character_detail(scene_bundle["character_details"], metadata)
-        if scene_bundle.get("world_details"):
-            await self.add_world_detail(scene_bundle["world_details"], metadata)
+        if scene_bundle.get("characters"):
+            await self.add_character_detail(scene_bundle["characters"], metadata)
+        if scene_bundle.get("locations"):
+            await self.add_world_detail(scene_bundle["locations"], metadata)
         # print("Ingested scene")
 
     async def add_post_chapter_bundle(self, parts: Dict[str, Dict], metadata: Dict[str, Any]):
         if parts.get("summary"):
             await self.add_story_summary(parts["summary"], metadata={"chapter_id": metadata.get("chapter_id", 0), "type": "chapter summary", "act_id": metadata.get("act_id", 0)})
-        if parts.get("character_summary"):
-            await self.add_character_summary(parts["character_summary"], metadata)
-        if parts.get("world_summary"):
-            await self.add_world_summary(parts["world_summary"], metadata)
+        if parts.get("characters"):
+            await self.add_character_summary(parts["characters"], metadata)
+        if parts.get("locations"):
+            await self.add_world_summary(parts["locations"], metadata)
 
     async def add_post_act_bundle(self, act_bundle: Dict[str, str], metadata: Dict[str, Any]):
         if act_bundle.get("act_summary"):
             await self.add_story_summary(act_bundle["act_summary"], metadata={"type": "act summary", "act_id": metadata.get("act_id", 0)})
-        if act_bundle.get("character_progression"):
-            await self.add_character_summary(act_bundle["character_progression"], metadata)
-        if act_bundle.get("world_progression"):
-            await self.add_world_summary(act_bundle["world_progression"], metadata)
+        if act_bundle.get("characters"):
+            await self.add_character_summary(act_bundle["characters"], metadata)
+        if act_bundle.get("locations"):
+            await self.add_world_summary(act_bundle["locations"], metadata)
 
     #---------------User Management------------------
     async def update_user_monthly_word_count(self, word_count):
