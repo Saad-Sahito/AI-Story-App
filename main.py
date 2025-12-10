@@ -3,7 +3,7 @@ from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from jose import jwt, JWTError
-from typing import Dict, Any, Optional, List
+from typing import Dict, Any
 import httpx
 import os
 from pathlib import Path
@@ -15,17 +15,18 @@ import redis.asyncio as redis
 from pydantic import BaseModel
 from setup.shared_redis_pool import REDIS_POOL, get_redis_client
 from setup.main_setup import MainSetup
-from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories, get_user_profile, update_user_settings, update_user_story_public_status
+from src.memory.community_stories import get_all_public_stories_page
+from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories, get_user_profile, update_user_settings, update_user_story_public_status, user_rate_story
 from src.memory.analytics import get_all_characters_raw, get_all_data, get_all_director_notes, get_all_story_progress, get_all_story_texts, get_all_users, get_all_world_elements_raw, get_all_feedback
 from src.memory.feedback import post_user_feedback
 from src.memory.shared_resources import SHARED_QDRANT
 #from src.memory.storage_delete import delete_all_qdrant_collections, delete_sqlite_db
-from setup.story_types.interactive_setup import get_shared_interactive_setup, close_shared_interactive_setup
+# from setup.story_types.interactive_setup import get_shared_interactive_setup, close_shared_interactive_setup
 from setup.story_types.classic_setup import get_shared_classic_setup, close_shared_classic_setup
-from src.story_engines.interactive_adventure.agents import shared_scene_planner as interactive_scene_planner_module
+# from src.story_engines.interactive_adventure.agents import shared_scene_planner as interactive_scene_planner_module
 from src.story_engines.classic_narrative.agents import shared_scene_planner as classic_scene_planner_module
 from src.memory.sqlite_store import SQLiteStore
-from src.utilities.image_generation import generate_cover_image
+# from src.utilities.image_generation import generate_cover_image
 # from src.utilities.model_suggestor import user_context_extractor_model
 # from src.utilities.story_title_generator import user_context_extractor_title
 
@@ -65,7 +66,7 @@ if not DB_PATH.exists():
 async def lifespan(app: FastAPI):
     print("🚀 Starting up AI Story App...")
     try:
-        await get_shared_interactive_setup()
+        # await get_shared_interactive_setup()
         await get_shared_classic_setup()
         await SQLiteStore._init_database(DB_PATH)
         print("✅ Shared story setups initialized")
@@ -73,10 +74,10 @@ async def lifespan(app: FastAPI):
         print(f"❌ Error initializing story setups: {e}")
         raise
 
-    if interactive_scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
-        print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE was not initialized!")
-    else:
-        print("✅ SHARED_SCENE_PLANNER_SERVICE is properly initialized")
+    # if interactive_scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
+    #     print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE was not initialized!")
+    # else:
+    #     print("✅ SHARED_SCENE_PLANNER_SERVICE is properly initialized")
     if classic_scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE is None:
         print("❌ ERROR: SHARED_SCENE_PLANNER_SERVICE was not initialized!")
     else:
@@ -102,7 +103,7 @@ async def lifespan(app: FastAPI):
                 pass
 
         try:
-            await close_shared_interactive_setup()
+            # await close_shared_interactive_setup()
             await close_shared_classic_setup()
             print("✅ Shared story setups closed")
         except Exception as e:
@@ -251,7 +252,7 @@ async def supabase_auth_middleware(request: Request, call_next):
         )
 
     # Skip authentication for whitelisted routes
-    whitelist = ["/users/active", "/docs", "/openapi.json"]
+    whitelist = ["/users/active", "/docs", "/openapi.json", "/community/stories"]
     if request.url.path == "/" or any(request.url.path.startswith(path) for path in whitelist):
         #print(f"✅ Skipping auth for whitelisted route: {request.url.path}")
         response = await call_next(request)
@@ -427,6 +428,10 @@ async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapte
 async def api_put_story_public(user_id: str, story_id: str, public: bool = True):
     return await update_user_story_public_status(user_id=user_id, story_id=story_id, public=public)
 
+@app.post("/stories/progress/{user_id}/{story_id}/rating")
+async def api_put_story_rating(user_id: str, story_id: str, rating: int = 0):
+    return await user_rate_story(user_id=user_id, story_id=story_id, rating=rating)
+
 class ImageRequest(BaseModel):
     story_type: str
 
@@ -476,7 +481,6 @@ async def api_delete_story(
     user_id: str,
     story_id: str,
     data: DeleteStoryRequest = Body(...),
-    # auth dependencies...
 ):
     try:
         await mainsetup.logout_story(user_id=user_id, story_id=story_id, story_type=data.story_type)
@@ -510,6 +514,12 @@ async def api_update_user_settings(user_id: str, user_data: Dict[str, Any]):
 # @app.post("/utility/title_generator")
 # async def api_title_generator(request: TitleGeneratorRequest):
 #     return await user_context_extractor_title(user_context=request.initial_story_data)
+
+
+#------------------------Community Stories--------------------
+@app.get("/community/stories")
+async def api_get_public_stories(min_age: int, page_index: int, page_size: int = 9):
+    return await get_all_public_stories_page(min_age=min_age, page_index=page_index, page_size=page_size)
 
 
 #------------------------Analytics Calls-----------------------

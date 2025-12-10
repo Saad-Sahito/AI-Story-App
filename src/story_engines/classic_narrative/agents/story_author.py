@@ -1,6 +1,6 @@
 
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Literal
 # from openai import max_retries
 from pydantic import BaseModel, Field, ConfigDict
 # from langchain_core.output_parsers import PydanticOutputParser
@@ -95,6 +95,13 @@ class ExpandedPlotOutline(FlexibleBase):
     narrative_flow: str = Field(description="Complete plot in flowing prose")
     # LLM adds: subplot_threads, relationship_arcs, symbolic_layers,
     # thematic_development, structure_beats, etc.
+
+class AgeAppropriatenessReport(BaseModel):
+    age_rating: Literal["A", "T", "M"] = Field(
+        description="'A' for ages 8+, 'T' for ages 13+, 'M' for ages 18+"
+    )
+    plot_outline_pass: bool = Field(description="Does the plot pass (True) or fail (False) for age appropriateness")
+
 
 
 class ConnectedNarrativeAgent(FlexibleBase):
@@ -1618,30 +1625,33 @@ This is the story that will make people be in awe. Make it worthy."""
         final_plot: ExpandedPlotOutline,
         seed: MinimalStorySeed,
         model: str = "None"
-    ) -> Tuple[ExpandedPlotOutline, dict]:
+    ) -> Tuple[AgeAppropriatenessReport, dict]:
         """Age-appropriateness safety filter"""
         target_age = seed.target_audience_age
 
-        system_prompt = f"""You are an age-appropriateness editor.
+        system_prompt = f"""You are an age-appropriateness pass agent.
 Target audience age: {target_age} years old (8–18 range).
 
 Scan the plot and rate its maturity. If any content is too mature for age {target_age},
-rewrite ONLY the offending parts while preserving story and themes.
+Output False.
+If the plot passes the age filter then output True
 
 Thresholds:
 - Age < 13 → max mild violence, no sexual content, clean language
 - Age 13–15 → moderate violence ok, implied romance only, mild language  
 - Age 16–18 → intense violence ok, moderate/implied sexual content ok, moderate language ok
 
-Return the same JSON structure. Only change what is necessary.
-Output clean JSON with no markdown fences."""
+Rate the plot for target Audience: 'A' for ages 8+, 'T' for ages 13+, 'M' for ages 18+, regardless of given target audience age.
+
+Output Format:
+{AgeAppropriatenessReport.model_json_schema()}"""
 
         human_prompt = f"""Target age: {target_age}
 
 Plot to check:
 {final_plot.model_dump_json(indent=2)}
 
-Review and sanitize if needed."""
+Review and rate."""
 
         response, tokens = await author_fast_client(
             system_prompt=system_prompt,
@@ -1654,7 +1664,7 @@ Review and sanitize if needed."""
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
         json_data = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
-            parser=ExpandedPlotOutline
+            parser=AgeAppropriatenessReport
         )
 
         return json_data, tokens
@@ -1887,11 +1897,22 @@ Create act-by-act tracking of what gets introduced and resolved."""
         
         # PHASE 8: Age-appropriateness filter
         print("\n🔞 Phase 8: Age-appropriateness filter...")
-        expanded_plot, age_filter_tokens = await self._enforce_age_appropriateness(
+        age_report, age_filter_tokens = await self._enforce_age_appropriateness(
             final_plot=expanded_plot,
             seed=seed,
             model=model
         )
+        print(age_report)
+        if not age_report.plot_outline_pass:
+            raise "Age Filter pass failed"
+        
+        if age_report.age_rating == 'A':
+            seed.target_audience_age = 8
+        elif age_report.age_rating == 'T':
+            seed.target_audience_age = 13
+        elif age_report.age_rating == 'M':
+            seed.target_audience_age = 18
+        
         print(f"✓ Content validated for age {seed.target_audience_age}+")
         
         # PHASE 9: Quality Validation

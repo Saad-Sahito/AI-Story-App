@@ -72,11 +72,11 @@ class MainSetup:
     async def logout(self, user_id: str):
         """Clear all sessions for a user from Redis."""
         try:
-            setup_interactive = await get_shared_interactive_setup()
-            res_int = await setup_interactive.logout(user_id=user_id)
+            # setup_interactive = await get_shared_interactive_setup()
+            # res_int = await setup_interactive.logout(user_id=user_id)
             setup_classic = await get_shared_classic_setup()
             res_cls = await setup_classic.logout(user_id=user_id)
-            return res_int, res_cls
+            return res_cls
         except:
             return {"error": "One of or both sessions uninitialized"}
 
@@ -92,10 +92,10 @@ class MainSetup:
     async def cleanup_inactive_sessions(self):
         """Clean up inactive sessions from Redis using SCAN."""
         try:
-            setup_interactive = await get_shared_interactive_setup()
-            res_int = await setup_interactive.cleanup_inactive_sessions()
+            # setup_interactive = await get_shared_interactive_setup()
+            # res_int = await setup_interactive.cleanup_inactive_sessions()
             setup_classic = await get_shared_classic_setup()
             res_cls = await setup_classic.cleanup_inactive_sessions()
-            return res_cls + res_int
+            return res_cls
         except:
             return {"error": "One of or both sessions uninitialized"}

@@ -78,9 +78,10 @@ async def redis_lock(client, lock_key, timeout=30, retries=10, retry_delay=1.0):
 
 class InteractiveStorySetup:
     def __init__(self):
-        if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
-            scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
-            print("Initialized interactive shared scene planner service")
+        # if scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE is None:
+            # scene_planner_module.INTERACTIVE_SCENE_PLANNER_SERVICE = scene_planner_module.SharedScenePlannerService()
+            # print("Initialized interactive shared scene planner service")
+        pass
 
     async def _get_session(self, user_id: str, story_id: str = None):
         client = await get_redis_client()

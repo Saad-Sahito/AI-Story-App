@@ -7,6 +7,7 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
+# from src.memory.user_management import get_user_profile
 from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
 from src.story_engines.classic_narrative.agents.director_agent_classic import DirectorGraph
 import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_planner_module
@@ -415,6 +416,7 @@ class ClassicStorySetup:
         
         # Extract metadata
         user_id = initial_story_data["user_id"]
+        # author = get_user_profile(user_id=user_id)['profile']['nickname']
         story_id = initial_story_data["story_id"]
         story_type = initial_story_data.get("story_type", "classic")
         
@@ -541,6 +543,7 @@ class ClassicStorySetup:
                 "sub_genre": story_seed.sub_genre,
                 "themes": story_seed.themes,
                 "min_age": story_seed.target_audience_age,
+                "author_id": user_id,
                 "complete": False
             }
         )
@@ -561,7 +564,8 @@ class ClassicStorySetup:
             user_id=user_id, 
             story_title=final_plot.title, 
             story_id=story_id, 
-            story_type=story_type
+            story_type=story_type,
+            self_created=True
         )
         
         return {
@@ -687,8 +691,8 @@ class ClassicStorySetup:
                             
                             return {
                                 "status": "act_transition",
-                                # "current_act_id": next_act,
-                                # "total_acts": total_acts,
+                                "current_act_id": current_act+1,
+                                "total_acts": total_acts,
                                 # "act_title": act_plan.act_title,
                                 # "chapter_count": len(act_plan.chapter_outlines),
                                 # "message": f"Started Act {next_act}: {act_plan.act_title}",
@@ -961,9 +965,9 @@ class ClassicStorySetup:
                     # New act started - inform user
                     await websocket.send_json({
                         "type": "act_transition",
-                        "message":"transitioning",
-                        # "current_act_id": act_status.get('current_act_id'),
-                        # "total_acts": act_status.get('total_acts'),
+                        # "message":"transitioning",
+                        "current_act_id": act_status.get('current_act_id'),
+                        "total_acts": act_status.get('total_acts'),
                         # "act_title": act_status.get('act_title'),
                         # "chapter_count": act_status.get('chapter_count'),
                         # "progress_percentage": act_status.get('progress_percentage', 0),

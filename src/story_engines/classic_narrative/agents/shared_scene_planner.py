@@ -42,6 +42,7 @@ class SceneState(BaseModel):
     tense: str
     tone: str
     voice: str
+    genre: list[str]
     scene_memory: SceneMemory
     user_age: int = 13
     scene_target_length: int = 500
@@ -70,6 +71,7 @@ class UserSceneContext:
             tense=kwargs["tense"],
             tone=kwargs["tone"],
             voice=kwargs["voice"],
+            genre=kwargs["genre"],
             scene_memory=scene_memory,
             user_age=kwargs["user_age"],
             scene_chunk_callback=kwargs["scene_chunk_callback"],
@@ -320,6 +322,7 @@ POV: {state.pov}
 Tense: {state.tense}
 Prose Style: {state.voice}
 Tone: {state.tone}
+Genre List (for flavour): {state.genre}
 Target Word Count: {word_count_target} words
 
 ════════════════════════════════════════════════════════════════════════════════
@@ -398,6 +401,7 @@ POV: {state.pov}
 Tone: {state.tone}
 Tense: {state.tense}
 Prose Style: {state.voice}
+Genre List: {state.genre}
 
 Director Notes with story events:
 {mem.DirectorInstructions}
@@ -480,6 +484,8 @@ Output the age-appropriate version."""
                 word_count = StoryHelpers._count_words_split(clean.scene_text)
                 if word_count == 0:
                     continue
+                else:
+                    break
                 print(f"[AGE FIX] Revised to {mem.word_count}w")
 
         # Finalize

@@ -293,6 +293,7 @@ class DirectorGraph:
         self.tense = "past"
         self.voice = "standard narrative"
         self.tone = "light"
+        self.genre_list = []
         self.director_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.writer_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         self.target_length = 50000
@@ -306,6 +307,7 @@ class DirectorGraph:
         self.pov = seed['pov'] if seed['pov'] else self.pov
         self.voice = seed['prose_style'] if seed['prose_style'] else self.voice
         self.tone = seed['tone'] if seed['tone'] else self.tone
+        self.genre_list = seed['genre'] if seed['genre'] else []
         # plot = json.loads(await self.memory.get_long_term_document(metadata={'type': 'expanded_plot_outline', 'story_title': story_title}))
         act_plan = json.loads(await self.memory.get_long_term_document(metadata={'type': 'act_plan', 'act_id': act_id, 'story_title': story_title}))
         agents = json.loads(await self.memory.get_long_term_document(metadata={'type': 'connected_agents', 'story_title': story_title}))
@@ -634,7 +636,8 @@ No markdown. No code fences. No explanations. Just pure JSON.
                 pov=self.pov,
                 voice=self.voice,
                 tone=self.tone,
-                tense=self.tense
+                tense=self.tense,
+                genre=self.genre_list
             )
             
             scene_text, scene_cluster, status, writer_tokens = await scene_planner_module.CLASSIC_SCENE_PLANNER_SERVICE.run_scene(
