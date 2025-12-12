@@ -7,6 +7,7 @@ from fastapi import WebSocket, WebSocketDisconnect, HTTPException
 from dotenv import load_dotenv
 from setup.shared_redis_pool import get_redis_client
 from src.memory.memory_system import StoryMemorySystem
+from src.utilities.pdf_story_convertor import PDFStoryBuilder
 # from src.memory.user_management import get_user_profile
 from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
 from src.story_engines.classic_narrative.agents.director_agent_classic import DirectorGraph
@@ -619,7 +620,7 @@ class ClassicStorySetup:
         is_complete = progress.get('complete', False)
         target_length = progress.get('target_length', 50000)
         current_word_count = progress.get('story_word_count', 0)
-        latest_chapter = progress.get('latest_chapter_id', 1)
+        latest_chapter = progress.get('last_chapter_id', 1)
         
         act_percentage = current_word_count / target_length if target_length > 0 else 0
 
@@ -703,6 +704,8 @@ class ClassicStorySetup:
                             # All acts complete
                             print("✅ All acts completed - Story complete")
                             await memory_system.mark_story_complete()
+                            res = await PDFStoryBuilder.build_story_pdf(memory_system=memory_system, total_chapters=latest_chapter-1)
+                            print(res)
                             return {
                                 "status": "story_complete",
                                 "current_act_id": current_act,

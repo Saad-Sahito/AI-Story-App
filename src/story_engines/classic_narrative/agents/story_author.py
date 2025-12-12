@@ -1,17 +1,14 @@
+# src/story_engines/classic_adventure/agents/story_author.py
 
 import json
 from typing import Any, Dict, List, Optional, Tuple, Literal
-# from openai import max_retries
 from pydantic import BaseModel, Field, ConfigDict
-# from langchain_core.output_parsers import PydanticOutputParser
 from src.memory.memory_system import StoryMemorySystem
 from src.llm_client.llm_client import author_client, better_author_client, author_fast_client
 from src.utilities.story_structure_decider import find_best_structure, find_best_structure_name
 from src.utilities.story_helpers import StoryHelpers
 from config_vars import author_story_rules_negative
 import asyncio
-# import random
-import hashlib
 
 
 # ============================================================================
@@ -154,7 +151,7 @@ class StoryTracker(FlexibleBase):
     act_tracking: Dict[int, ActTracking]
 
 # ============================================================================
-# KEEP ACT PLAN STRUCTURE INTACT (used by Director)
+# ACT PLAN STRUCTURE (used by Director)
 # ============================================================================
 
 class ChapterAnchorPoints(FlexibleBase):
@@ -489,7 +486,6 @@ Add detail appropriate to each role's importance."""
         narrative_agents: List[NarrativeAgent],
         conflict_matrix: ConflictMatrix,
         plot_outline: MinimalPlotOutline,
-        prose_style: str,
         model: str = "None"
     ) -> Tuple[List[ConnectedNarrativeAgent], dict]:
         """Connect agents to plot with flexible integration"""
@@ -1211,189 +1207,65 @@ class StoryAuthor:
 
         structure_template = find_best_structure(seed.story_structure)
 
-        system_prompt = f"""You are a master plot architect creating the SOUL of a story (novel).
+        system_prompt = f"""Create minimal plot outline for {'/'.join(seed.genre)} novel.
 
-This is where magic begins - you're not filling a form, you're birthing a narrative that will haunt readers.
+REQUIRED FIELDS:
+- title: Evocative, thematic
+- premise: 1-2 sentence hook with character desire + impossible stakes
+- central_question: Moral/emotional dilemma (not plot mechanics)
+- narrative_arc: Flowing prose summary (200-300 words) - paint emotional journey
+- required_character_roles: {dynamic_min_roles}+ specific roles (NOT generic labels)
+  Example: "guilt-ridden former expedition leader" not "mentor"
 
-═══════════════════════════════════════════════════════════════════════════════
-THE STORY'S HEARTBEAT
-═══════════════════════════════════════════════════════════════════════════════
+RULES:
+- Roles MUST be specific to world/premise
+- Each role = function + psychology + relationship potential
+- Target age: {seed.target_audience_age} - adjust complexity accordingly
+- Structure: {structure_template}
 
-Genre Fusion: {'/'.join(seed.genre)} {f"+ {'/'.join(seed.sub_genre)}" if seed.sub_genre else ""}
-Emotional Core: {seed.tone}
-World Whisper: {world_foundation.core_concept}
-Thematic DNA: {', '.join(seed.themes)}
+OUTPUT: Valid MinimalPlotOutline JSON. No markdown fences.
 
-Structure Inspiration (don't slavishly follow - let it guide, not bind):
-{structure_template}
-
-═══════════════════════════════════════════════════════════════════════════════
-YOUR CREATIVE MANDATE
-═══════════════════════════════════════════════════════════════════════════════
-
-  title: A title that SINGS - evocative, memorable, thematically resonant,
-  
-  premise:  THE HOOK - Not a dry summary, but the irresistible question.
-             One breathless sentence that makes someone say 'I NEED to read this.'
-             Lead with character desire colliding with impossible stakes.
-             Example: 'A grief-stricken cartographer must choose between mapping 
-             her father's killer and losing the only person who sees past her scars.',
-  
-  central_question: The BURNING question that will torment readers.
-                       Not 'what happens?' but 'what will they CHOOSE?'
-                       Frame as moral/emotional dilemma, not plot mechanics.
-                       Example: 'Can she forgive herself for choosing ambition over love?',
-  
-  narrative_arc:  Tell me the story in FLOWING PROSE, not bullet points.
-                    Paint the emotional journey: where they start broken, how the world 
-                    tests them, what they lose, what they become. Make me FEEL the arc.
-                    Use sensory details, metaphor, rhythm. This should read like the 
-                    back-cover copy of a bestseller - compelling, evocative, alive.
-                    
-                    Instead of: 'Protagonist goes on journey, faces challenges, wins'
-                    Try: 'She enters the mist with maps and certainty, but the jungle 
-                    strips her bare—each betrayal a vine tightening, each loss a root 
-                    pulling her deeper into the question: what if the treasure she seeks 
-                    is the very thing destroying her?',
-
-    required_character_roles:
-    Think FUNCTION not formula. What narrative forces does THIS story need?
-    
-    CORE ROLES (adapt to story):
-    - Protagonist (but WHO specifically? 'Haunted explorer'? 'Reluctant heir'?)
-    - Antagonist (external force, internal shadow, or both?)
-    
-    STORY-SPECIFIC ROLES (be creative and specific):
-    Instead of: 'mentor' → 'guilt-ridden former expedition leader'
-    Instead of: 'ally' → 'indigenous guide with prophecy burden'
-    Instead of: 'love interest' → 'rival cartographer hiding family secret'
-    
-    SCALE TO STORY:
-    - Intimate character study: 4-7 roles (each deeply developed)
-    - Epic multi-threaded: 12-18 roles (varied importance)
-    
-    GENRE EXAMPLES:
-    Mystery: 'detective with addiction', 'unreliable witness', 'victim's vengeful sibling'
-    Romance: 'best friend saboteur', 'ex who catalyzes growth', 'mentor championing love'
-    Fantasy: 'mage bound by taboo', 'shapeshifter testing loyalty', 'oracle refusing destiny'
-    Thriller: 'whistleblower with family hostage', 'handler with hidden agenda'
-    
-    Think: What roles create MAXIMUM emotional/thematic collision?
-
-    // MUST contain at least {dynamic_min_roles} roles.
-    // MUST NOT be empty.
-    // MUST NOT collapse to generic labels.
-    Example of good role list (format, not content):
-
-    [
-    "haunted apprentice cartographer seeking identity",
-    "exiled queen manipulating the protagonist from afar",
-    "mentor who lost their faith after a failed rebellion",
-    "rival explorer who becomes an uneasy ally",
-    "oracle child who speaks only in dreams",
-    "soldier carrying a forbidden truth",
-    "villain’s enforcer who doubts their orders"
-    ]
-
-  // OPTIONAL - ADD WHATEVER SPARKS YOUR VISION:
-  // "opening_image": vivid first scene idea
-  // "thematic_question": philosophical core
-  // "genre_twist": how you'll subvert expectations
-  // "emotional_palette": the feelings this story explores
-  // "narrative_voice": who's telling this and why
-  // Don't ask permission - just add what makes THIS story unforgettable
+{MinimalPlotOutline.model_json_schema()}"""
 
 
-Base Output Schema:
-{MinimalPlotOutline.model_json_schema()}
+        human_prompt = f"""Seed: {seed.model_dump_json(indent=2)}
+World: {world_foundation.model_dump_json(indent=2)}
 
-═══════════════════════════════════════════════════════════════════════════════
-CREATIVE COMMANDMENTS
-═══════════════════════════════════════════════════════════════════════════════
-
-1. **CHARACTER OVER PLOT**: Roles should be people first, functions second
-   Bad: "mentor, ally, antagonist"
-   Good: "disgraced father-figure seeking redemption through the protagonist's quest"
-
-2. **EMOTIONAL SPECIFICITY**: What does this story FEEL like?
-   Bad: "Protagonist faces challenges and grows"
-   Good: "She mistakes ambition for identity until betrayal carves her hollow"
-
-3. **SUBVERT CLICHÉS**: If your first instinct is "chosen one" or "love triangle," 
-   spin it. What's the version no one's seen? The angle that surprises?
-
-4. **THEMATIC RESONANCE**: Every role, every beat should echo {', '.join(seed.themes)}
-   Don't just mention themes - EMBODY them in character dynamics and stakes
-
-5. **VOICE**: Write like you're pitching this to someone at a bar who's had two drinks
-   and is leaning in, captivated. Conversational, vivid, irresistible.
-
-6. **AGE-APPROPRIATE COMPLEXITY**: For {seed.target_audience_age} year olds
-   - Under 13: Clear heroes/villains, hopeful endings, moral lessons
-   - 13-15: Moral ambiguity, consequences, bittersweet growth
-   - 16-18: Philosophical depth, tragedy, no easy answers
-
-═══════════════════════════════════════════════════════════════════════════════
-THE TEST
-═══════════════════════════════════════════════════════════════════════════════
-
-Before submitting, ask yourself:
-- Would *I* read this based on the premise alone?
-- Do the character roles make me curious about their dynamics?
-- Does the narrative arc have emotional progression, not just plot progression?
-- Can I picture the story's unique flavor from these bones?
-
-If not - dig deeper, get weirder, find the heart.
-
-Output clean JSON with no markdown fences."""
-
-
-        human_prompt = f"""Create the foundational DNA of an unforgettable {'/'.join(seed.genre)} story.
-
-═══════════════════════════════════════════════════════════════════════════════
-STORY SEED
-═══════════════════════════════════════════════════════════════════════════════
-
-{seed.model_dump_json(indent=2)}
-
-═══════════════════════════════════════════════════════════════════════════════
-WORLD FOUNDATION
-═══════════════════════════════════════════════════════════════════════════════
-
-{world_foundation.model_dump_json(indent=2)}
-
-═══════════════════════════════════════════════════════════════════════════════
-YOUR MISSION
-═══════════════════════════════════════════════════════════════════════════════
-
-Don't just answer the questions - create a premise so compelling it demands to be told.
-
-Make the roles SPECIFIC to this world and premise. Not "the mentor" but 
-"the guilt-haunted admiral whose stolen artifact holds the key to redemption."
-
-Make the arc EMOTIONAL. Not "they go on a journey" but "ambition devours her 
-until she's forced to choose between the map and her soul."
-
-Write with URGENCY and VOICE. This is the moment the story crystalizes from 
-possibility into inevitability.
-
-Be bold. Be specific. Make me care."""
+Generate plot outline."""
 
         # --- 2. Retry loop ---
         attempt = 0
-        last_tokens = {}
-
+        last_valid_response = None
+        
         while attempt <= max_retries:
             attempt += 1
-            print(f"\n📘 LLM plot generation attempt {attempt}/{max_retries + 1}")
+            
+            # Only regenerate if no valid partial result
+            if attempt > 1 and last_valid_response:
+                fix_prompt = f"""Previous attempt had {len(last_valid_response.required_character_roles)} roles.
+    Minimum required: {dynamic_min_roles}
 
-            # --- 3. Call LLM ---
-            response, tokens = await better_author_client(
-                system_prompt=system_prompt,
-                human_prompt=human_prompt,
-                llm_temp=0.9,
-                model=model
-            )
+    Add {dynamic_min_roles - len(last_valid_response.required_character_roles)} more specific roles.
+
+    Previous roles: {json.dumps(last_valid_response.required_character_roles)}
+    Previous plot: {last_valid_response.model_dump_json(indent=2)}
+
+    Expand roles list ONLY. Keep rest unchanged."""
+                
+                response, tokens = await better_author_client(
+                    system_prompt="Add missing character roles to existing plot.",
+                    human_prompt=fix_prompt,
+                    llm_temp=0.7,
+                    model=model
+                )
+            else:
+                # First attempt - full generation
+                response, tokens = await better_author_client(
+                    system_prompt=system_prompt,
+                    human_prompt=human_prompt,
+                    llm_temp=0.9,
+                    model=model
+                )
             last_tokens = tokens
 
             clean_resp = StoryHelpers._extract_content(response)
@@ -1410,6 +1282,10 @@ Be bold. Be specific. Make me care."""
                 continue
 
             role_count = len(outline.required_character_roles)
+            if role_count >= dynamic_min_roles:
+                return outline, tokens
+        
+            last_valid_response = outline
             print(f"→ Produced {role_count} roles: {outline.required_character_roles}")
 
             # --- 4. Check role thresholds ---
@@ -1679,67 +1555,64 @@ Review and rate."""
         act_count_target: int,
         model: str = "None"
     ) -> Tuple[ExpandedPlotOutline, dict]:
-        """Refine plot based on quality assessment"""
+        """Refine plot - ONLY send what needs fixing"""
         
         if not quality_report.concerns:
             return plot, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         
-        vagueness_concerns = [c for c in quality_report.concerns if any(
-            word in c.lower() for word in ['vague', 'generic', 'specific', 'abstract', 'concrete', 'detail']
-        )]
+        # Extract ONLY problematic sections
+        vague_acts = []
+        if any('vague' in c.lower() for c in quality_report.concerns):
+            # Identify which acts are vague
+            for i, act_summary in enumerate(plot.act_summaries, 1):
+                if len(act_summary.split()) < 150:  # Too short = vague
+                    vague_acts.append(i)
         
-        specificity_focus = ""
-        if vagueness_concerns:
-            specificity_focus = """
-🚨 CRITICAL PRIORITY: ADDRESS VAGUENESS
-
-The current plot is too abstract. Make it CONCRETE:
-
-REPLACE:
-- "the hero" → character name (e.g., "Kael")
-- "faces challenges" → specific obstacles
-- "learns something" → specific revelation
-- "goes somewhere" → named location
-
-"""
+        # Build minimal context - ONLY relevant agents/locations
+        mentioned_chars = set()
+        mentioned_locs = set()
+        for summary in plot.act_summaries:
+            for agent in agents:
+                if agent.name.lower() in summary.lower():
+                    mentioned_chars.add(agent.name)
+            # Extract location mentions (rough heuristic)
+            words = summary.split()
+            for loc_word in world.model_dump().get('key_locations', []):
+                if any(loc_word.lower() in w.lower() for w in words):
+                    mentioned_locs.add(loc_word)
         
-        system_prompt = f"""You are refining a plot based on editorial feedback.
+        relevant_agents = [a.model_dump() for a in agents if a.name in mentioned_chars]
+        
+        system_prompt = f"""Refine plot based on editorial feedback. Target: {act_count_target} acts.
 
-{specificity_focus}
+ADDRESS THESE CONCERNS:
+{chr(10).join(f"- {c}" for c in quality_report.concerns)}
 
-Address specific concerns while maintaining story integrity.
-Only fix what's flagged, but be SPECIFIC and CONCRETE where you make changes.
+APPLY THESE FIXES:
+{chr(10).join(f"- {r}" for r in quality_report.recommendations)}
 
-OUTPUT: Same JSON structure as input.
-Output clean JSON with no markdown fences."""
-    
-        human_prompt = f"""Current Plot:
-{plot.model_dump_json(indent=2)}
+OUTPUT: Same ExpandedPlotOutline structure. JSON only:
+{ExpandedPlotOutline.model_json_schema()}"""
 
-Quality Concerns (ADDRESS ALL):
-{json.dumps(quality_report.concerns, indent=2)}
+        human_prompt = f"""ACTS NEEDING SPECIFICITY: {vague_acts if vague_acts else 'All'}
 
-The story must have EXACTLY {act_count_target} acts in act_summaries. Adjust accordingly if act_summaries length is different.
-If suggestions include changes length of act_summaries or narrative flow, adjust accordingly. You may add or delete act_summaries from its list as needed.
-You have creative freedom to enhance the plot. If you feel its missing elements not mentioned in the report, improve them too.
+Current plot:
+Title: {plot.title}
+Premise: {plot.premise}
+Act summaries: {json.dumps(plot.act_summaries, indent=2)}
 
-Recommendations:
-{json.dumps(quality_report.recommendations, indent=2)}
+Relevant agents: {json.dumps(relevant_agents[:10], indent=2)}  # Cap at 10
+Central conflict: {conflict_matrix.central_conflict}
 
-Available Resources:
-Agents: {json.dumps([a.model_dump() for a in agents], indent=2)}
-World: {world.model_dump_json(indent=2)}
-Conflicts: {conflict_matrix.model_dump_json(indent=2)}
-
-Refine the plot with specific names, locations, and concrete events."""
-        max_retries = 4
+Refine with concrete names/locations/events."""
+        max_retries = 2
         attempt = 0
         while attempt <= max_retries:
             attempt += 1
             print(f"\n📘 LLM Refined outline expansion attempt {attempt}/{max_retries + 1}")
 
             # --- LLM CALL ---
-            response, tokens = await better_author_client(
+            response, tokens = await author_client(
                 system_prompt=system_prompt,
                 human_prompt=human_prompt,
                 llm_temp=0.75,
@@ -1774,7 +1647,7 @@ Refine the plot with specific names, locations, and concrete events."""
 
         # --- MAX RETRIES EXHAUSTED ---
         print("🚨 Max retries exhausted. Returning last generated outline (mismatch unresolved).")
-        return json_data, last_tokens
+        return plot, last_tokens
     
     async def _create_story_tracker(
         self,
@@ -1875,9 +1748,8 @@ Create act-by-act tracking of what gets introduced and resolved."""
         
         # PHASE 6: Connect Elements (Snowflake Layer 5)
         print("\n🔗 Phase 6: Connecting elements to plot...")
-        prose_style = seed.prose_style
         connected_agents, connect_tokens = await self.agent_genesis.connect_agents_to_plot(
-            narrative_agents, conflict_matrix, minimal_plot, prose_style, model
+            narrative_agents=narrative_agents, conflict_matrix=conflict_matrix, plot_outline=minimal_plot, model=model
         )
 
         integrated_world, integrate_tokens = await self.world_builder.integrate_with_conflict(
@@ -1895,7 +1767,6 @@ Create act-by-act tracking of what gets introduced and resolved."""
         )
         print(f"✓ Plot expanded with full detail")
         
-        # PHASE 8: Age-appropriateness filter
         print("\n🔞 Phase 8: Age-appropriateness filter...")
         age_report, age_filter_tokens = await self._enforce_age_appropriateness(
             final_plot=expanded_plot,
@@ -1915,55 +1786,21 @@ Create act-by-act tracking of what gets introduced and resolved."""
         
         print(f"✓ Content validated for age {seed.target_audience_age}+")
         
-        # PHASE 9: Quality Validation
         print("\n🔍 Phase 9: Quality validation...")
         quality_report, quality_tokens = await self.quality_controller.validate_story_elements(
-            seed, expanded_plot, connected_agents,
-            integrated_world, conflict_matrix, model
+            seed, expanded_plot, connected_agents, integrated_world, conflict_matrix, model
         )
-        print(f"✓ Quality assessment complete")
-        print(f"  Strengths: {len(quality_report.strengths)}")
-        print(f"  Concerns: {len(quality_report.concerns)}")
-
-        # PHASE 10: Refinement if needed
-        final_plot = expanded_plot
+        
         refine_tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-
         if quality_report.concerns:
-            critical_issues = [c for c in quality_report.concerns if 'vague' in c.lower() or 'specific' in c.lower() or 'generic' in c.lower()]
-            
-            if critical_issues:
-                print("\n⚠️  CRITICAL: Plot too vague, running refinement...")
-                print(f"   Issues: {len(critical_issues)}")
-            else:
-                print(f"\n🔄 Phase 10: Refining {len(quality_report.concerns)} concerns...")
-            
             final_plot, refine_tokens = await self.refine_plot_with_quality_feedback(
-                plot=expanded_plot, quality_report=quality_report, agents=connected_agents,
-                world=integrated_world, conflict_matrix=conflict_matrix, act_count_target=seed.act_count, model=model
+                expanded_plot, quality_report, connected_agents, 
+                integrated_world, conflict_matrix, seed.act_count, model
             )
-            
-            # if critical_issues:
-            #     print("   Re-validating after refinement...")
-            #     recheck_report, recheck_tokens = await self.quality_controller.validate_story_elements(
-            #         seed, final_plot, connected_agents,
-            #         integrated_world, conflict_matrix, model
-            #     )
-            #     refine_tokens["prompt_tokens"] += recheck_tokens.get("prompt_tokens", 0)
-            #     refine_tokens["completion_tokens"] += recheck_tokens.get("completion_tokens", 0)
-                
-            #     remaining_critical = [c for c in recheck_report.concerns if 'vague' in c.lower() or 'specific' in c.lower()]
-            #     if remaining_critical:
-            #         print(f"⚠️  Still has {len(remaining_critical)} vagueness issues (proceeding anyway)")
-            #     else:
-            #         print("✅ Vagueness issues resolved")
-            
-            print(f"✓ Plot refined")
         else:
-            print("\n✓ Phase 10: No refinement needed")
+            final_plot = expanded_plot
 
-        # PHASE 11: Story Tracker
-        print("\n📊 Phase 11: Creating story tracker...")
+        print("\n📊 Phase 10: Creating story tracker...")
         story_tracker, tracker_tokens = await self._create_story_tracker(
             act_count=seed.act_count,
             final_plot=final_plot,
@@ -1975,39 +1812,39 @@ Create act-by-act tracking of what gets introduced and resolved."""
         
         # Store in memory
         await self.memory.add_long_term_document(
-            text=seed.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(seed.model_dump()),  # No indent=2
             metadata={"type": "story_seed", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=minimal_plot.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(minimal_plot.model_dump()),
             metadata={"type": "minimal_plot_outline", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=final_plot.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(final_plot.model_dump()),
             metadata={"type": "expanded_plot_outline", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=world_foundation.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(world_foundation.model_dump()),
             metadata={"type": "world_foundation", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=json.dumps([a.model_dump() for a in narrative_agents], indent=2),
+            text=StoryHelpers.compress_json([a.model_dump() for a in narrative_agents]),
             metadata={"type": "narrative_agents", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=conflict_matrix.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(conflict_matrix.model_dump()),
             metadata={"type": "conflict_matrix", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=json.dumps([a.model_dump() for a in connected_agents], indent=2),
+            text=StoryHelpers.compress_json([a.model_dump() for a in connected_agents]),
             metadata={"type": "connected_agents", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=integrated_world.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(integrated_world.model_dump()),
             metadata={"type": "integrated_world", "story_title": final_plot.title}
         )
         await self.memory.add_long_term_document(
-            text=quality_report.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(quality_report.model_dump()),
             metadata={"type": "quality_report", "story_title": final_plot.title}
         )
         
@@ -2492,22 +2329,15 @@ Dream big:
         if act_number == total_acts:
             suggested_word_count = remaining_words
         else:
-            suggested_word_count = int(remaining_words * word_percentage)
+            suggested_word_count = int(target_total * word_percentage)
 
         structure_config = self.calculate_chapter_structure(
             total_story_length=target_total,
             structure_name=structure_name
         )
 
-        # suggested_chapters = max(
-        #     structure_config["min_chapters"],
-        #     min(
-        #         structure_config["max_chapters"],
-        #         suggested_word_count
-        #     )
-        # )
         print(f"Act {act_number} guidance: {act_guidance}")
-        print(f"Target: ~{suggested_word_count:,} ") #words across ~{suggested_chapters} chapters
+        print(f"Target: ~{suggested_word_count:,} ")
 
         latest_chapter = progress.get('latest_chapter_id', 0)
         story_so_far = await self.memory.get_author_context(
@@ -2596,18 +2426,12 @@ Dream big:
                 await asyncio.sleep(0.8 * attempt)
                 continue
 
-            # --- Validation #2: Non-zero word counts ---
             missing = [c for c in act_plan.chapter_outlines if not c.target_word_count]
 
             if missing:
                 per_chapter = suggested_word_count / len(act_plan.chapter_outlines)
                 for c in missing:
                     c.target_word_count = per_chapter
-
-            # if zero_word_chapters:
-            #     print(f"⚠️ Chapters with zero target_word_count: {zero_word_chapters}. Retrying...")
-            #     await asyncio.sleep(0.8 * attempt)
-            #     continue
 
             # --- Passed all checks ---
             print("✓ Act validated. Correct chapter count + valid word counts.")
@@ -2617,16 +2441,6 @@ Dream big:
         if attempt > max_retries and last_plan:
             print("🚨 Max retries reached — returning last generated act plan (may be incomplete).")
             act_plan = last_plan
-
-
-        # response, tokens = await better_author_client(
-        #     system_prompt=system_prompt,
-        #     human_prompt=human_prompt,
-        #     llm_temp=0.8,
-        #     model=model
-        # )
-        # clean_resp = StoryHelpers._extract_content(response)
-        # clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
         # Validate anchor completeness
         def validate_anchor_fields(act_plan: ActPlan) -> bool:
@@ -2669,7 +2483,7 @@ Dream big:
         
         # Store in memory
         await self.memory.add_long_term_document(
-            text=act_plan.model_dump_json(indent=2),
+            text=StoryHelpers.compress_json(act_plan.model_dump()),
             metadata={"type": "act_plan", "act_id": act_number, "story_title": story_title}
         )
         

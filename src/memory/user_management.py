@@ -53,8 +53,8 @@ async def update_user_settings(user_id: str, user_data: Dict[str, Any]):
     return result
 
 async def update_user_story_public_status(user_id: str, story_id: str, public: bool = True):
-    store = await get_sqlite_store(table="users", user_id=user_id, story_id=None)
-    result = await store._update_story_public_status(story_id=story_id, public=public)
+    store = await get_sqlite_store(table="users", user_id=user_id, story_id=story_id)
+    result = await store._update_story_public_status(user_id=user_id, story_id=story_id, public=public)
     await store.close()
     return result
 
@@ -64,5 +64,15 @@ async def user_rate_story(user_id: str, story_id: str, rating: int):
     """
     store = await get_sqlite_store(table="story_progress", user_id=user_id, story_id=story_id)
     result = await store._rate_user_story(user_id=user_id, story_id=story_id, rating=rating)
+    await store.close()
+    return result
+
+async def update_story_view_state(user_id: str, story_id: str, act_id: int, chapter_id: int, scene_id: int):
+    store = await get_sqlite_store(table="story_progress", user_id=user_id, story_id=story_id)
+    result = await store.update_self_story_progress(metadata={
+        'current_act_id': act_id,
+        'latest_chapter_id': chapter_id,
+        'continue_scene_id': scene_id
+    })
     await store.close()
     return result

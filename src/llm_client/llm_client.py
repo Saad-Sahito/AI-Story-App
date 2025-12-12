@@ -277,6 +277,25 @@ class LLMClient:
             print(f"Warning: Invalid token usage values for model: {token_usage}")
         return response, token_usage
 
+    async def _enhanced_utility_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+        """Blocking call to LLM – returns the full response."""
+        # Use GroqWrapper as example; replace with GoogleWrapper if needed
+        #wrapper = GoogleWrapper(self.google_api_key)
+        # wrapper = GroqWrapper(self.groq_api_key)
+        #wrapper = XAIWrapper(self.xai_api_key)
+        wrapper = OpenAIWrapper(self.openai_api_key)
+        async with self.sem:
+            response = await wrapper.ainvoke([
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=human_prompt)
+            ], temperature=0.1, model="gpt-4o-2024-08-06")
+        token_usage = wrapper.get_token_usage(response)
+        # Validate token usage
+        if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
+            print(f"Warning: Invalid token usage values for model: {token_usage}")
+        await asyncio.sleep(1)
+        return response, token_usage
+    
     async def _better_author_client(
         self,
         system_prompt: str = "",
@@ -285,14 +304,16 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
+            # model = "gpt-5-mini-2025-08-07"
+            # wrapper = OpenAIWrapper(self.openai_api_key)
             # model = "grok-4-0709"
             # wrapper = XAIWrapper(self.xai_api_key)
             # model = "claude-sonnet-4-5-20250929"
-            # model = "claude-haiku-4-5-20251001"
-            # wrapper = AnthropicWrapper(self.claude_api_key)
-            model = "openai/gpt-oss-120b"
+            model = "claude-haiku-4-5-20251001"
+            wrapper = AnthropicWrapper(self.claude_api_key)
+            # model = "openai/gpt-oss-120b"
             # model = "llama-3.3-70b-versatile"
-            wrapper = GroqWrapper(self.groq_api_key)
+            # wrapper = GroqWrapper(self.groq_api_key)
             # model = "gemini-3-pro-preview"
             # wrapper = GoogleWrapper(self.google_api_key)
             async with self.sem:
@@ -323,6 +344,9 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
+            # model = "gpt-5-mini-2025-08-07"
+            # wrapper = OpenAIWrapper(self.openai_api_key)
+            # llm_temp = 1
             # model = "grok-4-fast-reasoning"
             # wrapper = XAIWrapper(self.xai_api_key)
             # model = "claude-sonnet-4-5-20250929"
@@ -397,6 +421,9 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
+            # model = "gpt-5-mini-2025-08-07"
+            # wrapper = OpenAIWrapper(self.openai_api_key)
+            # llm_temp = 1
             # model = "grok-4-fast-reasoning"
             # wrapper = XAIWrapper(self.xai_api_key)
             # model = "claude-haiku-4-5-20251001"
@@ -431,8 +458,10 @@ class LLMClient:
         #model: str = "None"
         ):
         try:
+            # model = "gpt-5-mini-2025-08-07"
+            # wrapper = OpenAIWrapper(self.openai_api_key)
+            # llm_temp = 1
             #model = "claude-3-haiku-20240307"
-            
             #wrapper = XAIWrapper(self.xai_api_key)
             model = "claude-haiku-4-5-20251001"
             wrapper = AnthropicWrapper(self.claude_api_key)
@@ -514,25 +543,6 @@ class LLMClient:
         return response, token_usage
 
 
-    async def _enhanced_ingestor_client(self, system_prompt: str = "", human_prompt: str = "") -> AIMessage:
-        """Blocking call to LLM – returns the full response."""
-        # Use GroqWrapper as example; replace with GoogleWrapper if needed
-        #wrapper = GoogleWrapper(self.google_api_key)
-        # wrapper = GroqWrapper(self.groq_api_key)
-        #wrapper = XAIWrapper(self.xai_api_key)
-        wrapper = OpenAIWrapper(self.openai_api_key)
-        async with self.sem:
-            response = await wrapper.ainvoke([
-                SystemMessage(content=system_prompt),
-                HumanMessage(content=human_prompt)
-            ], temperature=0.4, model="gpt-4o-2024-08-06")
-        token_usage = wrapper.get_token_usage(response)
-        # Validate token usage
-        if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
-            print(f"Warning: Invalid token usage values for model: {token_usage}")
-        await asyncio.sleep(1)
-        return response, token_usage
-    
     
 
 
@@ -581,10 +591,10 @@ async def ingestor_client(system_prompt: str = "", human_prompt: str = "") -> AI
     client = await get_shared_client()
     return await client._ingestor_client(system_prompt, human_prompt)
 
-async def enhanced_ingestor_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
+async def enhanced_utility_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access gemini_client through shared instance."""
     client = await get_shared_client()
-    return await client._enhanced_ingestor_client(system_prompt, human_prompt)
+    return await client._enhanced_utility_client(system_prompt, human_prompt)
 
 async def utility_client(system_prompt: str = "", human_prompt: str = "") -> AIMessage:
     """Convenience function to access model through shared instance."""

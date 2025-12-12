@@ -2,8 +2,8 @@
 
 import re
 import json
-from typing import Any, Dict, Tuple, Optional
-from src.llm_client.llm_client import utility_client, enhanced_ingestor_client
+from typing import Any, Dict, Tuple, Optional, List
+from src.llm_client.llm_client import utility_client, enhanced_utility_client
 from json_repair import repair_json
 from pydantic import BaseModel
 
@@ -29,42 +29,18 @@ class StoryHelpers:
         if isinstance(resp, dict):
             return resp.get("content") or resp.get("text") or json.dumps(resp)
         return str(resp)
+
+    @staticmethod
+    def compress_json(data: dict) -> str:
+        """Minimal JSON - no whitespace"""
+        return json.dumps(data, separators=(',', ':'), ensure_ascii=False)
+
+    @staticmethod  
+    def extract_essential_fields(obj: BaseModel, essential: List[str]) -> dict:
+        """Return only specified fields from Pydantic model"""
+        full = obj.model_dump()
+        return {k: v for k, v in full.items() if k in essential}
     
-    # @staticmethod
-    # def _extract_content(resp: Any) -> str:
-    #     """
-    #     Normalize LLM responses to plain string content.
-    #     Handles LangChain AIMessage, dicts, objects with .content,
-    #     and plain strings.
-    #     """
-    #     # LangChain AIMessage
-    #     try:
-    #         if isinstance(resp, AIMessage):
-    #             return resp.content
-    #     except Exception:
-    #         # If AIMessage isn't available or isinstance throws, continue
-    #         pass
-
-    #     # dict response (some SDKs return {"content": "..."} or {"text": "..."})
-    #     if isinstance(resp, dict):
-    #         if "content" in resp and isinstance(resp["content"], str):
-    #             return resp["content"]
-    #         if "text" in resp and isinstance(resp["text"], str):
-    #             return resp["text"]
-    #         # fallback: dump dict
-    #         return json.dumps(resp)
-
-    #     # object with .content attribute
-    #     if hasattr(resp, "content") and isinstance(getattr(resp, "content"), str):
-    #         return resp.content
-
-    #     # already a string
-    #     if isinstance(resp, str):
-    #         return resp
-
-    #     # fallback: stringify anything else
-    #     return str(resp)
-
     @staticmethod
     def _coerce_character_world_field(val: Any) -> Dict[str, Any]:
         """
@@ -297,48 +273,6 @@ class StoryHelpers:
         # After exhausting attempts, raise informative error
         raise ValueError(f"Failed to parse JSON after {max_attempts} attempts. Last error: {last_error}")
     
-    # @staticmethod
-    # def _generate_json_schema_for_llm(model: type[BaseModel]) -> str:
-    #     """Generate clean, LLM-friendly schema with field names, types, and descriptions."""
-    #     schema = model.model_json_schema()
-    #     lines = ["REQUIRED JSON STRUCTURE (exact field names):", ""]
-
-    #     required = set(schema.get("required", []))
-
-    #     for name, info in schema["properties"].items():
-    #         req = " [REQUIRED]" if name in required else ""
-    #         desc = f" — {info.get('description', '').strip()}" if info.get("description") else ""
-    #         type_ = info.get("type", "any")
-    #         if "$ref" in info:
-    #             type_ = info["$ref"].split("/")[-1]
-    #         elif "anyOf" in info:
-    #             refs = [r["$ref"].split("/")[-1] for r in info["anyOf"] if "$ref" in r]
-    #             type_ = " | ".join(refs) if refs else "union"
-            
-    #         default = ""
-    #         if "default" in info and info["default"] is not None:
-    #             default = f" (default: {json.dumps(info['default'])})"
-
-    #         lines.append(f"- {name}: {type_}{default}{req}{desc}")
-
-    #         # Show nested structure for complex fields
-    #         if info.get("type") == "object" and "properties" in info:
-    #             lines.append("  Contains:")
-    #             for sub_name, sub_info in info["properties"].items():
-    #                 sub_req = f" [REQUIRED]" if sub_name in info.get("required", []) else ""
-    #                 sub_desc = f" — {sub_info.get('description', '')}" if sub_info.get("description") else ""
-    #                 lines.append(f"    - {sub_name}: {sub_info.get('type', 'any')}{sub_req}{sub_desc}")
-    #         elif info.get("type") == "array" and "items" in info and "$ref" in info["items"]:
-    #             ref_name = info["items"]["$ref"].split("/")[-1]
-    #             lines.append(f"  → List of {ref_name} objects")
-
-    #     lines.extend([
-    #         "",
-    #         "Output ONLY valid JSON matching this exact structure.",
-    #         "No extra fields. No renamed fields. No missing required fields."
-    #     ])
-    #     return "\n".join(lines)
-    
     @staticmethod
     async def _repair_json_with_llm(text: str, parser, enhanced: bool = False, exc: Exception = None) -> str:
         """
@@ -378,7 +312,7 @@ Broken JSON to fix:
 
 Return only the fixed JSON."""
         
-        client = enhanced_ingestor_client if enhanced else utility_client
+        client = enhanced_utility_client if enhanced else utility_client
         resp, _ = await client(system_prompt=system_prompt, human_prompt=human_prompt)
 
         content = StoryHelpers._extract_content(resp)

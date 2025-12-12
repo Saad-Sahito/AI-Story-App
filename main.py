@@ -16,7 +16,7 @@ from pydantic import BaseModel
 from setup.shared_redis_pool import REDIS_POOL, get_redis_client
 from setup.main_setup import MainSetup
 from src.memory.community_stories import get_all_public_stories_page
-from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories, get_user_profile, update_user_settings, update_user_story_public_status, user_rate_story
+from src.memory.user_management import add_user, delete_story, get_user_profile_with_stories, get_user_profile, update_user_settings, update_user_story_public_status, user_rate_story, update_story_view_state
 from src.memory.analytics import get_all_characters_raw, get_all_data, get_all_director_notes, get_all_story_progress, get_all_story_texts, get_all_users, get_all_world_elements_raw, get_all_feedback
 from src.memory.feedback import post_user_feedback
 from src.memory.shared_resources import SHARED_QDRANT
@@ -424,13 +424,37 @@ async def api_get_story_progress(user_id: str, story_id: str, story_type: str):
 async def api_story_cluster(user_id: str, story_id: str, story_type: str, chapter_number: int):
     return await mainsetup.get_story_cluster(user_id=user_id, story_id=story_id, story_type=story_type, chapter_number=chapter_number)
 
+class UpdateStoryViewStateRequest(BaseModel):
+    act_id: int
+    chapter_id: int
+    scene_id: int
+
+@app.post("/stories/update-state/{user_id}/{story_id}")
+async def api_update_story_view_state(
+    user_id: str, 
+    story_id: str, 
+    request: UpdateStoryViewStateRequest
+):
+    return await update_story_view_state(
+        story_id=story_id, 
+        user_id=user_id, 
+        act_id=request.act_id, 
+        chapter_id=request.chapter_id, 
+        scene_id=request.scene_id
+    )
+
 @app.post("/stories/progress/{user_id}/{story_id}/public")
 async def api_put_story_public(user_id: str, story_id: str, public: bool = True):
     return await update_user_story_public_status(user_id=user_id, story_id=story_id, public=public)
 
+class RatingRequest(BaseModel):
+    rating: int = 0
+
 @app.post("/stories/progress/{user_id}/{story_id}/rating")
-async def api_put_story_rating(user_id: str, story_id: str, rating: int = 0):
-    return await user_rate_story(user_id=user_id, story_id=story_id, rating=rating)
+async def api_put_story_rating(user_id: str, story_id: str, request: RatingRequest):
+    received_rating = request.rating
+    # Your code here
+    return await user_rate_story(user_id=user_id, story_id=story_id, rating=received_rating)
 
 class ImageRequest(BaseModel):
     story_type: str

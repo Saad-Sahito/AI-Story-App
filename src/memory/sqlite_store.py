@@ -131,6 +131,7 @@ class SQLiteStore:
                     total_acts INTEGER,
                     target_length INTEGER,
                     story_length INTEGER,
+                    last_chapter_id INTEGER,
                     genre_list TEXT,
                     sub_genre_list TEXT,
                     themes_list TEXT,
@@ -207,7 +208,7 @@ class SQLiteStore:
         """Retrieve shared story data for a given story_id."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
-                SELECT story_id, story_title, story_type, total_acts, target_length, story_length, genre_list, sub_genre_list, themes_list,
+                SELECT story_id, story_title, story_type, total_acts, target_length, last_chapter_id, story_length, last_chapter_id, genre_list, sub_genre_list, themes_list,
                        pov, tense, prose_style,
                        blurb, tone_temp, image_data, public, min_age, author_id, created_at, updated_at
                 FROM shared_story_data
@@ -234,6 +235,7 @@ class SQLiteStore:
                     "story_type": metadata.get("story_type") if metadata.get("story_type") is not None else (existing["story_type"] or "classic"),
                     "total_acts": metadata.get("total_acts") if metadata.get("total_acts") is not None else (existing["total_acts"] or 3),
                     "target_length": metadata.get("target_length") if metadata.get("target_length") is not None else (existing["target_length"] or 0),
+                    "last_chapter_id": metadata.get("last_chapter_id") if metadata.get("last_chapter_id") is not None else (existing["last_chapter_id"] or 0),
                     "genre_list": metadata.get("genre") if metadata.get("genre") is not None else existing["genre_list"],
                     "sub_genre_list": metadata.get("sub_genre") if metadata.get("sub_genre") is not None else existing["sub_genre_list"],
                     "themes_list": metadata.get("themes") if metadata.get("themes") is not None else existing["themes_list"],
@@ -256,6 +258,7 @@ class SQLiteStore:
                     "story_type": metadata.get("story_type", "classic"),
                     "total_acts": metadata.get("total_acts", 3),
                     "target_length": metadata.get("target_length", 0),
+                    "last_chapter_id": metadata.get("last_chapter_id", 0),
                     "genre_list": metadata.get("genre", []),
                     "sub_genre_list": metadata.get("sub_genre", []),
                     "themes_list": metadata.get("themes", []),
@@ -274,14 +277,15 @@ class SQLiteStore:
 
             await conn.execute("""
             INSERT INTO shared_story_data (
-                story_id, story_title, story_type, total_acts, target_length, genre_list, sub_genre_list, themes_list, pov, tense, prose_style,
+                story_id, story_title, story_type, total_acts, target_length, last_chapter_id, genre_list, sub_genre_list, themes_list, pov, tense, prose_style,
                 blurb, tone_temp, image_data, public, min_age, author_id
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(story_id) DO UPDATE SET
                 story_title = excluded.story_title,
                 story_type = excluded.story_type,
                 total_acts = excluded.total_acts,
                 target_length = excluded.target_length,
+                last_chapter_id = excluded.last_chapter_id,
                 genre_list = excluded.genre_list,
                 sub_genre_list = excluded.sub_genre_list,
                 themes_list = excluded.themes_list,
@@ -301,6 +305,7 @@ class SQLiteStore:
                 merged_data["story_type"],
                 merged_data["total_acts"],
                 merged_data["target_length"],
+                merged_data["last_chapter_id"],
                 json.dumps(merged_data["genre_list"]),
                 json.dumps(merged_data["sub_genre_list"]),
                 json.dumps(merged_data["themes_list"]),
@@ -788,10 +793,13 @@ class SQLiteStore:
         try:
             async with self._get_connection() as conn:
                 # First: verify ownership
-                author_id = await conn.execute_fetchone("""
+                row = await conn.execute("""
                     SELECT author_id FROM shared_story_data 
                     WHERE story_id = ?
                 """, (story_id,))
+
+                result = await row.fetchone()
+                author_id = result['author_id']
 
                 if author_id != user_id:
                     return {"status": "error", "message": "You can only change public status of your own stories"}
@@ -806,13 +814,14 @@ class SQLiteStore:
 
                 await conn.commit()
 
-                # Always update story_length when public status changes (especially when going public)
                 story_progress = await self.get_story_progress()
-                if story_progress and story_progress.get("story_id") == story_id:
-                    await self.__update_shared_story_length(
-                        story_id=story_id,
-                        word_count=story_progress['story_word_count']
-                    )
+                word_count = story_progress['story_word_count']
+
+                # if story_progress and story_progress.get("story_id") == story_id:
+                await self.__update_shared_story_length(
+                    story_id=story_id,
+                    word_count=word_count
+                )
 
                 return {
                     "status": "success",
@@ -1181,9 +1190,7 @@ class SQLiteStore:
             if existing_row:
                 await conn.execute("""
                     UPDATE story_progress
-                    SET user_id = ?,
-                        story_id = ?,
-                        current_act_id = ?,
+                    SET current_act_id = ?,
                         latest_chapter_id = ?,
                         continue_scene_id = ?,
                         story_word_count = ?,
@@ -1207,6 +1214,7 @@ class SQLiteStore:
                     self.user_id,
                     self.story_id
                 ))
+
             else:
                 await conn.execute("""
                     INSERT INTO story_progress (
@@ -1230,6 +1238,8 @@ class SQLiteStore:
             
             await conn.commit()
 
+            return {'status': 'success', 'message': 'Updated Story State'}
+
     async def update_story_progress(self, metadata: Optional[Dict[str, Any]] = None):
         metadata = metadata or {}
         
@@ -1250,6 +1260,7 @@ class SQLiteStore:
             "story_type": metadata.get("story_type"),
             "total_acts": metadata.get("total_acts"),
             "target_length": metadata.get("target_length"),
+            "last_chapter_id": chapter_id,
             "genre": metadata.get("genre"),
             "themes": metadata.get("themes"),
             "pov": metadata.get("pov"),
@@ -1441,34 +1452,6 @@ class SQLiteStore:
     async def get_story_progress(self) -> Optional[Dict[str, Any]]:
         """
         Get the latest story progress, combining user-specific and shared story data.
-
-        Returns:
-            Dict containing:
-                - current_act_id: Current act number (int, default 1)
-                - latest_chapter_id: Current chapter number (int, default 0)
-                - continue_scene_id: Current scene number (int, default 0)
-                - story_word_count: Total words written (int, default 0)
-                - chapter_word_count: Chapter words written (int, default 0)
-                - complete: Is story finished (bool, default False)
-                - author_token_usage: Tokens used by author_id role (int, default 0)
-                - director_token_usage: Tokens used by director role (int, default 0)
-                - writer_token_usage: Tokens used by writer role (int, default 0)
-                - total_acts: Total acts planned (int, default 3)
-                - target_length: Target word count (int, default 0)
-                - pov: Point of view (str, default None)
-                - genre: Story genre (list, default [])
-                - story_type: Story type (str, default "classic")
-                - story_title: Story title (str, default None)
-                - tone_temp: Temperature for tone (float, default None)
-                - model: LLM model (str, default None)
-                - blurb: Story blurb (str, default None)
-                - image_data: Cover image (blob, default None)
-                - public: Is story public (bool, default False)
-            Returns None if no progress or shared data exists for the user_id and story_id.
-        
-        Raises:
-            ValueError: If user_id or story_id is not provided.
-            aiosqlite.Error: If a database error occurs.
         """
         if not self.user_id or not self.story_id:
             raise ValueError("user_id and story_id must be provided")
@@ -1477,7 +1460,7 @@ class SQLiteStore:
             async with self._get_connection() as conn:
                 cursor = await conn.execute("""
                     SELECT current_act_id, latest_chapter_id, continue_scene_id, 
-                        story_word_count, chapter_word_count, complete, 
+                        story_word_count, chapter_word_count, complete, rating,
                         author_token_usage, director_token_usage, writer_token_usage
                     FROM story_progress 
                     WHERE user_id = ? AND story_id = ?
@@ -1493,6 +1476,7 @@ class SQLiteStore:
                 result = {
                     "current_act_id": 1,
                     "latest_chapter_id": 0,
+                    "last_chapter_id": 0,
                     "continue_scene_id": 0,
                     "story_word_count": 0,
                     "chapter_word_count": 0,
@@ -1506,6 +1490,7 @@ class SQLiteStore:
                    # "narrative_voice": None,
                     "tense": None,
                     "prose_style": None,
+                    "rating": 0,
                     "genre": [],
                     "themes": [],
                     "story_type": "classic",
@@ -1528,13 +1513,15 @@ class SQLiteStore:
                         "complete": bool(progress_row["complete"]),
                         "author_token_usage": progress_row["author_token_usage"] if progress_row["author_token_usage"] is not None else 0,
                         "director_token_usage": progress_row["director_token_usage"] if progress_row["director_token_usage"] is not None else 0,
-                        "writer_token_usage": progress_row["writer_token_usage"] if progress_row["writer_token_usage"] is not None else 0
+                        "writer_token_usage": progress_row["writer_token_usage"] if progress_row["writer_token_usage"] is not None else 0,
+                        "rating": progress_row["rating"] if progress_row["rating"] is not None else 0
                     })
                 
                 if shared_data:
                     result.update({
                         "total_acts": shared_data["total_acts"] if shared_data["total_acts"] is not None else 3,
                         "target_length": shared_data["target_length"] if shared_data["target_length"] is not None else 0,
+                        "last_chapter_id": shared_data["last_chapter_id"] if shared_data["last_chapter_id"] is not None else 0,
                         "pov": shared_data["pov"],
                         "tense": shared_data["tense"],
                         #"narrative_voice": shared_data["narrative_voice"],
@@ -1803,29 +1790,30 @@ class SQLiteStore:
             async with conn.execute(query, (story_id,) ) as cursor:
                 rows = await cursor.fetchall()
 
-        ratings = [row[0] for row in rows]
-        total_ratings = len(ratings)
+            ratings = [row[0] for row in rows]
+            total_ratings = len(ratings)
 
-        if not ratings:
-            new_rating = None
-        else:
-            new_rating = round(sum(ratings) / len(ratings), 2)
+            if not ratings:
+                new_rating = None
+            else:
+                new_rating = round(sum(ratings) / len(ratings), 2)
 
-        update_query = """
-            UPDATE shared_story_data
-            SET overall_rating = ?,
-                total_ratings = ?,
-                updated_at = CURRENT_TIMESTAMP
-            WHERE story_id = ?
-        """
-        await conn.execute(update_query, (new_rating, total_ratings, story_id))
-        await conn.commit()
+            update_query = """
+                UPDATE shared_story_data
+                SET overall_rating = ?,
+                    total_ratings = ?,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE story_id = ?
+            """
+            await conn.execute(update_query, (new_rating, total_ratings, story_id))
+            await conn.commit()
 
     async def _rate_user_story(self, user_id: str, story_id: str, rating: int):
         """
         Updates the rating (1–5) for a user's progress on a specific story.
         Then triggers recalculation of the overall rating.
         """
+        print(rating)
         if not 1 <= rating <= 5:
             return {"status": "error", "message": "Rating must be between 1 and 5"}
 

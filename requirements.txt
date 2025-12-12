@@ -42,6 +42,7 @@ better-profanity
 textstat
 deepdiff
 json-repair
+reportlab
 
 # === Optional / debugging ===
 #memory-profiler

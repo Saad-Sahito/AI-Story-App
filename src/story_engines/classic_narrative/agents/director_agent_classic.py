@@ -4,13 +4,10 @@ import json
 import asyncio
 import gc
 import traceback
-import re
-from fastapi import HTTPException
 from typing import Any, Dict, List, Optional, Literal
 from langgraph.graph import StateGraph, END
 from dataclasses import dataclass, field
 from pydantic import BaseModel, Field
-# from langchain_core.output_parsers import StringOutputParser
 from .shared_scene_planner import UserSceneContext
 from src.utilities.story_helpers import StoryHelpers
 from src.memory.memory_system import StoryMemorySystem
@@ -24,10 +21,6 @@ from src.utilities.ingestor import Ingestor
 # STATE AND MODELS
 # ============================================================================
 class SceneWriterDirective(BaseModel):
-    """
-    COMPLETE scene instructions for Scene Writer.
-    This is the ONLY context Scene Writer gets — must be comprehensive.
-    """
     scene_id: int
     chapter_id: int
     act_id: int
@@ -41,19 +34,44 @@ class SceneWriterDirective(BaseModel):
     )
     
     agents_in_scene: Dict[str, Dict[str, Any]] = Field(
-        description="""agent_name: { 'role': str, 'gender': str, 'objective': str, 'current_status': str, 'distinctive_voice': str, 'relationships': dict, ... }"""
+        description="""agent_name: { 
+            'role': str, 
+            'gender': str, 
+            'objective': str,  
+            'current_status': str,  
+            'distinctive_voice': str,
+            'core_motivation': str,
+            'relationships': dict,
+            
+            # NEW: Depth fields
+            'internal_conflict': str,  # What they struggle with mentally
+            'defining_wound': str,  # Past trauma/secret shaping behavior
+            'speech_pattern': str,  # Specific verbal tic or phrase style
+            'arc_stage': str,  # "resisting change" | "crisis point" | "transformed | etc..."
+            ... 
+        }"""
     )
     
     context: Dict[str, Any] = Field(
         default_factory=dict,
-        description="Flexible container for location, atmosphere, pacing, emotional_arc, tone, etc."
+        description="""location, atmosphere, pacing, emotional_arc, tone, thematic_beat, world_rules_active, mechanics_to_clarify
+        """
     )
     
     state_changes: Dict[str, Any] = Field(
-        default_factory=dict,
-        description="What changes as result of this scene (characters, world, plot)"
+        description="""characters, relationships, world changes, and:
+        
+        'emotional_beats': [
+            {
+                'type': 'betrayal' | 'sacrifice' | 'confession' | 'loss' | 'triumph',
+                'character': 'Name',
+                'requires_setup': ['trust built in prev scene', 'hinted conflicting loyalty'],
+                'payoff_if_earned': 'Reader feels gutted, not confused'
+            }
+        ]
+        """
     )
-    
+
     targets: Optional[Dict[str, Any]] = Field(
         default_factory=dict,
         description="paragraph_count, dialogue_ratio, pov, etc."
@@ -83,73 +101,7 @@ class DirectorOutput(BaseModel):
         description="'generate_and_ingest' to continue, 'END' if story complete"
     )
 
-
-# ============================================================================
-# BEST-IN-CLASS JSON SCHEMA INSTRUCTION (2025 STANDARD)
-# ============================================================================
-# def best_json_instructions(model: type[BaseModel]) -> str:
-#     schema = model.model_json_schema()
-    
-#     def format_field(name: str, info: dict, *, required: bool = False, depth: int = 0):
-#         indent = "  " * depth
-#         req = " [REQUIRED]" if required else ""
-#         desc = f" — {info.get('description', '').strip()}" if info.get('description') else ""
-#         type_ = info.get('type', 'any')
-#         if '$ref' in info:
-#             type_ = info['$ref'].split('/')[-1]
-#         elif 'anyOf' in info:
-#             refs = [r['$ref'].split('/')[-1] for r in info['anyOf'] if '$ref' in r]
-#             type_ = " | ".join(refs) if refs else 'union'
-        
-#         default = ""
-#         if 'default' in info and info['default'] is not None:
-#             default = f" (default: {json.dumps(info['default'], ensure_ascii=False)})"
-        
-#         return f"{indent}- {name}: {type_}{default}{req}{desc}"
-
-#     lines = [
-#         "YOU MUST OUTPUT EXACTLY ONE VALID JSON OBJECT WITH THESE FIELDS:",
-#         "═" * 78,
-#     ]
-    
-#     required = set(schema.get("required", []))
-#     for field_name, field_info in schema["properties"].items():
-#         is_req = field_name in required
-#         lines.append(format_field(field_name, field_info, required=is_req, depth=0))
-        
-#         if field_info.get("type") == "array" and "items" in field_info:
-#             items = field_info["items"]
-#             if "$ref" in items:
-#                 ref_name = items["$ref"].split("/")[-1]
-#                 lines.append(f"  → Each item is a {ref_name} object")
-#             elif "properties" in items:
-#                 lines.append(f"  → Each item contains:")
-#                 for sub_name, sub_info in items["properties"].items():
-#                     sub_req = sub_name in items.get("required", [])
-#                     lines.append(format_field(sub_name, sub_info, required=sub_req, depth=2))
-        
-#         if "properties" in field_info:
-#             lines.append(f"  → Contains:")
-#             for sub_name, sub_info in field_info["properties"].items():
-#                 sub_req = sub_name in field_info.get("required", [])
-#                 lines.append(format_field(sub_name, sub_info, required=sub_req, depth=2))
-
-#     lines.extend([
-#         "",
-#         "CRITICAL RULES:",
-#         "- Output ONLY the JSON. First character must be {, last must be }",
-#         "- No markdown, no code fences, no explanations, no extra text",
-#         "- If you cannot comply, output: {\"error\": \"failed to generate valid JSON\"}",
-#         "",
-#         "Begin JSON now:"
-#     ])
-    
-#     return "\n".join(lines)
-
-
-# Pre-compute once — this is your new "get_format_instructions()"
 DIRECTOR_JSON_INSTRUCTIONS = DirectorOutput.model_json_schema()
-
 
 # ============================================================================
 # GENERIC CONTEXT FORMATTER
@@ -211,25 +163,56 @@ class ContextFormatter:
         content = ContextFormatter._format_value(data, depth=1)
         return f"╠ {title}\n{content}\n"
 
+
     @staticmethod
     def full_context(snapshot: 'StoryContextSnapshot') -> str:
         parts = [
             "╔═══════════════════════════════════════════════════════════╗",
             "║ DIRECTOR CONTEXT SNAPSHOT",
-            "╚═══════════════════════════════════════════════════════════╝",
+            "╚═══════════════════════════════════════════════════════════",
         ]
+        
+        if snapshot.central_conflict:
+            parts.append(f"\n🎯 CENTRAL CONFLICT\n{snapshot.central_conflict}\n")
+        
+        if snapshot.character_core_drives:
+            parts.append("\n👥 CHARACTER MOTIVATIONS")
+            for name, drive in list(snapshot.character_core_drives.items())[:8]:  # Cap at 8 to save tokens
+                parts.append(f"  • {name}: {drive}")
+            parts.append("")
+        
+        if snapshot.relationship_web:
+            parts.append("\n🔗 KEY RELATIONSHIPS")
+            for name, relationships in list(snapshot.relationship_web.items())[:6]:
+                for other, tension in list(relationships.items())[:2]:  # Max 2 relationships per char
+                    parts.append(f"  • {name} ↔ {other}: {tension}")
+            parts.append("")
+        
+        if snapshot.world_rules:
+            parts.append("\n🌍 WORLD CONSTRAINTS")
+            for rule in snapshot.world_rules[:5]:  # Cap at 5 rules
+                parts.append(f"  • {rule}")
+            parts.append("")
+        
+        if snapshot.active_themes:
+            parts.append("\n📖 ACTIVE THEMES")
+            for theme, manifestation in snapshot.active_themes.items():
+                parts.append(f"  • {theme}: {manifestation}")
+            parts.append("")
+        
         for key, value in snapshot.__dict__.items():
-            if key == "previous_scenes_in_chapter":
+            if key in ['central_conflict', 'character_core_drives', 'relationship_web', 
+                    'world_rules', 'active_themes', 'previous_scenes_in_chapter']:
                 continue
+            
             title = key.replace("_", " ").upper()
             parts.append(ContextFormatter.format_section(title, value))
+        
         return "\n".join(parts)
-
 
 @dataclass
 class StoryContextSnapshot:
     story_seed: Dict
-    # final_plot: Dict
     act_plan: Dict
     chapter_word_count_target: int
     act_setup_payload: List[str]
@@ -237,11 +220,17 @@ class StoryContextSnapshot:
     connected_agents: List[Dict]
     integrated_world: Dict
     character_progressions: List[Dict]
-    # conflict_matrix: Dict
     world_progressions: List[Dict]
     story_so_far_context: Dict
     entire_story_tracker: Dict
     current_chapter_anchors: List[Dict] = field(default_factory=list)
+    
+    # NEW: Critical missing context
+    central_conflict: str = ""  # From conflict_matrix
+    character_core_drives: Dict[str, str] = field(default_factory=dict)  # name -> motivation
+    relationship_web: Dict[str, Dict[str, str]] = field(default_factory=dict)  # name -> {other_name: tension}
+    world_rules: List[str] = field(default_factory=list)  # Immutable world constraints
+    active_themes: Dict[str, str] = field(default_factory=dict)  # theme -> how it manifests
 
 
 # ============================================================================
@@ -312,24 +301,47 @@ class DirectorGraph:
         act_plan = json.loads(await self.memory.get_long_term_document(metadata={'type': 'act_plan', 'act_id': act_id, 'story_title': story_title}))
         agents = json.loads(await self.memory.get_long_term_document(metadata={'type': 'connected_agents', 'story_title': story_title}))
         world = json.loads(await self.memory.get_long_term_document(metadata={'type': 'integrated_world', 'story_title': story_title}))
-        # conflict = json.loads(await self.memory.get_long_term_document(metadata={'type': 'conflict_matrix', 'story_title': story_title}))
+        conflict_matrix = json.loads(await self.memory.get_long_term_document(metadata={'type': 'conflict_matrix', 'story_title': story_title}))
+        # conflict_matrix = json.loads(conflict_json)
+
         tracker = json.loads(await self.memory.get_long_term_document(metadata={'type': 'story_tracker', 'story_title': story_title}))
 
         director_context = await self.memory.get_director_context(current_act_number=act_id, current_chapter_number=chapter_id)
 
-        # Extract the high-level chapter outline (still stored inside act_plan for backward compat)
         rich_chapter = next(
             (c for c in act_plan.get("chapter_outlines", []) if isinstance(c, dict) and c.get("chapter_number") == chapter_id),
             {}
         )
+        # Extract character motivations from connected_agents
+        char_drives = {}
+        relationship_web = {}
+        for agent in agents:
+            name = agent.get('name', '')
+            char_drives[name] = agent.get('plot_function', '') or agent.get('essence', '')
+            
+            # Build relationship map
+            relationships = agent.get('key_relationships', {}) or agent.get('relationships', {})
+            if relationships:
+                relationship_web[name] = relationships
+        
+        # Extract world rules from integrated_world
+        world_rules = []
+        if 'magic_system' in world:
+            world_rules.append(f"Magic: {world['magic_system']}")
+        if 'tech_level' in world:
+            world_rules.append(f"Tech: {world['tech_level']}")
+        if 'social_hierarchy' in world:
+            world_rules.append(f"Social: {world['social_hierarchy']}")
+        # Add any other fields that represent constraints
+        
+        # Extract active themes from seed
+        active_themes = {theme: f"Explored through {seed.get('genre', ['story'])[0]} lens" 
+                     for theme in seed.get('themes', [])}
         target_word_count = rich_chapter.get("target_word_count")
         char_prog = await self.memory.get_long_term_recent_characters(chapter_id)
         world_prog = await self.memory.get_long_term_recent_worlds(chapter_id)
-        # recent_summary = await self.memory.search_single_episodic_story(act_number=act_id, chapter_number=chapter_id, summary_type="scene summary")
-        #print(rich_chapter.get("anchor_points"))
         return StoryContextSnapshot(
             story_seed=seed,
-            # final_plot=plot,
             act_plan=act_plan,
             chapter_word_count_target=target_word_count,
             act_setup_payload=act_plan.get("setup_this_act", []),
@@ -337,12 +349,15 @@ class DirectorGraph:
             act_payoff_payload=act_plan.get("payoff_this_act", []),
             connected_agents=agents,
             integrated_world=world,
-            # conflict_matrix=conflict,
             character_progressions=char_prog,
             world_progressions=world_prog,
             story_so_far_context=director_context,
-            entire_story_tracker=tracker['act_tracking']
-            # recent_chapters_summary=recent_summary or ""
+            entire_story_tracker=tracker['act_tracking'],
+            central_conflict=conflict_matrix.get('central_conflict', ''),
+            character_core_drives=char_drives,
+            relationship_web=relationship_web,
+            world_rules=world_rules,
+            active_themes=active_themes
         )
     
     # ============================================================================
@@ -395,54 +410,39 @@ class DirectorGraph:
 
         total_chapter_words: int = self.story_context.chapter_word_count_target
 
-        system_prompt = f"""You are the Director — a merciless cinematic surgeon who turns story anchors into tight, filmable, irreversible scenes, no matter the genre or tone.
+        system_prompt = f"""You are the Director converting story anchors into executable scene directives.
 
-YOUR NON-NEGOTIABLE LAWS (apply to every genre, every time)
-1. ONE DRAMATIC FUNCTION PER SCENE — FULL STOP  
-   If a previous scene in this chapter already did “prove the magic key works”, “trade an object for access”, “disable surveillance”, or “receive a new McGuffin”, you are FORBIDDEN to do it again.  
-   Invent a new function or merge with an existing scene. Repetition = instant death.
+CORE CONTEXT:
+Conflict: {self.story_context.central_conflict}
+Themes: {', '.join(self.story_context.active_themes.keys())}
+World Rules: {' | '.join(self.story_context.world_rules[:3])}
 
-2. MINIMAL INTERNAL STATES IN NARRATION
-   Never name emotions, thoughts, or realisations. Never use physical clichés as shorthand for feeling.
-   Emotion and thought ONLY exist when they erupt into observable behaviour, dialogue, or world reaction.
+CHARACTER PSYCHOLOGY (use in scene objectives):
+{chr(10).join(f"• {name}: {drive}" for name, drive in list(self.story_context.character_core_drives.items())[:8])}
 
-3. THE PROTAGONIST (or current POV character) MUST HAVE AGENCY
-   In every scene containing the focal character, they MUST perform at least one deliberate, concrete action that creates a new fact in the world. No passive witnessing.
+RELATIONSHIP TENSIONS (drive dialogue/conflict):
+{chr(10).join(f"• {name} vs {other}: {tension}" 
+              for name, rels in list(self.story_context.relationship_web.items())[:5]
+              for other, tension in list(rels.items())[:2])}
 
-4. EVERY SCENE MUST CREATE AT LEAST ONE IRREVERSIBLE CHANGE  
-   Something must break, burn, die, get pregnant, get broadcast, get tattooed, get sold, get publicly confessed — anything that cannot be undone by the end of the book, let alone the chapter.
+RULES:
+1. ONE DRAMATIC FUNCTION PER SCENE - no repetition in chapter
+2. MINIMAL INTERNAL STATES - show through action/dialogue
+3. PROTAGONIST AGENCY - deliberate actions creating change
+4. IRREVERSIBLE CONSEQUENCES - something must permanently shift
+5. NO REPETITION - varied dramatic functions per scene
+6. GENRE-ADAPTIVE - tone/texture fits {', '.join(self.genre_list)}
+7. DIALOGUE = POWER STRUGGLE - every line wins/loses
 
-5. NO REPETITION OF DRAMATIC FUNCTION
-   Never create two scenes in the same chapter that serve the same purpose 
-   (“someone delivers bad news”, “someone tempts the hero”, “someone explains lore”, etc.).
+When creating scene directives:
+- agents_in_scene: Include 'objective' (what they want NOW) + 'current_status' (emotional state)
+- story_events: Concrete actions honoring character motivations
+- state_changes: Character psychology shifts, relationship changes, world impacts
+- context: Include 'thematic_beat' (which theme this scene explores)
 
-6. GENRE DICTATES FLAVOUR, NOT RULES
-   - In comedy: irreversible change can be a pie in the face that starts a food fight that gets someone fired.
-   - In romance: it can be the first kiss that immediately gets interrupted by an ex walking in.
-   - In cozy mystery: it can be knocking over a teacup that reveals a hidden letter.
-   - In tragedy: it can be blood on the floor.
-   The laws stay identical; only the texture changes.
+Target chapter words: {total_chapter_words}
 
-7. DIALOGUE MUST HAVE A WINNER AND A LOSER  
-   Every line is an attempt to dominate, seduce, blackmail, beg, or lie. Never neutral exposition.
-
-POSITIVE COMMANDMENTS (always)
-
-- Use specific, tactile objects as turning points.
-- Make the environment react to choices in real time (weather, lights, animals, technology, magic, social media notifications — whatever fits the genre).
-- Dialogue must sound like people trying to win, seduce, survive, or lie — never like exposition.
-- Heighten pressure appropriate to tone (a ticking bomb, an awkward silence, a phone about to vibrate, a cat about to knock over a vase).
-
-OUTPUT RULES (unchanged schema)
-
-- story_events: 4–6 numbered, filmable beats of action or exact dialogue
-- emotional_arc: always phrased as observable shift (“Fidgeting with ring → Ring thrown into the fire”)
-- state_changes: must contain at least one bullet starting with “IRREVERSIBLE:” (funny or devastating, doesn’t matter)
-- must inlude gender with each agent mentioned under 'agents_in_scene'
-
-Total chapter word target: {total_chapter_words}
-
-Full story context (never contradict):
+Full context:
 {ContextFormatter.full_context(self.story_context)}
 
 {DIRECTOR_JSON_INSTRUCTIONS}
@@ -455,18 +455,19 @@ Full story context (never contradict):
         for idx, anchor in enumerate(anchor_points, 1):
             print(f"  Planning anchor {idx}/{total_anchors}: {anchor.get('anchor_type', 'unknown')}")
 
-            scenes_per_anchor = 1
-            # Only allow 2+ if the anchor explicitly says "estimated_scenes: 2+" in the act plan
-            if anchor.get("estimated_scenes", 1) > 1:
-                scenes_per_anchor = anchor["estimated_scenes"]
+            # Initial scenes per anchor
+            scenes_per_anchor = anchor.get("estimated_scenes", 1)
+
+            # Initial words per scene
             words_per_scene = int(total_chapter_words / (scenes_per_anchor * total_anchors))
-            # words_per_scene = max(300, int(total_chapter_words / (scenes_per_anchor * total_anchors)))
-            print(f"  → Generating {scenes_per_anchor} scene(s) @ ~{words_per_scene} words each")
-# - Location: {anchor.get('location', 'Not specified')}
-# - Time: {anchor.get('time_context', 'Not specified')}
-# - Character Positions: {json.dumps(anchor.get('character_positions', {}), indent=2)}
-# - Transition from previous: {anchor.get('transition_from_previous', 'N/A')}
-# - Required character states: {json.dumps(anchor.get('required_character_states', {}), indent=2)}
+
+            # If words per scene exceeds 800, increase scenes_per_anchor
+            while words_per_scene > 800:
+                scenes_per_anchor += 1
+                words_per_scene = int(total_chapter_words / (scenes_per_anchor * total_anchors))
+
+            print(f"    Scenes per anchor: {scenes_per_anchor}, Words per scene: {words_per_scene}")
+
             human_prompt = f"""Convert this anchor into {scenes_per_anchor} concrete, executable scene(s) for a novel.
 ENTIRE CHAPTER ANCHOR POINTS (For Context Reference):
 {json.dumps(anchor_points, indent=2)}
@@ -502,6 +503,17 @@ State changes:
 - What do characters LEARN (concrete facts, not feelings)?
 - How do relationships SHIFT (observable behavioral changes)?
 - What physical/world changes occur?
+
+CRITICAL: For each agent in agents_in_scene, include:
+- role, gender, objective (what they want NOW)
+- current_status (emotional/physical state)
+- distinctive_voice
+- core_motivation (from character context: {', '.join(f"{n}: {d}" for n, d in list(self.story_context.character_core_drives.items())[:8])})
+- relationships (tensions with others in scene - from relationship web)
+
+For context field, MUST include:
+- thematic_beat: Which theme from {list(self.story_context.active_themes.keys())} this explores
+- world_rules_active: Any constraints from {self.story_context.world_rules} that apply
 
 ════════════════════════════════════════════════════════════════════════════════
 CREATIVE EXPECTATIONS
@@ -616,7 +628,9 @@ No markdown. No code fences. No explanations. Just pure JSON.
             del monthly_wc_data
         
             scene_target_length: int = int(directive.target_word_count)
+            # print(directive)
             directive_text = ContextFormatter.format_any(directive)
+            # print("DIRECTIVE TEXT: ",  directive_text)
 
             prev_scene = await self.memory.get_story_cluster(chapter_id=state.current_chapter_id) if state.scene_id > 1 else ""
             if prev_scene != "":
