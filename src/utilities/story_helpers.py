@@ -14,6 +14,15 @@ class StoryHelpers:
         return len(text.split())
 
     @staticmethod
+    def _add_tokens_to_total(total_tokens: dict, tokens: dict) -> dict:
+            if tokens:
+                total_tokens["prompt_tokens"] += tokens["prompt_tokens"]
+                total_tokens["completion_tokens"] += tokens["completion_tokens"]
+                total_tokens["total_tokens"] += tokens["total_tokens"]
+                return total_tokens
+            return total_tokens
+
+    @staticmethod
     def _strip_code_fences(text: str) -> str:
         if not isinstance(text, str):
             return text
@@ -110,7 +119,20 @@ class StoryHelpers:
             return bundle_cls.parse_obj(data)
         else:
             raise RuntimeError("No pydantic validation method found on class")
-
+        
+    @staticmethod
+    def _parse_tokens(value):
+            default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            if not value:
+                return default
+            try:
+                parsed = json.loads(value) if isinstance(value, str) else value
+                if isinstance(parsed, dict) and all(k in parsed for k in default):
+                    return parsed
+            except:
+                pass
+            return default
+    
     @staticmethod
     def _try_validate_with_model_then_parser(
         raw_str: str, bundle_cls, parser
@@ -157,7 +179,7 @@ class StoryHelpers:
         return False, None, last_exc
     
     @staticmethod
-    async def load_json_with_retry(text: str, parser: Any, max_attempts: int = 6) -> Any:
+    async def load_json_with_retry(text: str, parser: Any, max_attempts: int = 6):
         """
         Robust JSON + Pydantic parser with smart retries:
         1. Try direct parse using best available parser method
@@ -175,7 +197,7 @@ class StoryHelpers:
                     # PydanticOutputParser expects a JSON *string*, not a dict
                     if isinstance(text_or_obj, (dict, list)):
                         text_or_obj = json.dumps(text_or_obj)
-                    return parser.parse(text_or_obj)
+                    return parser.parse(text_or_obj), None
                 except Exception as e:
                     last_exc = e
 
@@ -187,22 +209,22 @@ class StoryHelpers:
             # Now proceed with standard Pydantic model parsing methods
             try:
                 if hasattr(parser, "model_validate_json") and isinstance(text_or_obj, str):
-                    return parser.model_validate_json(text_or_obj)
+                    return parser.model_validate_json(text_or_obj), None
             except Exception as e:
                 last_exc = e
 
             try:
                 if hasattr(parser, "parse_raw") and isinstance(text_or_obj, str):
-                    return parser.parse_raw(text_or_obj)
+                    return parser.parse_raw(text_or_obj), None
             except Exception as e:
                 last_exc = e
 
             try:
                 if not isinstance(text_or_obj, str):
                     if hasattr(parser, "model_validate"):
-                        return parser.model_validate(text_or_obj)
+                        return parser.model_validate(text_or_obj), None
                     if hasattr(parser, "parse_obj"):
-                        return parser.parse_obj(text_or_obj)
+                        return parser.parse_obj(text_or_obj), None
             except Exception as e:
                 last_exc = e
 
@@ -213,6 +235,8 @@ class StoryHelpers:
             #     last_exc = e
 
             raise last_exc or ValueError("No parser method succeeded")
+        
+        utility_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         # main retry loop
         for attempt in range(max_attempts):
             # 1) Try direct parse attempt
@@ -221,14 +245,14 @@ class StoryHelpers:
                     try:
                         # First try as raw JSON string (many parsers accept this)
                         result = await try_parse(current_text, parser)
-                        return result
+                        return result, None
                     except Exception:
                         pass
 
                 # Fall back to loading JSON first then parsing object
                 try:
                     obj = json.loads(current_text)
-                    return await try_parse(obj, parser)
+                    return await try_parse(obj, parser), None
                 except Exception as e:
                     last_error = e
 
@@ -245,7 +269,7 @@ class StoryHelpers:
                         current_text = repaired.strip()
                         try:
                             obj = json.loads(current_text)
-                            return await try_parse(obj, parser)
+                            return await try_parse(obj, parser), None
                         except Exception as e:
                             # keep going to further repairs if parse fails
                             last_error = e
@@ -257,12 +281,16 @@ class StoryHelpers:
             if attempt >= 2:
                 enhanced = attempt >= 4
                 try:
-                    current_text = await StoryHelpers._repair_json_with_llm(
+                    current_text, tokens = await StoryHelpers._repair_json_with_llm(
                         current_text, parser, enhanced=enhanced, exc=last_error
                     )
+                    if isinstance(tokens, dict):
+                        utility_token_usage["prompt_tokens"] = tokens["prompt_tokens"] + utility_token_usage["prompt_tokens"]
+                        utility_token_usage["completion_tokens"] = tokens["completion_tokens"] + utility_token_usage["completion_tokens"]
+                        utility_token_usage["total_tokens"] = tokens["total_tokens"] + utility_token_usage["total_tokens"]
                     # validate produced JSON before handing to parser
                     obj = json.loads(current_text)
-                    return await try_parse(obj, parser)
+                    return await try_parse(obj, parser), utility_token_usage
                 except Exception as e:
                     # on failure, continue to next loop iteration (retry)
                     last_error = e
@@ -274,7 +302,7 @@ class StoryHelpers:
         raise ValueError(f"Failed to parse JSON after {max_attempts} attempts. Last error: {last_error}")
     
     @staticmethod
-    async def _repair_json_with_llm(text: str, parser, enhanced: bool = False, exc: Exception = None) -> str:
+    async def _repair_json_with_llm(text: str, parser, enhanced: bool = False, exc: Exception = None) -> Optional[Dict[str, Any]]:
         """
         Unified JSON repair using LLM — now works perfectly with raw Pydantic models.
         """
@@ -313,7 +341,7 @@ Broken JSON to fix:
 Return only the fixed JSON."""
         
         client = enhanced_utility_client if enhanced else utility_client
-        resp, _ = await client(system_prompt=system_prompt, human_prompt=human_prompt)
+        resp, tokens = await client(system_prompt=system_prompt, human_prompt=human_prompt)
 
         content = StoryHelpers._extract_content(resp)
         cleaned = StoryHelpers._strip_code_fences(content.strip())
@@ -325,4 +353,4 @@ Return only the fixed JSON."""
             raise ValueError("LLM repair failed — returned invalid JSON") from e
 
         del resp, content
-        return cleaned
+        return cleaned, tokens

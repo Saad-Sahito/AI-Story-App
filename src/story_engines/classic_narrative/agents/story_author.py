@@ -62,6 +62,89 @@ class NarrativeAgentList(FlexibleBase):
     """Wrapper for agent list"""
     agents: List[NarrativeAgent]
 
+class DetailedCharacterBackstory(FlexibleBase):
+    """Deep character history for 80k+ novels"""
+    name: str
+    formative_events: str = Field(
+        description="3-5 key life events that shaped this character (500-800 words)"
+    )
+    psychological_profile: str = Field(
+        description="Internal landscape: fears, desires, contradictions, coping mechanisms"
+    )
+    relationship_history: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Pre-story relationships with other characters"
+    )
+    secrets: List[str] = Field(
+        default_factory=list,
+        description="Hidden truths that could emerge during story"
+    )
+    voice_profile: str = Field(
+        default="",
+        description="Speech patterns, vocabulary, mannerisms"
+    )
+    subplot_seeds: List[str] = Field(
+        default_factory=list,
+        description="Personal story threads that could weave through main plot"
+    )
+    genre_specific_depth: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Genre-specific character elements"
+    )
+
+
+class EnhancedWorldGuide(FlexibleBase):
+    """Comprehensive world documentation for 80k+ novels"""
+    location_dossiers: List[Dict[str, Any]] = Field(
+        description="5-10 key locations with history, culture, secrets"
+    )
+    system_documentation: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Magic/tech/social systems with clear rules"
+    )
+    historical_timeline: List[Dict[str, Any]] = Field(
+        default_factory=list,
+        description="Key historical events informing current conflicts"
+    )
+    cultural_details: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Customs, beliefs, taboos, celebrations"
+    )
+    minor_character_pool: List[Dict[str, str]] = Field(
+        default_factory=list,
+        description="Pre-generated NPCs ready for deployment"
+    )
+    genre_specific_elements: Dict[str, Any] = Field(
+        default_factory=dict,
+        description="Genre-specific world features"
+    )
+
+
+class SubplotThread(FlexibleBase):
+    """Individual subplot architecture"""
+    subplot_id: str
+    title: str
+    premise: str = Field(description="1-2 sentence subplot hook")
+    character_owner: str = Field(description="Primary character driving this thread")
+    supporting_characters: List[str] = Field(default_factory=list)
+    thematic_connection: str = Field(
+        description="How this subplot reinforces main themes"
+    )
+    act_integration: Dict[int, str] = Field(
+        default_factory=dict,
+        description="Key moments per act: {act_num: 'what happens'}"
+    )
+    resolution_type: str = Field(
+        description="How this resolves: triumph, tragedy, transformation, etc."
+    )
+
+
+class SubplotArchitecture(FlexibleBase):
+    """Complete subplot system for novel"""
+    subplots: List[SubplotThread]
+    integration_strategy: str = Field(
+        description="How subplots weave with main plot"
+    )
 
 class ConflictMatrix(FlexibleBase):
     """Minimal conflict structure - LLM adds layers as genre demands"""
@@ -82,7 +165,16 @@ class MinimalPlotOutline(FlexibleBase):
         description="Roles needed: protagonist, antagonist, mentor, etc. MUST include ALL roles."
     )
 
-
+class ExpandedCompactPlotOutline(FlexibleBase):
+    """Detailed plot - LLM adds richness appropriate to length/genre"""
+    title: str
+    premise: str
+    required_character_roles: List[str] = Field(
+        description="Roles needed: protagonist, antagonist, mentor, etc. MUST include ALL roles."
+    )
+    act_summaries: List[str] = Field(description="Rich prose summaries per act FOR EACH ACT")
+    narrative_flow: str = Field(description="Complete plot in flowing prose")
+    
 
 class ExpandedPlotOutline(FlexibleBase):
     """Detailed plot - LLM adds richness appropriate to length/genre"""
@@ -101,15 +193,23 @@ class AgeAppropriatenessReport(BaseModel):
 
 
 
+# In src/story_engines/classic_adventure/agents/story_author.py
+
 class ConnectedNarrativeAgent(FlexibleBase):
     """Agent after plot integration - flexible depth"""
     name: str
     role: str
+    gender: str  # Explicitly added as Director often requires it for pronouns
     essence: str
     plot_function: str = Field(description="How this agent drives the plot")
     agent_arc: str = Field(description="How this agent changes through story")
-    # LLM adds: relationships, distinctive_voice, key_moments, etc.
-
+    
+    # CRITICAL FIX for Director: Explicitly require relationships
+    relationships: Dict[str, str] = Field(
+        default_factory=dict,
+        description="Key relationship dynamics (e.g., {'Hero': 'Rivalry', 'Mentor': 'Respect'}). Essential for scene tension."
+    )
+    # LLM adds: distinctive_voice, key_moments, etc.
 
 class ConnectedNarrativeAgentList(FlexibleBase):
     agents: List[ConnectedNarrativeAgent]
@@ -121,7 +221,12 @@ class IntegratedWorld(FlexibleBase):
     plot_integration: str = Field(
         description="How world rules enable/complicate conflicts"
     )
-    # LLM adds: key_locations, thematic_resonance, world_arc, etc.
+    
+    # CRITICAL FIX for Director: Explicitly require world rules list
+    world_rules: List[str] = Field(
+        default_factory=list,
+        description="Explicit list of 3-5 unbreakable constraints (magic costs, laws of physics, social taboos) for the Director to enforce."
+    )
 
 
 class QualityReport(FlexibleBase):
@@ -271,14 +376,14 @@ class ActPlan(FlexibleBase):
 class WorldBuilder:
     """Generates independent world foundations with creative flexibility"""
     
-    def __init__(self, llm_client):
-        self.llm_client = llm_client
+    def __init__(self, GENRE_CONFIGURATIONS):
+        self.GENRE_CONFIGURATIONS = GENRE_CONFIGURATIONS
     
     async def generate_world_foundation(
         self,
         seed: MinimalStorySeed,
         model: str = "None"
-    ) -> Tuple[WorldFoundation, dict]:
+    ) -> Tuple[WorldFoundation, dict, dict]:
         """Generate world with genre-appropriate flexibility"""
         
         system_prompt = f"""You are a master world-builder creating immersive, internally consistent worlds for a novel.
@@ -314,21 +419,24 @@ Seed details:
 Build a world that could support many stories, with inherent conflicts and memorable details.
 Add genre-appropriate fields that bring this world to life."""
         
-        response, tokens = await self.llm_client(
+        response, author_tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.9,
             model=model
         )
+        print("Author Client Token Usage: ", author_tokens)
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        json_data = await StoryHelpers.load_json_with_retry(
+        json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=WorldFoundation
         )
 
-        return json_data, tokens
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
+        return json_data, author_tokens, utility_tokens
     
     async def integrate_with_conflict(
         self,
@@ -336,7 +444,7 @@ Add genre-appropriate fields that bring this world to life."""
         conflict_matrix: ConflictMatrix,
         agents: List[ConnectedNarrativeAgent],
         model: str = "None"
-    ) -> Tuple[IntegratedWorld, dict]:
+    ) -> Tuple[IntegratedWorld, dict, dict]:
         """Show how world intersects with story conflicts"""
         
         system_prompt = f"""You have an established world. Now show how it intersects with specific story conflicts.
@@ -367,37 +475,250 @@ Agents:
 
 Show how this world naturally enables and complicates these conflicts."""
         
-        response, tokens = await self.llm_client(
+        response, author_tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.85,
             model=model
         )
-
+        print("Author Client Token Usage: ", author_tokens)
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        json_data = await StoryHelpers.load_json_with_retry(
+        json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=IntegratedWorld
         )
 
-        return json_data, tokens
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
 
+        return json_data, author_tokens, utility_tokens
+    
+    def _get_genre_config(self, genres: List[str]) -> Dict[str, Any]:
+        """
+        Get merged genre configuration for multi-genre stories.
+        Primary genre takes precedence, secondary adds elements.
+        """
+        if not genres:
+            return self.GENRE_CONFIGURATIONS.get("Drama", {})  # Default fallback
+        
+        primary_genre = genres[0]
+        
+        # Find matching configuration (handle parent genre extraction)
+        config = None
+        for genre_key in self.GENRE_CONFIGURATIONS.keys():
+            if genre_key in primary_genre or primary_genre in genre_key:
+                config = self.GENRE_CONFIGURATIONS[genre_key].copy()
+                break
+        
+        if not config:
+            config = self.GENRE_CONFIGURATIONS.get("Drama", {})
+        
+        # Merge secondary genres if present
+        if len(genres) > 1:
+            for secondary in genres[1:]:
+                for genre_key in self.GENRE_CONFIGURATIONS.keys():
+                    if genre_key in secondary or secondary in genre_key:
+                        secondary_config = self.GENRE_CONFIGURATIONS[genre_key]
+                        # Add unique elements from secondary
+                        for key in ["character_focus", "world_focus", "subplot_types"]:
+                            if key in secondary_config:
+                                config[key] = list(set(config.get(key, []) + secondary_config[key]))
+                        break
+        
+        return config
+    
+    async def expand_world_detail(
+        self,
+        integrated_world: IntegratedWorld,
+        plot: ExpandedPlotOutline,
+        seed: MinimalStorySeed,
+        connected_agents: List[ConnectedNarrativeAgent],
+        model: str = "None"
+    ) -> Tuple[EnhancedWorldGuide, dict, dict]:
+        """
+        Create comprehensive world documentation for 80k+ novels.
+        Genre-specific and plot-integrated.
+        """
+        
+        genre_config = self._get_genre_config(seed.genre)
+        
+        system_prompt = f"""You are building a comprehensive world guide for a {'/'.join(seed.genre)} novel.
+
+GENRE FOCUS AREAS: {', '.join(genre_config.get('world_focus', []))}
+
+WORLD GUIDE REQUIREMENTS:
+
+1. LOCATION DOSSIERS (5-10 key locations)
+   For each location provide:
+   - name: Evocative place name
+   - description: Rich sensory details (200-300 words)
+   - history: Background and significance
+   - culture: Local customs, beliefs, social norms
+   - secrets: Hidden aspects that could emerge
+   - plot_relevance: How this location serves the story
+   - genre_elements: {', '.join(genre_config.get('world_focus', []))}
+
+2. SYSTEM DOCUMENTATION
+   Detailed rules for:
+   - Magic/technology systems with clear limitations
+   - Social hierarchies and power structures
+   - Economic systems and trade
+   - Communication methods
+   - Transportation
+   - Governance and law
+   (Focus on systems relevant to {'/'.join(seed.genre)})
+
+3. HISTORICAL TIMELINE (5-10 key events)
+   Events that inform current conflicts:
+   - date/era: When it occurred
+   - event: What happened
+   - consequences: Lasting impact on world/characters
+   - plot_connection: How this history matters now
+
+4. CULTURAL DETAILS
+   - Customs and traditions
+   - Taboos and social rules
+   - Celebrations and rituals
+   - Beliefs and superstitions
+   - Art, music, cuisine
+   - Language quirks or slang
+
+5. MINOR CHARACTER POOL (10-15 NPCs)
+   Pre-generated characters ready for deployment:
+   - name, role, brief description
+   - Location they frequent
+   - Potential plot uses
+
+6. GENRE-SPECIFIC ELEMENTS
+   {self._get_genre_specific_world_fields(seed.genre, genre_config)}
+
+Age-appropriate for: {seed.target_audience_age} year olds
+
+OUTPUT FORMAT (JSON):
+{EnhancedWorldGuide.model_json_schema()}
+
+Create immersive, internally consistent world documentation.
+Output clean JSON with no markdown fences."""
+
+        human_prompt = f"""Expand world detail for this story.
+
+EXISTING WORLD FOUNDATION:
+{integrated_world.model_dump_json(indent=2)}
+
+PLOT CONTEXT:
+{plot.model_dump_json(indent=2)}
+
+MAIN CHARACTERS (to inform locations/NPCs):
+{json.dumps([{"name": a.name, "role": a.role} for a in connected_agents], indent=2)}
+
+Create comprehensive world guide."""
+
+        response, author_tokens = await author_client(
+            system_prompt=system_prompt,
+            human_prompt=human_prompt,
+            llm_temp=0.85,
+            model=model
+        )
+        print("Author Client Token Usage: ", author_tokens)
+        
+        clean_resp = StoryHelpers._extract_content(response)
+        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+        
+        world_guide, utility_tokens = await StoryHelpers.load_json_with_retry(
+            text=clean_resp,
+            parser=EnhancedWorldGuide
+        )
+
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
+        
+        return world_guide, author_tokens, utility_tokens
+
+    def _get_genre_specific_world_fields(self, genres: List[str], config: Dict) -> str:
+        """Generate genre-specific field suggestions for world expansion"""
+        suggestions = []
+        
+        if any(g in ["Fantasy", "High Fantasy", "Dark Fantasy"] for g in genres):
+            suggestions.append("  - magic_system_details: Comprehensive magic rules, costs, limitations")
+            suggestions.append("  - mystical_creatures: Beings and their roles in world")
+            suggestions.append("  - ancient_artifacts: Objects of power and their histories")
+            suggestions.append("  - prophecies: Known predictions affecting current events")
+        
+        if any(g in ["Sci-Fi", "Cyberpunk", "Space Opera"] for g in genres):
+            suggestions.append("  - technology_tree: Available tech and research frontiers")
+            suggestions.append("  - alien_species: Non-human civilizations and relations")
+            suggestions.append("  - space_politics: Factions, alliances, conflicts")
+            suggestions.append("  - scientific_laws: Physics, FTL, time travel rules")
+        
+        if any(g in ["Mystery", "Thriller", "Crime"] for g in genres):
+            suggestions.append("  - criminal_networks: Underground organizations")
+            suggestions.append("  - law_enforcement: Police structure, jurisdiction, methods")
+            suggestions.append("  - surveillance_systems: How people are monitored")
+            suggestions.append("  - information_sources: Where clues can be found")
+        
+        if any(g in ["Horror", "Psychological Horror", "Gothic Horror"] for g in genres):
+            suggestions.append("  - supernatural_rules: How horror elements function")
+            suggestions.append("  - haunted_locations: Places of dread and why")
+            suggestions.append("  - isolation_factors: What keeps characters trapped")
+            suggestions.append("  - historical_atrocities: Past horrors lingering")
+        
+        if any(g in ["Romance", "Historical Romance", "Contemporary Romance"] for g in genres):
+            suggestions.append("  - social_expectations: Dating norms, marriage rules")
+            suggestions.append("  - romantic_venues: Key meeting and dating locations")
+            suggestions.append("  - relationship_obstacles: Cultural/social barriers")
+            suggestions.append("  - community_dynamics: How gossip and reputation work")
+        
+        return "\n".join(suggestions) if suggestions else "  - Add genre-appropriate elements"
 
 class AgentGenesis:
     """Generates independent narrative agent foundations with flexible depth"""
     
-    def __init__(self, llm_client):
-        self.llm_client = llm_client
+    def __init__(self, GENRE_CONFIGURATIONS):
+        self.GENRE_CONFIGURATIONS = GENRE_CONFIGURATIONS
 
+    def _get_genre_config(self, genres: List[str]) -> Dict[str, Any]:
+        """
+        Get merged genre configuration for multi-genre stories.
+        Primary genre takes precedence, secondary adds elements.
+        """
+        if not genres:
+            return self.GENRE_CONFIGURATIONS.get("Drama", {})  # Default fallback
+        
+        primary_genre = genres[0]
+        
+        # Find matching configuration (handle parent genre extraction)
+        config = None
+        for genre_key in self.GENRE_CONFIGURATIONS.keys():
+            if genre_key in primary_genre or primary_genre in genre_key:
+                config = self.GENRE_CONFIGURATIONS[genre_key].copy()
+                break
+        
+        if not config:
+            config = self.GENRE_CONFIGURATIONS.get("Drama", {})
+        
+        # Merge secondary genres if present
+        if len(genres) > 1:
+            for secondary in genres[1:]:
+                for genre_key in self.GENRE_CONFIGURATIONS.keys():
+                    if genre_key in secondary or secondary in genre_key:
+                        secondary_config = self.GENRE_CONFIGURATIONS[genre_key]
+                        # Add unique elements from secondary
+                        for key in ["character_focus", "world_focus", "subplot_types"]:
+                            if key in secondary_config:
+                                config[key] = list(set(config.get(key, []) + secondary_config[key]))
+                        break
+        
+        return config
+    
     async def generate_narrative_agents(
         self,
         seed: MinimalStorySeed,
         world_foundation: WorldFoundation,
         required_roles: List[str],
         model: str = "None"
-    ) -> Tuple[List[NarrativeAgent], dict]:
+    ) -> Tuple[List[NarrativeAgent], dict, dict]:
         """Generate agents with genre-appropriate detail"""
         
         agent_count = len(required_roles)
@@ -446,20 +767,24 @@ Protagonist specs (if any):
 Create agents with independent desires and fears shaped by their world.
 Add detail appropriate to each role's importance."""
         
-        response, tokens = await self.llm_client(
+        response, author_tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.8,
             model=model
         )
+        print("Author Client Token Usage: ", author_tokens)
         
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        agents_json = await StoryHelpers.load_json_with_retry(
+        agents_json, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=NarrativeAgentList
         )
+
+        if isinstance(agents_json, tuple):
+            agents_json = agents_json[0]
 
         if hasattr(agents_json, "agents"):
             agents = agents_json.agents
@@ -479,15 +804,15 @@ Add detail appropriate to each role's importance."""
             raise ValueError("Failed to produce valid NarrativeAgent instances")
 
         print(f"Successfully created {len(agents)} narrative agents")
-        return agents, tokens
+        return agents, author_tokens, utility_tokens
     
     async def connect_agents_to_plot(
         self,
         narrative_agents: List[NarrativeAgent],
         conflict_matrix: ConflictMatrix,
-        plot_outline: MinimalPlotOutline,
+        plot_outline: Any,
         model: str = "None"
-    ) -> Tuple[List[ConnectedNarrativeAgent], dict]:
+    ) -> Tuple[List[ConnectedNarrativeAgent], dict, dict]:
         """Connect agents to plot with flexible integration"""
         
         system_prompt = f"""You're connecting fully-formed agents to a specific plot for a novel.
@@ -524,20 +849,23 @@ Conflicts:
 
 Show how each agent's existing desires/fears naturally intersect with the plot."""
         
-        response, tokens = await self.llm_client(
+        response, author_tokens = await better_author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.8,
             model=model
         )
-        
+        print("Better Author Client Token Usage: ", author_tokens)
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        agents_json = await StoryHelpers.load_json_with_retry(
+        agents_json, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=ConnectedNarrativeAgentList
         )
+
+        if isinstance(agents_json, tuple):
+            agents_json = agents_json[0]
 
         if hasattr(agents_json, "agents"):
             connected = agents_json.agents
@@ -547,14 +875,175 @@ Show how each agent's existing desires/fears naturally intersect with the plot."
         else:
             raise ValueError("Failed to parse connected agents")
 
-        return connected, tokens
+        return connected, author_tokens, utility_tokens
 
+    async def generate_character_backstories(
+        self,
+        connected_agents: List[ConnectedNarrativeAgent],
+        world: IntegratedWorld,
+        plot: ExpandedPlotOutline,
+        seed: MinimalStorySeed,
+        importance_threshold: str = "major",  # "major", "supporting", "all"
+        model: str = "None"
+    ) -> Tuple[List[DetailedCharacterBackstory], dict, dict]:
+        """
+        Generate deep backstories for characters in 80k+ novels.
+        Genre-aware and importance-filtered.
+        """
+        
+        genre_config = self._get_genre_config(seed.genre)
+        
+        # Filter characters by importance
+        if importance_threshold == "major":
+            roles_to_expand = ["protagonist", "antagonist", "mentor"]
+        elif importance_threshold == "supporting":
+            roles_to_expand = ["protagonist", "antagonist", "mentor", "ally", "rival", "love_interest"]
+        else:  # all
+            roles_to_expand = None  # include everyone
+        
+        agents_to_expand = [
+            agent for agent in connected_agents
+            if roles_to_expand is None or agent.role.lower() in roles_to_expand
+        ]
+        
+        print(f"📖 Generating backstories for {len(agents_to_expand)} characters...")
+        
+        backstories = []
+        
+        for agent in agents_to_expand:
+            system_prompt = f"""You are crafting a deep character backstory for a {'/'.join(seed.genre)} novel.
+
+GENRE FOCUS AREAS: {', '.join(genre_config.get('character_focus', []))}
+BACKSTORY EMPHASIS: {genre_config.get('backstory_emphasis', 'formative experiences')}
+
+CHARACTER CONTEXT:
+Name: {agent.name}
+Role: {agent.role}
+Essence: {agent.essence}
+Plot Function: {agent.plot_function}
+Character Arc: {agent.agent_arc}
+
+BACKSTORY REQUIREMENTS:
+
+1. FORMATIVE EVENTS (500-800 words of rich narrative)
+   - Write 3-5 key life events as immersive scenes
+   - Show how each shaped their worldview
+   - Connect to their current desires/fears
+   - Genre-specific traumas or triumphs
+   
+2. PSYCHOLOGICAL PROFILE
+   - Internal contradictions
+   - Coping mechanisms
+   - Triggers and pressure points
+   - Hidden strengths/weaknesses
+   - {genre_config.get('backstory_emphasis', '')}
+   
+3. RELATIONSHIP HISTORY
+   - Pre-story connections with other characters
+   - Past relationships informing current behavior
+   - Unresolved conflicts or debts
+   
+4. SECRETS (3-5 items)
+   - Information they hide from others
+   - Truths that could surface during story
+   - Genre-appropriate revelations
+   
+5. VOICE PROFILE
+   - Speech patterns and vocabulary
+   - Mannerisms and body language
+   - How they express emotion
+   
+6. SUBPLOT SEEDS
+   - Personal story threads that could emerge
+   - Internal conflicts needing resolution
+   - Relationship arcs waiting to happen
+
+7. GENRE-SPECIFIC DEPTH
+   Add fields relevant to {'/'.join(seed.genre)}:
+   {self._get_genre_specific_backstory_fields(seed.genre, genre_config)}
+
+Age-appropriate for: {seed.target_audience_age} year olds
+
+OUTPUT FORMAT (JSON):
+{DetailedCharacterBackstory.model_json_schema()}
+
+Write immersive, specific backstory. No placeholders.
+Output clean JSON with no markdown fences."""
+
+            human_prompt = f"""Create backstory for {agent.name}.
+
+WORLD CONTEXT:
+{world.model_dump_json(indent=2)}
+
+PLOT CONTEXT:
+Premise: {plot.premise}
+Central Question: {plot.central_question}
+
+OTHER CHARACTERS (for relationship history):
+{json.dumps([{"name": a.name, "role": a.role, "essence": a.essence} for a in connected_agents if a.name != agent.name], indent=2)}
+
+Generate rich, genre-appropriate backstory."""
+
+            response, author_tokens = await better_author_client(
+                system_prompt=system_prompt,
+                human_prompt=human_prompt,
+                llm_temp=0.85,
+                model=model
+            )
+            print("Better Author Client Token Usage: ", author_tokens)
+            
+            clean_resp = StoryHelpers._extract_content(response)
+            clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+            
+            backstory_data, utility_tokens = await StoryHelpers.load_json_with_retry(
+                text=clean_resp,
+                parser=DetailedCharacterBackstory
+            )
+            if isinstance(backstory_data, tuple):
+                backstory_data = backstory_data[0]
+            
+            backstories.append(backstory_data)
+            print(f"  ✓ {agent.name} backstory created")
+                
+        return backstories, author_tokens, utility_tokens
+
+
+    def _get_genre_specific_backstory_fields(self, genres: List[str], config: Dict) -> str:
+        """Generate genre-specific field suggestions for backstories"""
+        suggestions = []
+        
+        if any(g in ["Fantasy", "High Fantasy", "Urban Fantasy"] for g in genres):
+            suggestions.append("  - magical_awakening: First encounter with magic")
+            suggestions.append("  - magical_training: Teachers and methods")
+            suggestions.append("  - power_origin: Source of abilities")
+        
+        if any(g in ["Sci-Fi", "Cyberpunk", "Space Opera"] for g in genres):
+            suggestions.append("  - technological_expertise: Specialized knowledge")
+            suggestions.append("  - first_space_experience: Impact of leaving Earth/home")
+            suggestions.append("  - augmentations: Body modifications and why")
+        
+        if any(g in ["Mystery", "Thriller", "Crime"] for g in genres):
+            suggestions.append("  - investigative_method: Unique approach to solving")
+            suggestions.append("  - past_cases: Defining investigations")
+            suggestions.append("  - criminal_connections: Underworld relationships")
+        
+        if any(g in ["Romance", "Romantic Comedy"] for g in genres):
+            suggestions.append("  - past_heartbreaks: Failed relationships and lessons")
+            suggestions.append("  - intimacy_barriers: Why they struggle with connection")
+            suggestions.append("  - ideal_partner: What they think they want vs need")
+        
+        if any(g in ["Horror", "Psychological Horror"] for g in genres):
+            suggestions.append("  - trauma_origin: Source of psychological damage")
+            suggestions.append("  - fear_manifestation: How terror affects them")
+            suggestions.append("  - sanity_threshold: What would break them")
+        
+        return "\n".join(suggestions) if suggestions else "  - Add genre-appropriate fields"
 
 class ConflictArchitect:
     """Generates multi-dimensional conflict with genre-appropriate complexity"""
     
-    def __init__(self, llm_client):
-        self.llm_client = llm_client
+    def __init__(self):
+        pass
 
     def _scale_conflict_complexity(self, target_length: int, base_conflicts: ConflictMatrix) -> ConflictMatrix:
         """Simplify conflict layers for shorter stories"""
@@ -572,7 +1061,7 @@ class ConflictArchitect:
         narrative_agents: List[NarrativeAgent],
         world_foundation: WorldFoundation,
         model: str = "None"
-    ) -> Tuple[ConflictMatrix, dict]:
+    ) -> Tuple[ConflictMatrix, dict, dict]:
         """Generate conflict analysis with flexible depth"""
         
         complexity_guidance = ""
@@ -632,34 +1121,38 @@ World:
 
 Create conflicts that emerge naturally from agents and world."""
         
-        response, tokens = await self.llm_client(
+        response, author_tokens = await author_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.9,
             model=model
         )
+        print("Author Client Token Usage: ", author_tokens)
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        json_data = await StoryHelpers.load_json_with_retry(
+        json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=ConflictMatrix
         )
+
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
         
         scaled_matrix = self._scale_conflict_complexity(
             target_length=seed.target_length,
             base_conflicts=json_data
         )
 
-        return scaled_matrix, tokens
+        return scaled_matrix, author_tokens, utility_tokens
 
 
 class QualityController:
     """Validates story quality with focus on specificity"""
     
-    def __init__(self, llm_client):
-        self.llm_client = llm_client
-    
+    def __init__(self):
+        pass
+
     async def validate_story_elements(
         self,
         seed: MinimalStorySeed,
@@ -668,7 +1161,7 @@ class QualityController:
         world: IntegratedWorld,
         conflict_matrix: ConflictMatrix,
         model: str = "None"
-    ) -> Tuple[QualityReport, dict]:
+    ) -> Tuple[QualityReport, dict, dict]:
         """Comprehensive quality assessment"""
         
         system_prompt = f"""You are a story development editor evaluating narrative quality for a novel.
@@ -730,38 +1223,41 @@ Conflicts: {conflict_matrix.model_dump_json(indent=2)}
 
 Focus on: Is the plot SPECIFIC enough for execution?"""
         
-        response, tokens = await self.llm_client(
+        response, author_tokens = await author_fast_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.7,
             model=model
         )
+        print("Author Fast Client Token Usage: ", author_tokens)
         
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
-        json_data = await StoryHelpers.load_json_with_retry(
+        json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=QualityReport
         )
+
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
         
-        return json_data, tokens
+        return json_data, author_tokens, utility_tokens
 
 
 class StoryTrackerManager:
     """Manages incremental story tracking"""
     
-    def __init__(self, llm_client):
-        self.llm_client = llm_client
-    
+    def __init__(self):
+        pass
+
     async def update_tracker_after_act(
         self,
-        story_title: str,
         act_number: int,
         act_plan: ActPlan,
         author_context: str,
         model: str = "None"
-    ) -> Tuple[StoryTracker, dict]:
+    ) -> Tuple[StoryTracker, dict, dict]:
         """Update story tracker after act is planned"""
         
         system_prompt = f"""Update story continuity tracker for Act {act_number}.
@@ -802,28 +1298,32 @@ Act {act_number} Plan:
 
 Extract setup/payoff tracking."""
 
-        response, tokens = await self.llm_client(
+        response, author_tokens = await author_fast_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.6,
             model=model
         )
+        print("Author Fast Client Token Usage: ", author_tokens)
         
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
         
         # act_tracking_parser = PydanticOutputParser(pydantic_object=ActTracking)
-        act_tracking_json = await StoryHelpers.load_json_with_retry(
+        act_tracking_json, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=ActTracking
         )
+
+        if isinstance(act_tracking_json, tuple):
+            act_tracking_json = act_tracking_json[0]
         
         if isinstance(act_tracking_json, dict):
             act_tracking = ActTracking(**act_tracking_json)
         else:
             act_tracking = act_tracking_json
         
-        return act_tracking, tokens
+        return act_tracking, author_tokens, utility_tokens
     
     async def get_or_create_tracker(
         self,
@@ -884,7 +1384,84 @@ Extract setup/payoff tracking."""
 
 class ActContextBuilder:
     """Builds rich, structured context for act planning"""
+    def build_act_planner_context(
+        self,
+        story_data: Dict[str, Any],
+        act_number: int,
+        story_mode: str  # "compact", "standard", "epic"
+    ) -> Dict[str, Any]:
+        """
+        Build optimized context for act planner based on story mode.
+        """
+        
+        base_context = {
+            "seed": story_data["seed"],
+            "final_plot": story_data["final_plot"],
+            "connected_agents": story_data["connected_agents"],
+            "integrated_world": story_data["integrated_world"],
+            "conflict_matrix": story_data["conflict_matrix"],
+            "story_tracker": story_data["story_tracker"],
+        }
+        
+        if story_mode == "compact":
+            # Compact mode - base context is enough
+            return base_context
+        
+        elif story_mode == "standard":
+            # Standard mode - base context is enough
+            return base_context
+        
+        elif story_mode == "epic":
+            # Epic mode - add summarized enhancements
+            backstories = story_data.get("character_backstories", [])
+            world_guide = story_data.get("world_guide")
+            subplot_arch = story_data.get("subplot_architecture")
+            
+            # Create backstory highlights (not full text)
+            backstory_highlights = []
+            for bs in backstories:
+                backstory_highlights.append({
+                    "name": bs.name,
+                    "key_formative_events": bs.formative_events[:300] + "...",  # First 300 chars
+                    "psychological_core": bs.psychological_profile[:200] + "...",
+                    "secrets": bs.secrets[:3],  # Top 3 secrets
+                    "subplot_seeds": bs.subplot_seeds[:2],  # Top 2 subplot ideas
+                })
+            
+            base_context.update({
+                "backstory_highlights": backstory_highlights,
+                "key_locations": world_guide.location_dossiers if world_guide else [],
+                "npc_pool": world_guide.minor_character_pool if world_guide else [],
+                "subplot_architecture": subplot_arch,
+                "subplot_integration_for_act": self._extract_subplot_beats_for_act(
+                    subplot_arch, act_number
+                ) if subplot_arch else []
+            })
+            
+            return base_context
+        
+        return base_context
+
+
+    def _extract_subplot_beats_for_act(
+        self,
+        subplot_arch: SubplotArchitecture,
+        act_number: int
+    ) -> List[Dict[str, str]]:
+        """Extract only the subplot beats relevant to this act"""
+        beats = []
+        for subplot in subplot_arch.subplots:
+            if act_number in subplot.act_integration:
+                beats.append({
+                    "subplot_title": subplot.title,
+                    "character_owner": subplot.character_owner,
+                    "beat_this_act": subplot.act_integration[act_number],
+                    "thematic_connection": subplot.thematic_connection
+                })
+        return beats
+
     
+
     @staticmethod
     def build_act_context(
         act_number: int,
@@ -1060,45 +1637,96 @@ class StoryAuthor:
     World-class story planning system using snowflake expansion method.
     Now with flexible creative output while maintaining structural integrity.
     """
+    GENRE_CONFIGURATIONS = {
+        "Thriller/Suspense": {
+            "character_focus": ["hidden_agendas", "pressure_points", "betrayal_capacity", "paranoia_triggers"],
+            "world_focus": ["power_structures", "surveillance_systems", "hidden_networks"],
+            "subplot_types": ["trust_erosion", "parallel_investigation", "ticking_clock"],
+            "backstory_emphasis": "psychological_vulnerabilities",
+            "conflict_layers": ["external_threat", "internal_paranoia", "moral_compromise"],
+        },
+        "Mystery": {
+            "character_focus": ["deductive_ability", "observation_skills", "biases", "hidden_connections"],
+            "world_focus": ["clue_distribution", "red_herrings", "locked_spaces"],
+            "subplot_types": ["suspect_development", "investigator_personal_stake", "secondary_mystery"],
+            "backstory_emphasis": "relevant_expertise_and_trauma",
+            "conflict_layers": ["intellectual_puzzle", "personal_danger", "ethical_dilemma"],
+        },
+        "Horror": {
+            "character_focus": ["primal_fears", "trauma_history", "denial_mechanisms", "breaking_points"],
+            "world_focus": ["atmospheric_dread", "supernatural_rules", "isolation_factors"],
+            "subplot_types": ["sanity_degradation", "relationship_breakdown", "origin_mystery"],
+            "backstory_emphasis": "past_encounters_with_darkness",
+            "conflict_layers": ["supernatural_threat", "psychological_breakdown", "survival_instinct"],
+        },
+        "Romance": {
+            "character_focus": ["emotional_wounds", "intimacy_barriers", "love_language", "relationship_patterns"],
+            "world_focus": ["meeting_spaces", "romantic_obstacles", "social_expectations"],
+            "subplot_types": ["rival_romance", "family_approval", "career_vs_love", "friendship_dynamics"],
+            "backstory_emphasis": "past_relationships_and_heartbreak",
+            "conflict_layers": ["external_obstacles", "internal_fears", "misunderstanding"],
+        },
+        "Comedy": {
+            "character_focus": ["comedic_flaws", "misunderstanding_prone", "timing_issues", "verbal_style"],
+            "world_focus": ["absurd_situations", "social_conventions_to_mock", "comedic_setpieces"],
+            "subplot_types": ["mistaken_identity", "escalating_lie", "rival_suitor"],
+            "backstory_emphasis": "embarrassing_history_and_quirks",
+            "conflict_layers": ["social_embarrassment", "misunderstanding", "comedic_stakes"],
+        },
+        "Drama": {
+            "character_focus": ["moral_struggles", "relationship_complexity", "identity_crisis", "growth_potential"],
+            "world_focus": ["social_pressures", "cultural_context", "institutional_forces"],
+            "subplot_types": ["family_tension", "friendship_evolution", "career_struggle"],
+            "backstory_emphasis": "formative_relationships_and_choices",
+            "conflict_layers": ["interpersonal", "societal", "internal_transformation"],
+        },
+        "Tragedy": {
+            "character_focus": ["fatal_flaw", "hubris", "inevitable_downfall", "noble_qualities"],
+            "world_focus": ["fate_mechanisms", "social_judgment", "inescapable_circumstances"],
+            "subplot_types": ["doomed_relationship", "failed_redemption", "legacy_destruction"],
+            "backstory_emphasis": "seeds_of_downfall",
+            "conflict_layers": ["character_vs_fate", "tragic_irony", "moral_consequences"],
+        },
+        "Adventure": {
+            "character_focus": ["courage", "resourcefulness", "loyalty", "adaptability", "personal_quest"],
+            "world_focus": ["exotic_locations", "physical_challenges", "discovery_opportunities"],
+            "subplot_types": ["treasure_hunt", "rescue_mission", "rival_adventurer"],
+            "backstory_emphasis": "origin_of_wanderlust",
+            "conflict_layers": ["physical_obstacles", "rival_forces", "personal_growth"],
+        },
+        "Crime": {
+            "character_focus": ["moral_ambiguity", "criminal_expertise", "code_of_honor", "past_crimes"],
+            "world_focus": ["underworld_hierarchy", "law_enforcement", "criminal_networks"],
+            "subplot_types": ["double_cross", "redemption_arc", "turf_war"],
+            "backstory_emphasis": "criminal_origin_story",
+            "conflict_layers": ["heist_execution", "law_vs_outlaw", "honor_among_thieves"],
+        },
+        "Fantasy": {
+            "character_focus": ["magical_ability", "destiny_connection", "ancient_lineage", "chosen_status"],
+            "world_focus": ["magic_systems", "mythical_creatures", "ancient_prophecies", "realm_politics"],
+            "subplot_types": ["magical_training", "political_intrigue", "artifact_quest"],
+            "backstory_emphasis": "magical_heritage_and_training",
+            "conflict_layers": ["good_vs_evil", "magical_power", "destiny_vs_choice"],
+        },
+        "Sci-Fi": {
+            "character_focus": ["technological_aptitude", "adaptation_to_future", "ethical_stance", "scientific_mind"],
+            "world_focus": ["technology_systems", "alien_species", "future_politics", "scientific_laws"],
+            "subplot_types": ["tech_malfunction", "first_contact", "AI_awakening"],
+            "backstory_emphasis": "scientific_background_and_specialization",
+            "conflict_layers": ["human_vs_technology", "exploration_danger", "ethical_dilemma"],
+        },
+    }
     
     def __init__(self, memory_system: StoryMemorySystem):
         self.memory = memory_system
         
         # Initialize component systems
-        self.world_builder = WorldBuilder(better_author_client)
-        self.agent_genesis = AgentGenesis(author_fast_client)
-        self.conflict_architect = ConflictArchitect(author_client)
-        self.quality_controller = QualityController(author_fast_client)
-        self.tracker_manager = StoryTrackerManager(author_fast_client)
-        
-        # LLM cache
-        self.llm_cache = {}
-    
-    # async def _cached_author_llm_call(
-    #     self,
-    #     system_prompt: str,
-    #     human_prompt: str,
-    #     llm_temp: float,
-    #     model: str = "None"
-    # ):
-    #     """Cached LLM wrapper"""
-    #     key = hashlib.md5(
-    #         (system_prompt + human_prompt + str(llm_temp) + model).encode()
-    #     ).hexdigest()
-        
-    #     if key in self.llm_cache:
-    #         return self.llm_cache[key], {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-        
-    #     response, tokens = await author_client(
-    #         system_prompt=system_prompt,
-    #         human_prompt=human_prompt,
-    #         llm_temp=llm_temp,
-    #         model=model
-    #     )
-        
-    #     self.llm_cache[key] = response
-    #     return response, tokens
-    
+        self.world_builder = WorldBuilder(GENRE_CONFIGURATIONS=self.GENRE_CONFIGURATIONS)
+        self.agent_genesis = AgentGenesis(GENRE_CONFIGURATIONS=self.GENRE_CONFIGURATIONS)
+        self.conflict_architect = ConflictArchitect()
+        self.quality_controller = QualityController()
+        self.tracker_manager = StoryTrackerManager()
+
     def validate_act_count(self, act_count: int, structure_name: str) -> int:
         if structure_name == "Three Act Structure":
             return 3
@@ -1106,8 +1734,10 @@ class StoryAuthor:
             return 3
         elif structure_name == "Save the Cat Beat Sheet":
             return 3
-        # elif structure_name == "Freytag's Pyramid":
-        #     return 5
+        elif structure_name == "Freytag's Pyramid":
+            return 5
+        elif structure_name == "The Hero's Journey":
+            return 3
         elif act_count < 3:
             return 3
         elif act_count > 5:
@@ -1116,72 +1746,126 @@ class StoryAuthor:
             return act_count
         
     def create_minimal_seed(self, user_context: Dict[str, Any]) -> MinimalStorySeed:
-        """Extract minimal story seed from user context"""
-        
-        genres = user_context.get('Genre', ['Fiction'])
-        sub_genre = user_context.get('Sub-Genre', [])
-        themes = user_context.get('Additional Themes', [])
-        
+        """Extract and normalize minimal story seed from user context"""
+
+        # ---------- GENRES ----------
+        genres = user_context.get("Genre") or ["Fiction"]
+        if not isinstance(genres, list):
+            genres = [genres]
+
+        sub_genre = user_context.get("Sub-Genre") or []
+        if not isinstance(sub_genre, list):
+            sub_genre = [sub_genre]
+
+        themes = user_context.get("Additional Themes") or []
+        if not isinstance(themes, list):
+            themes = [themes]
+
+        # ---------- PROTAGONIST ----------
         protagonist_specs = {
             k: v for k, v in {
-                'name': user_context.get('protagonist_name'),
-                'age': user_context.get('protagonist_age'),
-                'gender': user_context.get('protagonist_gender'),
-                'archetype': user_context.get('protagonist_archetype'),
-                'core_trait': user_context.get('protagonist_core_trait'),
-                'background': user_context.get('protagonist_background'),
-                'desire': user_context.get('protagonist_desire'),
-                'fear': user_context.get('protagonist_fear'),
-                'relationships': user_context.get('protagonist_relationships'),
-                'physical_description': user_context.get('protagonist_physical_description')
-            }.items() if v is not None
+                "name": user_context.get("protagonist_name"),
+                "age": user_context.get("protagonist_age"),
+                "gender": user_context.get("protagonist_gender"),
+                "archetype": user_context.get("protagonist_archetype"),
+                "core_trait": user_context.get("protagonist_core_trait"),
+                "background": user_context.get("protagonist_background"),
+                "desire": user_context.get("protagonist_desire"),
+                "fear": user_context.get("protagonist_fear"),
+                "relationships": user_context.get("protagonist_relationships"),
+                "physical_description": user_context.get("protagonist_physical_description"),
+            }.items()
+            if v not in (None, "", [])
         }
-        
+
+        # ---------- TARGET LENGTH ----------
         word_count_map = {
             "Short Long Story (7,500 - 15,000 words)": 12000,
             "Novelette (15,000 - 25,000 words)": 20000,
-            "Novella (25,000 - 40,000 words)": 35000,
+            "Novella (25,000 - 40,000 words)": 36000,
             "Novel Chapter (40,000 - 60,000 words)": 50000,
             "Full Novel (60,000 - 90,000 words)": 80000,
-            "Epic / Series (90,000 - 150,000+ words)": 135000
+            "Epic / Series (90,000 - 150,000+ words)": 125000,
         }
-        
-        target_length_str = user_context.get('Length', 'Novelette (15,000 - 25,000 words)')
-        target_length = word_count_map.get(target_length_str, 20000)
-        
-        excluded_titles = {None, "None", "", " ", "Untitled Story", "Unitled story", 
-                          "untitled story", "Null", "NULL", "Nill", "NILL", "null", "nill"}
-        title = user_context.get('Title')
+
+        raw_length = user_context.get("Length")
+        target_length = word_count_map.get(raw_length, 20000)
+
+        if isinstance(raw_length, int) and raw_length > 5000:
+            target_length = raw_length
+
+        # ---------- TITLE ----------
+        excluded_titles = {
+            None, "", " ", "None", "NULL", "Null", "null",
+            "Untitled Story", "Unitled story", "untitled story",
+            "Nill", "NILL", "nill"
+        }
+
+        title = user_context.get("Title")
         title = None if title in excluded_titles else title
-        
-        target_audience_age = user_context.get('target_audience_age', 13)
+
+        # ---------- TONE ----------
+        tone_map = {
+            0: "Very dark",
+            20: "Dark",
+            40: "Balanced",
+            60: "Hopeful",
+            80: "Light",
+            100: "Whimsical",
+        }
+
+        raw_tone = user_context.get("Tone", "Balanced")
+        tone = tone_map.get(raw_tone, raw_tone if isinstance(raw_tone, str) else "Balanced")
+
+        # ---------- POV ----------
+        pov = user_context.get("POV", "Third-person")
+
+        # ---------- PROSE STYLE ----------
+        guide_prose = user_context.get("Guide Prose") or []
+        prose_style = (
+            guide_prose[0].strip()
+            if isinstance(guide_prose, list)
+            and guide_prose
+            and isinstance(guide_prose[0], str)
+            and guide_prose[0].strip()
+            else "Standard narrative"
+        )
+
+        # ---------- AUDIENCE ----------
+        target_audience_age = user_context.get("target_audience_age", 13)
+        try:
+            target_audience_age = int(target_audience_age)
+        except (TypeError, ValueError):
+            target_audience_age = 13
+
         target_audience_age = max(8, min(target_audience_age, 18))
 
-        if target_length <= 75000:
-            act_count = 3
-        else:
-            act_count = 5
-        if genres == []:
-            genres = ["Fiction"]
-        
+        # ---------- ACT COUNT ----------
+        act_count = 3 if target_length <= 75000 else 5
+
         story_structure = find_best_structure_name(genres)
-        act_count_validated = self.validate_act_count(act_count=act_count, structure_name=story_structure)
-        act_count = act_count_validated
+        act_count = self.validate_act_count(
+            act_count=act_count,
+            structure_name=story_structure
+        )
+
+        # ---------- FINAL SEED ----------
         return MinimalStorySeed(
             title=title,
-            pov=user_context.get('POV', 'Third-person'),
-            tone=user_context.get('Tone', 'Balanced'),
+            pov=pov,
+            tone=tone,
             genre=genres,
             sub_genre=sub_genre,
-            setting=user_context.get('Setting'),
-            prose_style=user_context.get('Guide Prose', ['Standard narrative'])[0],
+            setting=user_context.get("Setting") or None,
+            prose_style=prose_style,
             themes=themes,
             target_audience_age=target_audience_age,
             target_length=target_length,
             protagonist_specs=protagonist_specs,
             act_count=act_count,
-            story_structure=story_structure
+            story_structure=story_structure,
         )
+
 
     async def generate_minimal_plot_outline(
         self,
@@ -1189,7 +1873,7 @@ class StoryAuthor:
         world_foundation: WorldFoundation,
         model: str = "None",
         max_retries: int = 4
-    ) -> Tuple[MinimalPlotOutline, dict]:
+    ) -> Tuple[MinimalPlotOutline, dict, dict]:
         """Generate initial plot with flexible character roles and auto-retries."""
 
         # --- 1. Compute dynamic role thresholds based on target length ---
@@ -1252,7 +1936,7 @@ Generate plot outline."""
 
     Expand roles list ONLY. Keep rest unchanged."""
                 
-                response, tokens = await better_author_client(
+                response, author_tokens = await better_author_client(
                     system_prompt="Add missing character roles to existing plot.",
                     human_prompt=fix_prompt,
                     llm_temp=0.7,
@@ -1260,22 +1944,25 @@ Generate plot outline."""
                 )
             else:
                 # First attempt - full generation
-                response, tokens = await better_author_client(
+                response, author_tokens = await better_author_client(
                     system_prompt=system_prompt,
                     human_prompt=human_prompt,
                     llm_temp=0.9,
                     model=model
                 )
-            last_tokens = tokens
+            last_tokens = author_tokens
 
             clean_resp = StoryHelpers._extract_content(response)
             clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
             try:
-                outline: MinimalPlotOutline = await StoryHelpers.load_json_with_retry(
+                outline, utility_tokens = await StoryHelpers.load_json_with_retry(
                     text=clean_resp,
                     parser=MinimalPlotOutline
                 )
+
+                if isinstance(outline, tuple):
+                    outline = outline[0]
             except Exception as e:
                 print(f"⚠️ Parsing failed ({e}). Retrying...")
                 await asyncio.sleep(0.6 * attempt)
@@ -1283,23 +1970,184 @@ Generate plot outline."""
 
             role_count = len(outline.required_character_roles)
             if role_count >= dynamic_min_roles:
-                return outline, tokens
+                print("Better Author Client Token Usage: ", author_tokens)
+                return outline, author_tokens, utility_tokens
         
             last_valid_response = outline
             print(f"→ Produced {role_count} roles: {outline.required_character_roles}")
 
             # --- 4. Check role thresholds ---
             if role_count >= dynamic_min_roles:
+                print("Better Author Client Token Usage: ", author_tokens)
                 print(f"✓ Accepted. Role count meets threshold ({dynamic_min_roles}).")
-                return outline, tokens
+                return outline, author_tokens, utility_tokens
             else:
                 print(f"⚠️ Insufficient roles ({role_count} < {dynamic_min_roles}). Retrying...")
                 await asyncio.sleep(0.8 * attempt)
 
         # --- 5. If max retries exhausted ---
         print("🚨 Max retries exhausted. Returning last valid attempt (even if insufficient roles).")
-        return outline, last_tokens
+        return outline, last_tokens, utility_tokens
+    
+    async def expand_plot_with_enhancements(
+        self,
+        minimal_plot: MinimalPlotOutline,
+        connected_agents: List[ConnectedNarrativeAgent],
+        integrated_world: IntegratedWorld,
+        conflict_matrix: ConflictMatrix,
+        seed: MinimalStorySeed,
+        backstories: List[DetailedCharacterBackstory],
+        world_guide: EnhancedWorldGuide,
+        subplot_architecture: SubplotArchitecture,
+        model: str = "None"
+    ) -> Tuple[ExpandedPlotOutline, dict, dict]:
+        """
+        Expand plot AFTER enhancements are generated.
+        Act summaries and narrative flow can now reference:
+        - Specific backstory events
+        - Documented locations from world guide
+        - Named NPCs from character pool
+        - Subplot threads and their integration points
+        """
+        
+        target_act_count = seed.act_count
+        structure_template = find_best_structure(seed.story_structure)
+        
+        # Extract key details from enhancements for prompt
+        backstory_highlights = []
+        for bs in backstories[:5]:  # Top 5 characters
+            backstory_highlights.append({
+                "name": bs.name,
+                "key_events": bs.formative_events[:200] + "...",  # Snippet
+                "secrets": bs.secrets[:3],
+                "subplot_seeds": bs.subplot_seeds[:2]
+            })
+        
+        location_names = [loc.get("name", "Unknown") for loc in world_guide.location_dossiers[:10]]
+        npc_pool = [npc.get("name", "Unknown") for npc in world_guide.minor_character_pool[:15]]
+        
+        subplot_summaries = []
+        for sp in subplot_architecture.subplots:
+            subplot_summaries.append({
+                "title": sp.title,
+                "premise": sp.premise,
+                "owner": sp.character_owner,
+                "act_moments": sp.act_integration
+            })
+        
+        system_prompt = f"""You are expanding a minimal plot into a COMPLETE story blueprint for a {'/'.join(seed.genre)} novel.
 
+YOU NOW HAVE ACCESS TO RICH STORY ENHANCEMENTS:
+
+🎭 CHARACTER BACKSTORIES:
+{json.dumps(backstory_highlights, indent=2)}
+
+🗺️ DOCUMENTED LOCATIONS:
+{', '.join(location_names)}
+
+👥 NPC POOL (ready to deploy):
+{', '.join(npc_pool[:10])}
+
+🎬 SUBPLOT THREADS:
+{json.dumps(subplot_summaries, indent=2)}
+
+YOUR MISSION:
+Write act summaries and narrative flow that NATURALLY REFERENCE these enhancements.
+
+EXAMPLES OF INTEGRATION:
+❌ BAD: "The hero faces a challenge and grows stronger"
+✅ GOOD: "At the Crimson Observatory, Kael confronts the memory of his father's betrayal (backstory event from age 12), while Merchant Yara (NPC) offers cryptic warnings about the Convergence"
+
+❌ BAD: "A romantic subplot develops"
+✅ GOOD: "The romance subplot ('Fractured Trust') reaches its midpoint when Elara discovers Kael's secret mission, forcing them to decide between love and duty at the abandoned Temple of Echoes"
+
+STRUCTURE: {structure_template}
+TARGET: {target_act_count} acts
+
+ACT SUMMARIES (200-300 words each):
+- Reference specific LOCATIONS by name
+- Mention BACKSTORY events when relevant
+- Deploy NPCs from character pool organically
+- Integrate SUBPLOT beats at specified act moments
+- Use character NAMES constantly (not "the protagonist")
+- Show concrete EVENTS with consequences
+
+NARRATIVE FLOW (500-800 words):
+- Weave all subplots into main arc
+- Reference how backstories inform current choices
+- Show characters moving through documented locations
+- Include NPCs in the story fabric
+- Complete emotional journey with all threads resolved
+
+Age-appropriate: {seed.target_audience_age}+
+
+OUTPUT FORMAT (JSON):
+{ExpandedPlotOutline.model_json_schema()}
+
+Output clean JSON with no markdown fences."""
+
+        human_prompt = f"""Expand this plot WITH all enhancements integrated.
+
+MINIMAL PLOT:
+{minimal_plot.model_dump_json(indent=2)}
+
+CHARACTERS:
+{json.dumps([{"name": a.name, "role": a.role, "arc": a.agent_arc} for a in connected_agents], indent=2)}
+
+WORLD:
+{integrated_world.model_dump_json(indent=2)}
+
+CONFLICTS:
+{conflict_matrix.model_dump_json(indent=2)}
+
+THEMES: {', '.join(seed.themes)}
+
+Write act summaries that feel like a complete story bible - specific, vivid, integrated."""
+
+        max_retries = 4
+        attempt = 0
+
+        while attempt <= max_retries:
+            attempt += 1
+            print(f"\n📘 Enhanced plot expansion attempt {attempt}/{max_retries + 1}")
+
+            response, author_tokens = await better_author_client(
+                system_prompt=system_prompt,
+                human_prompt=human_prompt,
+                llm_temp=0.85,
+                model=model
+            )
+            print("Better Author Client Token Usage: ", author_tokens)
+
+            clean_resp = StoryHelpers._extract_content(response)
+            clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+
+            try:
+                json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
+                    text=clean_resp,
+                    parser=ExpandedPlotOutline
+                )
+ 
+                if isinstance(json_data, tuple):
+                    json_data = json_data[0]
+            except Exception as e:
+                print(f"⚠️ Parsing failed ({e}). Retrying...")
+                await asyncio.sleep(0.6 * attempt)
+                continue
+
+            generated_count = len(json_data.act_summaries)
+            print(f"→ Generated {generated_count} act summaries (target: {target_act_count})")
+
+            if generated_count == target_act_count:
+                print("✓ Accepted. Act count matches + enhancements integrated.")
+                return json_data, author_tokens, utility_tokens
+
+            print(f"⚠️ Act count mismatch ({generated_count} != {target_act_count}). Retrying...")
+            await asyncio.sleep(0.8 * attempt)
+
+        print("🚨 Max retries exhausted. Returning last attempt.")
+        return json_data, author_tokens, utility_tokens
+    
     async def expand_plot_outline(
         self,
         minimal_plot: MinimalPlotOutline,
@@ -1309,7 +2157,7 @@ Generate plot outline."""
         seed: MinimalStorySeed,
         model: str = "None",
         max_retries: int = 4
-    ) -> Tuple[ExpandedPlotOutline, dict]:
+    ) -> Tuple[ExpandedPlotOutline, dict, dict]:
         """Expand minimal plot with creative flexibility and enforce act count matching."""
 
         target_act_count = seed.act_count
@@ -1458,23 +2306,26 @@ This is the story that will make people be in awe. Make it worthy."""
             print(f"\n📘 LLM outline expansion attempt {attempt}/{max_retries + 1}")
 
             # --- LLM CALL ---
-            response, tokens = await better_author_client(
+            response, author_tokens = await better_author_client(
                 system_prompt=system_prompt,
                 human_prompt=human_prompt,
                 llm_temp=0.9,
                 model=model
             )
-            last_tokens = tokens
+            last_tokens = author_tokens
 
             clean_resp = StoryHelpers._extract_content(response)
             clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
             # --- Parse JSON output ---
             try:
-                json_data: ExpandedPlotOutline = await StoryHelpers.load_json_with_retry(
+                json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
                     text=clean_resp,
                     parser=ExpandedPlotOutline
                 )
+
+                if isinstance(json_data, tuple):
+                    json_data = json_data[0]
             except Exception as e:
                 print(f"⚠️ Parsing failed ({e}). Retrying...")
                 await asyncio.sleep(0.6 * attempt)
@@ -1485,23 +2336,148 @@ This is the story that will make people be in awe. Make it worthy."""
             print(f"→ Generated {generated_count} act summaries (target: {target_act_count})")
 
             if generated_count == target_act_count:
+                print("Better Author Client Token Usage: ", author_tokens)
                 print("✓ Accepted. Act summary count matches the target.")
-                return json_data, tokens
+                return json_data, author_tokens, utility_tokens
 
             print(f"⚠️ Act count mismatch ({generated_count} != {target_act_count}). Retrying...")
             await asyncio.sleep(0.8 * attempt)
 
         # --- MAX RETRIES EXHAUSTED ---
         print("🚨 Max retries exhausted. Returning last generated outline (mismatch unresolved).")
-        return json_data, last_tokens
+        return json_data, last_tokens, utility_tokens
 
+    async def generate_subplot_architecture(
+        self,
+        plot: ExpandedPlotOutline,
+        connected_agents: List[ConnectedNarrativeAgent],
+        seed: MinimalStorySeed,
+        act_count: int,
+        model: str = "None"
+    ) -> Tuple[SubplotArchitecture, dict, dict]:
+        """
+        Generate 2-4 interwoven subplots for 80k+ novels.
+        Genre-aware and character-driven.
+        """
+        
+        genre_config = self._get_genre_config(seed.genre)
+        
+        # Determine subplot count based on length
+        if seed.target_length < 90000:
+            subplot_count = "2-3"
+        else:
+            subplot_count = "3-4"
+        
+        system_prompt = f"""You are architecting subplots for a {'/'.join(seed.genre)} novel.
+
+GENRE SUBPLOT TYPES: {', '.join(genre_config.get('subplot_types', []))}
+
+Create {subplot_count} compelling subplots that:
+1. Emerge from character backstories/desires
+2. Reinforce main themes
+3. Create organic intersections with main plot
+4. Have clear setup → development → resolution arcs
+5. Feel genre-appropriate
+
+SUBPLOT STRUCTURE:
+
+Each subplot needs:
+- subplot_id: Unique identifier (e.g., "subplot_1")
+- title: Evocative subplot name
+- premise: 1-2 sentence hook
+- character_owner: Primary driver (must be from main cast)
+- supporting_characters: Others involved
+- thematic_connection: How it reinforces main themes
+- act_integration: Specific moments per act
+  {{
+    1: "Setup: What gets introduced",
+    2: "Development: How it complicates",
+    3: "Midpoint: Major turn or reveal",
+    4: "Crisis: Subplot stakes peak" (if 5 acts),
+    {act_count}: "Resolution: How it concludes"
+  }}
+- resolution_type: triumph/tragedy/transformation/bittersweet/etc.
+
+INTEGRATION STRATEGY:
+Explain how subplots weave together without overwhelming main plot.
+
+GENRE GUIDANCE:
+{self._get_genre_subplot_guidance(seed.genre, genre_config)}
+
+Age-appropriate for: {seed.target_audience_age} year olds
+
+OUTPUT FORMAT (JSON):
+{SubplotArchitecture.model_json_schema()}
+
+Output clean JSON with no markdown fences."""
+
+        human_prompt = f"""Design {subplot_count} subplots for this story.
+
+MAIN PLOT:
+{plot.model_dump_json(indent=2)}
+
+AVAILABLE CHARACTERS:
+{json.dumps([{"name": a.name, "role": a.role, "arc": a.agent_arc} for a in connected_agents], indent=2)}
+
+THEMES: {', '.join(seed.themes)}
+ACTS: {act_count}
+
+Create interwoven, genre-appropriate subplots."""
+
+        response, author_tokens = await author_client(
+            system_prompt=system_prompt,
+            human_prompt=human_prompt,
+            llm_temp=0.85,
+            model=model
+        )
+        print("Author Client Token Usage: ", author_tokens)
+        
+        clean_resp = StoryHelpers._extract_content(response)
+        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+        
+        subplot_arch, utility_tokens = await StoryHelpers.load_json_with_retry(
+            text=clean_resp,
+            parser=SubplotArchitecture
+        )
+
+        if isinstance(subplot_arch, tuple):
+            subplot_arch = subplot_arch[0]
+        
+        return subplot_arch, author_tokens, utility_tokens
+
+
+    def _get_genre_subplot_guidance(self, genres: List[str], config: Dict) -> str:
+        """Provide genre-specific subplot guidance"""
+        guidance = []
+        
+        if any(g in ["Mystery", "Thriller"] for g in genres):
+            guidance.append("- Subplots can introduce red herrings or parallel investigations")
+            guidance.append("- One subplot should heighten personal stakes for protagonist")
+        
+        if any(g in ["Romance"] for g in genres):
+            guidance.append("- At least one subplot should involve relationship obstacles")
+            guidance.append("- Consider rival romance or family approval subplot")
+        
+        if any(g in ["Fantasy", "Sci-Fi"] for g in genres):
+            guidance.append("- Subplots can explore world-building or magic/tech systems")
+            guidance.append("- Consider political intrigue or discovery subplots")
+        
+        if any(g in ["Drama", "Tragedy"] for g in genres):
+            guidance.append("- Subplots should deepen character relationships")
+            guidance.append("- Focus on interpersonal conflicts and growth")
+        
+        if any(g in ["Horror"] for g in genres):
+            guidance.append("- Subplots can isolate characters or reveal supernatural rules")
+            guidance.append("- Build paranoia through relationship breakdowns")
+        
+        return "\n".join(guidance) if guidance else "- Create character-driven subplots"
     
     async def _enforce_age_appropriateness(
         self,
-        final_plot: ExpandedPlotOutline,
+        final_plot: Any,
         seed: MinimalStorySeed,
         model: str = "None"
-    ) -> Tuple[AgeAppropriatenessReport, dict]:
+    ) -> Tuple[AgeAppropriatenessReport, dict, dict]:
         """Age-appropriateness safety filter"""
         target_age = seed.target_audience_age
 
@@ -1517,7 +2493,7 @@ Thresholds:
 - Age 13–15 → moderate violence ok, implied romance only, mild language  
 - Age 16–18 → intense violence ok, moderate/implied sexual content ok, moderate language ok
 
-Rate the plot for target Audience: 'A' for ages 8+, 'T' for ages 13+, 'M' for ages 18+, regardless of given target audience age.
+Finally rate the plot for target Audience: 'A' for ages 8+, 'T' for ages 13+, 'M' for ages 18+, regardless of given Target audience age, it may be lower than given.
 
 Output Format:
 {AgeAppropriatenessReport.model_json_schema()}"""
@@ -1529,21 +2505,25 @@ Plot to check:
 
 Review and rate."""
 
-        response, tokens = await author_fast_client(
+        response, author_tokens = await author_fast_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.6,
             model=model
         )
+        print("Author Fast Client Token Usage: ", author_tokens)
 
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
-        json_data = await StoryHelpers.load_json_with_retry(
+        json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
             text=clean_resp,
             parser=AgeAppropriatenessReport
         )
 
-        return json_data, tokens
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
+
+        return json_data, author_tokens, utility_tokens
     
     async def refine_plot_with_quality_feedback(
         self,
@@ -1554,11 +2534,11 @@ Review and rate."""
         conflict_matrix: ConflictMatrix,
         act_count_target: int,
         model: str = "None"
-    ) -> Tuple[ExpandedPlotOutline, dict]:
+    ) -> Tuple[ExpandedPlotOutline, dict, dict]:
         """Refine plot - ONLY send what needs fixing"""
         
         if not quality_report.concerns:
-            return plot, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+            return plot, {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}, None
         
         # Extract ONLY problematic sections
         vague_acts = []
@@ -1612,23 +2592,27 @@ Refine with concrete names/locations/events."""
             print(f"\n📘 LLM Refined outline expansion attempt {attempt}/{max_retries + 1}")
 
             # --- LLM CALL ---
-            response, tokens = await author_client(
+            response, author_tokens = await author_client(
                 system_prompt=system_prompt,
                 human_prompt=human_prompt,
                 llm_temp=0.75,
                 model=model
             )
-            last_tokens = tokens
+            print("Author Client Token Usage: ", author_tokens)
+            last_tokens = author_tokens
 
             clean_resp = StoryHelpers._extract_content(response)
             clean_resp = StoryHelpers._strip_code_fences(clean_resp)
 
             # --- Parse JSON output ---
             try:
-                json_data: ExpandedPlotOutline = await StoryHelpers.load_json_with_retry(
+                json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
                     text=clean_resp,
                     parser=ExpandedPlotOutline
                 )
+
+                if isinstance(json_data, tuple):
+                    json_data = json_data[0]
             except Exception as e:
                 print(f"⚠️ Parsing failed ({e}). Retrying...")
                 await asyncio.sleep(0.6 * attempt)
@@ -1640,14 +2624,14 @@ Refine with concrete names/locations/events."""
 
             if generated_count == act_count_target:
                 print("✓ Accepted. Act summary count matches the target.")
-                return json_data, tokens
+                return json_data, author_tokens, utility_tokens
 
             print(f"⚠️ Act count mismatch ({generated_count} != {act_count_target}). Retrying...")
             await asyncio.sleep(0.8 * attempt)
 
         # --- MAX RETRIES EXHAUSTED ---
         print("🚨 Max retries exhausted. Returning last generated outline (mismatch unresolved).")
-        return plot, last_tokens
+        return plot, last_tokens, utility_tokens
     
     async def _create_story_tracker(
         self,
@@ -1656,7 +2640,7 @@ Refine with concrete names/locations/events."""
         connected_agents: List[ConnectedNarrativeAgent],
         conflict_matrix: ConflictMatrix,
         model: str
-    ) -> Tuple[StoryTracker, dict]:
+    ) -> Tuple[StoryTracker, dict, dict]:
         """Lightweight story-level tracking"""
         
         system_prompt = f"""Create a simple tracking document for story consistency.
@@ -1686,17 +2670,139 @@ Conflicts:
 
 Create act-by-act tracking of what gets introduced and resolved."""
 
-        response, tokens = await author_fast_client(
+        response, author_tokens = await author_fast_client(
             system_prompt=system_prompt,
             human_prompt=human_prompt,
             llm_temp=0.8
         )
+        print("Author Fast Client Token Usage: ", author_tokens)
         
         clean_resp = StoryHelpers._extract_content(response)
         clean_resp = StoryHelpers._strip_code_fences(clean_resp)
-        json_data = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=StoryTracker)
+        json_data, utility_tokens = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=StoryTracker)
+
+        if isinstance(json_data, tuple):
+            json_data = json_data[0]
+        return json_data, author_tokens, utility_tokens
+    
+
+
+    async def _compact_planning_flow(
+        self,
+        seed: MinimalStorySeed,
+        model: str = "None"
+    ) -> Dict[str, Any]:
+        """
+        Streamlined planning for shorter works (10k-40k):
+        - Single-pass plot generation
+        - Simplified conflict matrix
+        - Skip quality refinement
+        - Minimal backstory
+        """
+        utility_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        print("\n🌍 Phase 1: World foundation...")
+        world_foundation, world_tokens, utility_tokens = await self.world_builder.generate_world_foundation(
+            seed, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ World created")
         
-        return json_data, tokens
+        print("\n📖 Phase 2: Compact plot generation...")
+        # Use simplified plot generation (merge minimal + expanded)
+        compact_plot, plot_tokens, utility_tokens = await self._generate_compact_plot(
+            seed, world_foundation, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Plot: '{compact_plot.title}' ({seed.act_count} acts)")
+        
+        print("\n👥 Phase 3: Character generation...")
+        narrative_agents, agent_tokens, utility_tokens = await self.agent_genesis.generate_narrative_agents(
+            seed, world_foundation, compact_plot.required_character_roles, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ {len(narrative_agents)} characters created")
+        
+        print("\n⚔️ Phase 4: Simplified conflicts...")
+        conflict_matrix, conflict_tokens, utility_tokens = await self._generate_simplified_conflict(
+            compact_plot, seed, narrative_agents, world_foundation, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Core conflict established")
+        
+        print("\n🔗 Phase 5: Connect elements...")
+        connected_agents, connect_tokens, utility_tokens = await self.agent_genesis.connect_agents_to_plot(
+            narrative_agents, conflict_matrix, compact_plot, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        integrated_world, integrate_tokens, utility_tokens = await self.world_builder.integrate_with_conflict(
+            world_foundation, conflict_matrix, connected_agents, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Elements connected")
+        
+        print("\n📊 Phase 6: Age filter...")
+        age_report, age_tokens, utility_tokens = await self._enforce_age_appropriateness(
+            final_plot=compact_plot,
+            seed=seed,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        if not age_report.plot_outline_pass:
+            raise ValueError("Age filter failed")
+        
+        if age_report.age_rating == 'A':
+            seed.target_audience_age = 8
+        elif age_report.age_rating == 'T':
+            seed.target_audience_age = 13
+        elif age_report.age_rating == 'M':
+            seed.target_audience_age = 18
+        print(f"✓ Content validated for age {seed.target_audience_age}+")
+
+        # Skip quality refinement for compact mode
+        quality_report = QualityReport(
+            strengths=["Compact narrative suitable for length"],
+            concerns=[],
+            recommendations=[],
+            overall_assessment="Streamlined for shorter work"
+        )
+
+        print("\n📈 Phase 7: Story tracker...")
+        story_tracker, tracker_tokens, utility_tokens = await self._create_story_tracker(
+            act_count=seed.act_count,
+            final_plot=compact_plot,
+            connected_agents=connected_agents,
+            conflict_matrix=conflict_matrix,
+            model=model
+        )
+        StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+
+        # Store in memory
+        await self._store_planning_documents(
+            seed, None, compact_plot, world_foundation,
+            narrative_agents, conflict_matrix, connected_agents,
+            integrated_world, quality_report, compact_plot.title, story_tracker
+        )
+
+        total_tokens = self._calculate_total_tokens([
+            world_tokens, agent_tokens, plot_tokens, conflict_tokens,
+            connect_tokens, integrate_tokens, age_tokens, tracker_tokens
+        ])
+
+        print("\n" + "=" * 60)
+        print("✅ COMPACT PLANNING COMPLETE")
+        print(f"📊 Total tokens: {total_tokens['total_tokens']:,}")
+        print("=" * 60)
+
+        return {
+            "seed": seed,
+            "minimal_plot": compact_plot,  # Same as final for compact
+            "final_plot": compact_plot,
+            "author_tokens": total_tokens,
+            "utility_tokens": utility_token_usage,
+        }
     
     async def orchestrate_story_planning(
         self,
@@ -1704,78 +2810,372 @@ Create act-by-act tracking of what gets introduced and resolved."""
         model: str = "None"
     ) -> Dict[str, Any]:
         """
-        Main orchestration: Full story planning workflow using snowflake method
-        Returns complete story foundation ready for act/chapter planning
+        Main orchestration with length-based routing:
+        - 10k-40k: Compact flow
+        - 40k-80k: Standard flow
+        - 80k+: Epic flow
         """
         
-        print("🎬 ORCHESTRATING WORLD-CLASS STORY PLANNING (SNOWFLAKE METHOD)")
+        print("🎬 ORCHESTRATING WORLD-CLASS STORY PLANNING")
         print("=" * 60)
         
-        # PHASE 1: Minimal Seed
-        print("\n📋 Phase 1: Creating story seed...")
         seed = self.create_minimal_seed(user_context)
-        structure_template = find_best_structure(seed.story_structure)
-        print(f"✓ Seed created | Genres: {seed.genre} | Target: {seed.target_length} words")
         
-        # PHASE 2: Independent Foundations (Snowflake Layer 1)
-        print("\n🌍 Phase 2: Building independent world foundation...")
-        world_foundation, world_tokens = await self.world_builder.generate_world_foundation(
+        # Route based on target length
+        if seed.target_length <= 40000:
+            print("📘 COMPACT MODE (10k-40k words)")
+            return await self._compact_planning_flow(seed, model)
+        elif seed.target_length >= 80000:
+            print("📕 EPIC MODE (80k+ words)")
+            return await self._epic_planning_flow(seed, model)
+        else:
+            print("📗 STANDARD MODE (40k-80k words)")
+            return await self._standard_planning_flow(seed, model)
+        
+    def _get_genre_config(self, genres: List[str]) -> Dict[str, Any]:
+        """
+        Get merged genre configuration for multi-genre stories.
+        Primary genre takes precedence, secondary adds elements.
+        """
+        if not genres:
+            return self.GENRE_CONFIGURATIONS.get("Drama", {})  # Default fallback
+        
+        primary_genre = genres[0]
+        
+        # Find matching configuration (handle parent genre extraction)
+        config = None
+        for genre_key in self.GENRE_CONFIGURATIONS.keys():
+            if genre_key in primary_genre or primary_genre in genre_key:
+                config = self.GENRE_CONFIGURATIONS[genre_key].copy()
+                break
+        
+        if not config:
+            config = self.GENRE_CONFIGURATIONS.get("Drama", {})
+        
+        # Merge secondary genres if present
+        if len(genres) > 1:
+            for secondary in genres[1:]:
+                for genre_key in self.GENRE_CONFIGURATIONS.keys():
+                    if genre_key in secondary or secondary in genre_key:
+                        secondary_config = self.GENRE_CONFIGURATIONS[genre_key]
+                        # Add unique elements from secondary
+                        for key in ["character_focus", "world_focus", "subplot_types"]:
+                            if key in secondary_config:
+                                config[key] = list(set(config.get(key, []) + secondary_config[key]))
+                        break
+        
+        return config
+    
+    ## 9. Generate Compact Plot (for 10k-40k)
+    async def _generate_compact_plot(
+        self,
+        seed: MinimalStorySeed,
+        world_foundation: WorldFoundation,
+        model: str = "None"
+    ) -> Tuple[ExpandedCompactPlotOutline, dict, dict]:
+        """
+        Single-pass plot generation for compact stories.
+        Combines minimal + expanded into one streamlined output.
+        """
+        
+        genre_config = self._get_genre_config(seed.genre)
+        structure_template = find_best_structure(seed.story_structure)
+        target_act_count = seed.act_count
+        # Calculate required roles dynamically (fewer for short stories)
+        target_len = seed.target_length
+        min_len, max_len = 10000, 40000
+        norm = max(0.0, min(1.0, (target_len - min_len) / (max_len - min_len)))
+        dynamic_min_roles = int(3 + norm * (7 - 3))  # 3-7 roles for compact
+        
+        system_prompt = f"""Create a complete plot outline for a {'/'.join(seed.genre)} story ({seed.target_length} words).
+
+GENRE FOCUS: {', '.join(genre_config.get('conflict_layers', []))}
+STRUCTURE: {structure_template}
+
+REQUIRED OUTPUT:
+- title: Evocative, thematic
+- premise: 1-2 sentence hook
+- central_question: Core dilemma
+- required_character_roles: {dynamic_min_roles}+ specific roles (not generic)
+- act_summaries: [{seed.act_count} summaries, 150-200 words each in flowing prose]
+- narrative_flow: 300-500 words of complete emotional arc
+
+RULES FOR COMPACT STORIES:
+- Focus on single clear conflict thread
+- Limit subplot complexity
+- Every character must earn their presence
+- Streamlined but emotionally complete
+- Age-appropriate: {seed.target_audience_age}+
+
+OUTPUT FORMAT (JSON):
+{ExpandedCompactPlotOutline.model_json_schema()}
+
+Output clean JSON with no markdown fences."""
+
+        human_prompt = f"""Generate complete plot.
+
+Seed: {seed.model_dump_json(indent=2)}
+World: {world_foundation.model_dump_json(indent=2)}
+
+Create tight, focused narrative."""
+        attempt = 0
+        last_tokens = {}
+        max_retries = 4
+        while attempt <= max_retries:
+            attempt += 1
+            print(f"\n📘 LLM outline expansion attempt {attempt}/{max_retries + 1}")
+
+            # --- LLM CALL ---
+            response, author_tokens = await better_author_client(
+                system_prompt=system_prompt,
+                human_prompt=human_prompt,
+                llm_temp=0.9,
+                model=model
+            )
+            last_tokens = author_tokens
+
+            clean_resp = StoryHelpers._extract_content(response)
+            clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+
+            # --- Parse JSON output ---
+            try:
+                json_data, utility_tokens = await StoryHelpers.load_json_with_retry(
+                    text=clean_resp,
+                    parser=ExpandedPlotOutline
+                )
+
+                if isinstance(json_data, tuple):
+                    json_data = json_data[0]
+            except Exception as e:
+                print(f"⚠️ Parsing failed ({e}). Retrying...")
+                await asyncio.sleep(0.6 * attempt)
+                continue
+
+            # --- VALIDATION: ACT COUNT ---
+            generated_count = len(json_data.act_summaries)
+            print(f"→ Generated {generated_count} act summaries (target: {target_act_count})")
+
+            if generated_count == target_act_count:
+                print("Better Author Client Token Usage: ", author_tokens)
+                print("✓ Accepted. Act summary count matches the target.")
+                return json_data, author_tokens, utility_tokens
+
+            print(f"⚠️ Act count mismatch ({generated_count} != {target_act_count}). Retrying...")
+            await asyncio.sleep(0.8 * attempt)
+
+        # --- MAX RETRIES EXHAUSTED ---
+        print("🚨 Max retries exhausted. Returning last generated outline (mismatch unresolved).")
+        return json_data, last_tokens, utility_tokens
+
+        # response, author_tokens = await better_author_client(
+        #     system_prompt=system_prompt,
+        #     human_prompt=human_prompt,
+        #     llm_temp=0.9,
+        #     model=model
+        # )
+        
+        # clean_resp = StoryHelpers._extract_content(response)
+        # clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+        
+        # plot, utility_tokens = await StoryHelpers.load_json_with_retry(
+        #     text=clean_resp,
+        #     parser=ExpandedCompactPlotOutline
+        # )
+        # if isinstance(plot, tuple):
+        #     plot = plot[0]
+        
+        # return plot, author_tokens, utility_tokens
+
+
+    ## 10. Simplified Conflict (for 10k-40k)
+    async def _generate_simplified_conflict(
+        self,
+        plot: ExpandedCompactPlotOutline,
+        seed: MinimalStorySeed,
+        narrative_agents: List[NarrativeAgent],
+        world_foundation: WorldFoundation,
+        model: str = "None"
+    ) -> Tuple[ConflictMatrix, dict, dict]:
+        """
+        Streamlined conflict for compact stories - focus on core tension only.
+        """
+        
+        genre_config = self._get_genre_config(seed.genre)
+        
+        system_prompt = f"""Analyze core conflict for {'/'.join(seed.genre)} story (compact length).
+
+FOCUS: Single clear conflict with 1-2 layers maximum.
+
+GENRE CONFLICT TYPE: {', '.join(genre_config.get('conflict_layers', [])[:2])}
+
+OUTPUT FORMAT (JSON):
+{ConflictMatrix.model_json_schema()}
+
+Keep it focused - one central conflict, one escalation path.
+Age-appropriate: {seed.target_audience_age}+
+
+Output clean JSON with no markdown fences."""
+
+        human_prompt = f"""Identify core conflict.
+
+Plot: {plot.model_dump_json(indent=2)}
+Agents: {json.dumps([a.model_dump() for a in narrative_agents], indent=2)}
+World: {world_foundation.model_dump_json(indent=2)}
+
+Streamlined conflict analysis."""
+
+        response, author_tokens = await author_fast_client(
+            system_prompt=system_prompt,
+            human_prompt=human_prompt,
+            llm_temp=0.85,
+            model=model
+        )
+        print("Author Fast Client Token Usage: ", author_tokens)
+        
+        clean_resp = StoryHelpers._extract_content(response)
+        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+        
+        conflict, utility_tokens = await StoryHelpers.load_json_with_retry(
+            text=clean_resp,
+            parser=ConflictMatrix
+        )
+        if isinstance(conflict, tuple):
+            conflict = conflict[0]
+        
+        return conflict, author_tokens, utility_tokens
+
+    ## 11. Epic Planning Flow (80k+)
+    async def _epic_planning_flow(
+        self,
+        seed: MinimalStorySeed,
+        model: str = "None"
+    ) -> Dict[str, Any]:
+        """
+        Enhanced planning for epic novels (80k+):
+        Order: foundations → enhancements → integrated expansion
+        """
+        # structure_template = find_best_structure_name(seed.genre)
+        print("\n📋 Phase 1: Story seed ready")
+        utility_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        print(f"✓ Genres: {seed.genre} | Target: {seed.target_length} words")
+        
+        # ===== FOUNDATION LAYER =====
+        print("\n🌍 Phase 2: World foundation...")
+        world_foundation, world_tokens, utility_tokens = await self.world_builder.generate_world_foundation(
             seed, model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         print(f"✓ World foundation created")
         
-        # PHASE 3: Minimal Plot (Snowflake Layer 2)
-        print("\n📖 Phase 3: Generating minimal plot outline...")
-        minimal_plot, plot_tokens = await self.generate_minimal_plot_outline(
+        print("\n📖 Phase 3: Minimal plot outline...")
+        minimal_plot, plot_tokens, utility_tokens = await self.generate_minimal_plot_outline(
             seed, world_foundation, model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         print(f"✓ Minimal plot: '{minimal_plot.title}' ({seed.act_count} acts)")
         print(f"✓ Requires {len(minimal_plot.required_character_roles)} roles")
         
-        # PHASE 4: Generate Agents (Snowflake Layer 3)
-        print("\n👥 Phase 4: Generating narrative agents for required roles...")
-        narrative_agents, agent_tokens = await self.agent_genesis.generate_narrative_agents(
+        print("\n👥 Phase 4: Narrative agents...")
+        narrative_agents, agent_tokens, utility_tokens = await self.agent_genesis.generate_narrative_agents(
             seed, world_foundation, minimal_plot.required_character_roles, model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         print(f"✓ {len(narrative_agents)} narrative agents created")
         
-        # PHASE 5: Conflict Matrix (Snowflake Layer 4)
-        print("\n⚔️ Phase 5: Analyzing conflicts...")
-        conflict_matrix, conflict_tokens = await self.conflict_architect.generate_conflict_layers(
+        print("\n⚔️ Phase 5: Conflict matrix...")
+        conflict_matrix, conflict_tokens, utility_tokens = await self.conflict_architect.generate_conflict_layers(
             minimal_plot, seed, narrative_agents, world_foundation, model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         print(f"✓ Multi-dimensional conflict matrix created")
         
-        # PHASE 6: Connect Elements (Snowflake Layer 5)
-        print("\n🔗 Phase 6: Connecting elements to plot...")
-        connected_agents, connect_tokens = await self.agent_genesis.connect_agents_to_plot(
-            narrative_agents=narrative_agents, conflict_matrix=conflict_matrix, plot_outline=minimal_plot, model=model
+        print("\n🔗 Phase 6: Connecting base elements...")
+        connected_agents, connect_tokens, utility_tokens = await self.agent_genesis.connect_agents_to_plot(
+            narrative_agents=narrative_agents,
+            conflict_matrix=conflict_matrix,
+            plot_outline=minimal_plot,
+            model=model
         )
-
-        integrated_world, integrate_tokens = await self.world_builder.integrate_with_conflict(
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        integrated_world, integrate_tokens, utility_tokens = await self.world_builder.integrate_with_conflict(
             world_foundation, conflict_matrix, connected_agents, model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Base elements connected")
         
-        print(f"✓ Agents connected to plot")
-        print(f"✓ World integrated with conflicts")
+        # ===== EPIC ENHANCEMENT LAYER =====
+        print("\n" + "=" * 60)
+        print("🌟 EPIC ENHANCEMENTS (Before Final Plot Expansion)")
+        print("=" * 60)
         
-        # PHASE 7: Expand Plot (Snowflake Layer 6)
-        print("\n📈 Phase 7: Expanding plot outline...")
-        expanded_plot, expand_tokens = await self.expand_plot_outline(
-            minimal_plot, connected_agents, integrated_world,
-            conflict_matrix, seed, model
+        print("\n📖 Enhancement 1: Character backstories...")
+        backstories, backstory_tokens, utility_tokens = await self.agent_genesis.generate_character_backstories(
+            connected_agents=connected_agents,
+            world=integrated_world,
+            plot=minimal_plot,
+            seed=seed,
+            importance_threshold="supporting",
+            model=model
         )
-        print(f"✓ Plot expanded with full detail")
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ {len(backstories)} detailed backstories created")
         
-        print("\n🔞 Phase 8: Age-appropriateness filter...")
-        age_report, age_filter_tokens = await self._enforce_age_appropriateness(
+        print("\n🗺️ Enhancement 2: World expansion...")
+        world_guide, world_guide_tokens, utility_tokens = await self.world_builder.expand_world_detail(
+            integrated_world=integrated_world,
+            plot=minimal_plot,
+            seed=seed,
+            connected_agents=connected_agents,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Comprehensive world guide created")
+        print(f"  - {len(world_guide.location_dossiers)} locations documented")
+        print(f"  - {len(world_guide.minor_character_pool)} NPCs ready")
+        
+        print("\n🎭 Enhancement 3: Subplot architecture...")
+        subplot_arch, subplot_tokens, utility_tokens = await self.generate_subplot_architecture(
+            plot=minimal_plot,
+            connected_agents=connected_agents,
+            seed=seed,
+            act_count=seed.act_count,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ {len(subplot_arch.subplots)} subplots architected")
+        
+        # ===== INTEGRATED EXPANSION =====
+        print("\n" + "=" * 60)
+        print("📈 INTEGRATED PLOT EXPANSION (With All Enhancements)")
+        print("=" * 60)
+        
+        print("\n📈 Phase 7: Expanding plot WITH enhancements...")
+        expanded_plot, expand_tokens, utility_tokens = await self.expand_plot_with_enhancements(
+            minimal_plot=minimal_plot,
+            connected_agents=connected_agents,
+            integrated_world=integrated_world,
+            conflict_matrix=conflict_matrix,
+            seed=seed,
+            backstories=backstories,
+            world_guide=world_guide,
+            subplot_architecture=subplot_arch,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Plot expanded with ALL epic detail integrated")
+        
+        print("\n👶 Phase 8: Age appropriateness...")
+        age_report, age_filter_tokens, utility_tokens = await self._enforce_age_appropriateness(
             final_plot=expanded_plot,
             seed=seed,
             model=model
         )
-        print(age_report)
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
         if not age_report.plot_outline_pass:
-            raise "Age Filter pass failed"
+            raise ValueError("Age filter failed")
         
         if age_report.age_rating == 'A':
             seed.target_audience_age = 8
@@ -1787,120 +3187,311 @@ Create act-by-act tracking of what gets introduced and resolved."""
         print(f"✓ Content validated for age {seed.target_audience_age}+")
         
         print("\n🔍 Phase 9: Quality validation...")
-        quality_report, quality_tokens = await self.quality_controller.validate_story_elements(
+        quality_report, quality_tokens, utility_tokens = await self.quality_controller.validate_story_elements(
             seed, expanded_plot, connected_agents, integrated_world, conflict_matrix, model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         
         refine_tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
         if quality_report.concerns:
-            final_plot, refine_tokens = await self.refine_plot_with_quality_feedback(
-                expanded_plot, quality_report, connected_agents, 
+            final_plot, refine_tokens, utility_tokens = await self.refine_plot_with_quality_feedback(
+                expanded_plot, quality_report, connected_agents,
                 integrated_world, conflict_matrix, seed.act_count, model
             )
+            utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         else:
             final_plot = expanded_plot
-
-        print("\n📊 Phase 10: Creating story tracker...")
-        story_tracker, tracker_tokens = await self._create_story_tracker(
+        
+        print("\n📊 Phase 10: Story tracker...")
+        story_tracker, tracker_tokens, utility_tokens = await self._create_story_tracker(
             act_count=seed.act_count,
             final_plot=final_plot,
             connected_agents=connected_agents,
             conflict_matrix=conflict_matrix,
             model=model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         print(f"✓ Story tracker initialized")
         
-        # Store in memory
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(seed.model_dump()),  # No indent=2
-            metadata={"type": "story_seed", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(minimal_plot.model_dump()),
-            metadata={"type": "minimal_plot_outline", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(final_plot.model_dump()),
-            metadata={"type": "expanded_plot_outline", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(world_foundation.model_dump()),
-            metadata={"type": "world_foundation", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json([a.model_dump() for a in narrative_agents]),
-            metadata={"type": "narrative_agents", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(conflict_matrix.model_dump()),
-            metadata={"type": "conflict_matrix", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json([a.model_dump() for a in connected_agents]),
-            metadata={"type": "connected_agents", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(integrated_world.model_dump()),
-            metadata={"type": "integrated_world", "story_title": final_plot.title}
-        )
-        await self.memory.add_long_term_document(
-            text=StoryHelpers.compress_json(quality_report.model_dump()),
-            metadata={"type": "quality_report", "story_title": final_plot.title}
+        # Merge backstories into connected_agents
+        backstory_dict = {b.name: b for b in backstories}
+        enriched_agents = []
+        for agent in connected_agents:
+            agent_dict = agent.model_dump() if hasattr(agent, 'model_dump') else agent
+            if agent_dict["name"] in backstory_dict:
+                agent_dict["detailed_backstory"] = backstory_dict[agent_dict["name"]].model_dump()
+            enriched_agents.append(agent_dict)
+        
+        # Store everything
+        await self._store_planning_documents(
+            seed=seed, minimal_plot=minimal_plot, final_plot=final_plot, world_foundation=world_foundation,
+            narrative_agents=narrative_agents, conflict_matrix=conflict_matrix, connected_agents=connected_agents,
+            integrated_world=integrated_world, quality_report=quality_report, story_title=final_plot.title, story_tracker=story_tracker
         )
         
-        # Calculate total tokens
-        total_tokens = {
-            "prompt_tokens": sum([
-                world_tokens.get("prompt_tokens", 0),
-                agent_tokens.get("prompt_tokens", 0),
-                plot_tokens.get("prompt_tokens", 0),
-                conflict_tokens.get("prompt_tokens", 0),
-                connect_tokens.get("prompt_tokens", 0),
-                integrate_tokens.get("prompt_tokens", 0),
-                expand_tokens.get("prompt_tokens", 0),
-                quality_tokens.get("prompt_tokens", 0),
-                refine_tokens.get("prompt_tokens", 0),
-                age_filter_tokens.get("prompt_tokens", 0),
-                tracker_tokens.get("prompt_tokens", 0)
-            ]),
-            "completion_tokens": sum([
-                world_tokens.get("completion_tokens", 0),
-                agent_tokens.get("completion_tokens", 0),
-                plot_tokens.get("completion_tokens", 0),
-                conflict_tokens.get("completion_tokens", 0),
-                connect_tokens.get("completion_tokens", 0),
-                integrate_tokens.get("completion_tokens", 0),
-                expand_tokens.get("completion_tokens", 0),
-                quality_tokens.get("completion_tokens", 0),
-                refine_tokens.get("completion_tokens", 0),
-                age_filter_tokens.get("completion_tokens", 0),
-                tracker_tokens.get("completion_tokens", 0)
-            ]),
-            "total_tokens": 0
-        }
-        total_tokens["total_tokens"] = (
-            total_tokens["prompt_tokens"] + total_tokens["completion_tokens"]
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json([b.model_dump() for b in backstories]),
+            metadata={"type": "character_backstories", "story_title": final_plot.title}
         )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(world_guide.model_dump()),
+            metadata={"type": "world_guide", "story_title": final_plot.title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(subplot_arch.model_dump()),
+            metadata={"type": "subplot_architecture", "story_title": final_plot.title}
+        )
+        
+        total_tokens = self._calculate_total_tokens([
+            world_tokens, agent_tokens, plot_tokens, conflict_tokens,
+            connect_tokens, integrate_tokens, backstory_tokens,
+            world_guide_tokens, subplot_tokens, expand_tokens,
+            quality_tokens, refine_tokens, age_filter_tokens, tracker_tokens
+        ])
         
         print("\n" + "=" * 60)
-        print("✅ STORY PLANNING COMPLETE")
-        print(f"📊 Total tokens used: {total_tokens['total_tokens']:,}")
+        print("✅ EPIC PLANNING COMPLETE")
+        print(f"📊 Total tokens: {total_tokens['total_tokens']:,}")
+        print(f"📖 Backstories: {len(backstories)}")
+        print(f"🗺️ Locations: {len(world_guide.location_dossiers)}")
+        print(f"🎭 Subplots: {len(subplot_arch.subplots)}")
         print("=" * 60)
         
         return {
             "seed": seed,
-            "world_foundation": world_foundation,
-            "narrative_agents": narrative_agents,
-            "conflict_matrix": conflict_matrix,
-            "connected_agents": connected_agents,
-            "integrated_world": integrated_world,
             "minimal_plot": minimal_plot,
             "final_plot": final_plot,
-            "quality_report": quality_report,
-            "story_tracker": story_tracker,
-            "structure_template": structure_template,
-            "tokens": total_tokens
+            "author_tokens": total_tokens,
+            "utility_tokens": utility_token_usage,
         }
+
+    ## 12. NEW METHOD: Standard Planning Flow (40k-80k)
+    async def _standard_planning_flow(
+        self,
+        seed: MinimalStorySeed,
+        model: str = "None"
+    ) -> Dict[str, Any]:
+        """
+        Standard planning flow - this is your current implementation.
+        Extracted into separate method for routing.
+        """
+        
+        # This is essentially your current orchestrate_story_planning logic
+        # Copy phases 1-10 from your existing implementation
+        utility_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+
+        print("\n📋 Phase 1: Story seed ready")
+        # structure_template = find_best_structure_name(seed.story_structure)
+        print(f"✓ Genres: {seed.genre} | Target: {seed.target_length} words")
+        
+        print("\n🌍 Phase 2: World foundation...")
+        world_foundation, world_tokens, utility_tokens = await self.world_builder.generate_world_foundation(
+            seed, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ World foundation created")
+        
+        print("\n📖 Phase 3: Minimal plot outline...")
+        minimal_plot, plot_tokens, utility_tokens = await self.generate_minimal_plot_outline(
+            seed, world_foundation, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Minimal plot: '{minimal_plot.title}' ({seed.act_count} acts)")
+        print(f"✓ Requires {len(minimal_plot.required_character_roles)} roles")
+        
+        print("\n👥 Phase 4: Narrative agents...")
+        narrative_agents, agent_tokens, utility_tokens = await self.agent_genesis.generate_narrative_agents(
+            seed, world_foundation, minimal_plot.required_character_roles, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ {len(narrative_agents)} narrative agents created")
+        
+        print("\n⚔️ Phase 5: Conflict matrix...")
+        conflict_matrix, conflict_tokens, utility_tokens = await self.conflict_architect.generate_conflict_layers(
+            minimal_plot, seed, narrative_agents, world_foundation, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Multi-dimensional conflict matrix created")
+        
+        print("\n🔗 Phase 6: Connecting elements...")
+        connected_agents, connect_tokens, utility_tokens = await self.agent_genesis.connect_agents_to_plot(
+            narrative_agents=narrative_agents,
+            conflict_matrix=conflict_matrix,
+            plot_outline=minimal_plot,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        integrated_world, integrate_tokens, utility_tokens = await self.world_builder.integrate_with_conflict(
+            world_foundation, conflict_matrix, connected_agents, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        print(f"✓ Agents connected to plot")
+        print(f"✓ World integrated with conflicts")
+        
+        print("\n📈 Phase 7: Expanding plot...")
+        expanded_plot, expand_tokens, utility_tokens = await self.expand_plot_outline(
+            minimal_plot, connected_agents, integrated_world,
+            conflict_matrix, seed, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Plot expanded with full detail")
+        
+        print("\n👶 Phase 8: Age appropriateness...")
+        age_report, age_filter_tokens, utility_tokens = await self._enforce_age_appropriateness(
+            final_plot=expanded_plot,
+            seed=seed,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        if not age_report.plot_outline_pass:
+            raise ValueError("Age filter failed")
+        
+        if age_report.age_rating == 'A':
+            seed.target_audience_age = 8
+        elif age_report.age_rating == 'T':
+            seed.target_audience_age = 13
+        elif age_report.age_rating == 'M':
+            seed.target_audience_age = 18
+        
+        print(f"✓ Content validated for age {seed.target_audience_age}+")
+        
+        print("\n🔍 Phase 9: Quality validation...")
+        quality_report, quality_tokens, utility_tokens = await self.quality_controller.validate_story_elements(
+            seed, expanded_plot, connected_agents, integrated_world, conflict_matrix, model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        
+        refine_tokens = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        if quality_report.concerns:
+            final_plot, refine_tokens, utility_tokens = await self.refine_plot_with_quality_feedback(
+                expanded_plot, quality_report, connected_agents,
+                integrated_world, conflict_matrix, seed.act_count, model
+            )
+            utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        else:
+            final_plot = expanded_plot
+        
+        print("\n📊 Phase 10: Story tracker...")
+        story_tracker, tracker_tokens, utility_tokens = await self._create_story_tracker(
+            act_count=seed.act_count,
+            final_plot=final_plot,
+            connected_agents=connected_agents,
+            conflict_matrix=conflict_matrix,
+            model=model
+        )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+        print(f"✓ Story tracker initialized")
+        
+        # Store in memory
+        await self._store_planning_documents(
+            seed, minimal_plot, final_plot, world_foundation,
+            narrative_agents, conflict_matrix, connected_agents,
+            integrated_world, quality_report, final_plot.title, story_tracker
+        )
+        
+        total_tokens = self._calculate_total_tokens([
+            world_tokens, agent_tokens, plot_tokens, conflict_tokens,
+            connect_tokens, integrate_tokens, expand_tokens,
+            quality_tokens, refine_tokens, age_filter_tokens, tracker_tokens
+        ])
+        
+        print("\n" + "=" * 60)
+        print("✅ STANDARD PLANNING COMPLETE")
+        print(f"📊 Total tokens: {total_tokens['total_tokens']:,}")
+        print("=" * 60)
+        
+        return {
+            "seed": seed,
+            "minimal_plot": minimal_plot,
+            "final_plot": final_plot,
+            "author_tokens": total_tokens,
+            "utility_tokens": utility_token_usage,
+        }
+
+
+    ## 13. HELPER METHODS
+    def _calculate_total_tokens(self, token_dicts: List[dict]) -> dict:
+        """Sum all token counts"""
+        total = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
+        for tokens in token_dicts:
+            total["prompt_tokens"] += tokens.get("prompt_tokens", 0)
+            total["completion_tokens"] += tokens.get("completion_tokens", 0)
+        total["total_tokens"] = total["prompt_tokens"] + total["completion_tokens"]
+        return total
+
+
+    async def _store_planning_documents(
+        self,
+        seed: MinimalStorySeed,
+        minimal_plot: Optional[MinimalPlotOutline],
+        final_plot: Any,
+        world_foundation: WorldFoundation,
+        narrative_agents: List[NarrativeAgent],
+        conflict_matrix: ConflictMatrix,
+        connected_agents: List[ConnectedNarrativeAgent],
+        integrated_world: IntegratedWorld,
+        quality_report: QualityReport,
+        story_title: str,
+        story_tracker: Optional[StoryTracker]
+    ):
+        """Store all planning documents in memory"""
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(seed.model_dump()),
+            metadata={"type": "story_seed", "story_title": story_title}
+        )
+        
+        if minimal_plot:
+            await self.memory.add_long_term_document(
+                text=StoryHelpers.compress_json(minimal_plot.model_dump()),
+                metadata={"type": "minimal_plot_outline", "story_title": story_title}
+            )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(final_plot.model_dump()),
+            metadata={"type": "expanded_plot_outline", "story_title": story_title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(world_foundation.model_dump()),
+            metadata={"type": "world_foundation", "story_title": story_title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json([a.model_dump() for a in narrative_agents]),
+            metadata={"type": "narrative_agents", "story_title": story_title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(conflict_matrix.model_dump()),
+            metadata={"type": "conflict_matrix", "story_title": story_title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json([a.model_dump() for a in connected_agents]),
+            metadata={"type": "connected_agents", "story_title": story_title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(integrated_world.model_dump()),
+            metadata={"type": "integrated_world", "story_title": story_title}
+        )
+        
+        await self.memory.add_long_term_document(
+            text=StoryHelpers.compress_json(quality_report.model_dump()),
+            metadata={"type": "quality_report", "story_title": story_title}
+        )
+
+        if story_tracker:
+            await self.memory.add_long_term_document(
+                text=StoryHelpers.compress_json(story_tracker.model_dump()),
+                metadata={"type": "story_tracker", "story_title": story_title}
+            )
+
 
     def get_act_percentages_and_guidance(self, structure_name: str, total_acts: int) -> List[Tuple[float, str]]:
         """Returns act percentages and guidance based on structure"""
@@ -2023,7 +3614,78 @@ Create act-by-act tracking of what gets introduced and resolved."""
         
         even_perc = 1.0 / total_acts
         return [(even_perc, f"ACT {i+1}: Progress with rising tension.") for i in range(total_acts)]
+    
+    def _get_genre_specific_anchoring(self, genres: List[str]) -> str:
+        """Explicit genre constraints for act planning"""
+        genre_constraints = {
+            "Fantasy": (
+                "- Magic must have clear costs/rules\n"
+                "- World-building in EVERY anchor\n"
+                "- Quest structure maintained"
+            ),
+            "Mystery": (
+                "- Every anchor must advance investigation OR deepen character motive\n"
+                "- Clues and red herrings in each chapter\n"
+                "- Never lose sight of the mystery question"
+            ),
+            "Romance": (
+                "- Romantic tension in every anchor\n"
+                "- Emotional beats > plot mechanics\n"
+                "- Relationship arc is the PRIMARY plot"
+            ),
+            "Thriller/Suspense": (
+                "- Escalating danger in each anchor\n"
+                "- Protagonist under constant pressure\n"
+                "- Pacing cannot slow"
+            ),
+            "Comedy": (
+                "- A comedic beat in EVERY anchor\n"
+                "- Character flaws drive humor\n"
+                "- Escalation through misunderstanding or irony"
+            ),
+            "Horror": (
+                "- Sustained atmosphere of dread in every anchor\n"
+                "- Threat must feel personal and inescapable\n"
+                "- Tension > exposition"
+            ),
+            "Sci-Fi": (
+                "- Speculative concept affects EVERY anchor\n"
+                "- Internal logic of technology must remain consistent\n"
+                "- Human consequences of the concept are foregrounded"
+            ),
+            "Crime": (
+                "- Criminal objective or consequence in every anchor\n"
+                "- Cause-and-effect realism\n"
+                "- Moral pressure escalates continuously"
+            ),
+            "Drama": (
+                "- Character choice drives every anchor\n"
+                "- Emotional consequences are explicit\n"
+                "- External events exist to pressure inner conflict"
+            ),
+            "Adventure": (
+                "- Momentum and forward motion in every anchor\n"
+                "- Clear external objective at all times\n"
+                "- Set pieces advance plot, not spectacle alone"
+            ),
+            "Tragedy": (
+                "- Inevitable downfall reinforced in every anchor\n"
+                "- Character flaws actively cause harm\n"
+                "- Hope is present but progressively undermined"
+            ),
+        }
 
+        primary_genre = genres[0]
+        for key in genre_constraints:
+            if key in primary_genre:
+                return genre_constraints[key]
+
+        return (
+            f"- Maintain {primary_genre} conventions\n"
+            "- Core genre conflict in every anchor"
+        )
+
+    
     def get_enhanced_act_planning_system_prompt(
         self,
         act_number: int,
@@ -2035,13 +3697,24 @@ Create act-by-act tracking of what gets introduced and resolved."""
         target_act_word_count: int,
         word_count: int,
         min_age: int,
-        structure_config: dict
+        structure_config: dict,
+        seed: dict
     ) -> str:
         """Directive system prompt for act planning - EMPHASIZE CREATIVITY"""
         
-        return f"""You are crafting ACT {act_number} of {total_acts} with world-class storytelling flair.
+        return f"""You are crafting ACT {act_number} of {total_acts} for a {'/'.join(seed['genre'])} story.
 
-YOUR ROLE: Sculpt a vibrant story SPINE - dynamic turning points that pulse with creativity, emotion, and surprise.
+**CRITICAL - GENRE ADHERENCE FOR COMPACT STORIES**
+This is a {seed['target_length']}-word {'/'.join(seed['genre'])} story. EVERY anchor must:
+1. Serve the core {'/'.join(seed['genre'])} conflict
+2. Use genre-appropriate tropes and beats
+3. Maintain genre tone: {seed['tone']}
+4. No genre drift - stay laser-focused on {'/'.join(seed['genre'])} elements
+
+Genre-specific requirements:
+{self._get_genre_specific_anchoring(seed['genre'])}
+
+YOUR ROLE: Sculpt a {'/'.join(seed['genre'])} story spine that never wavers from genre conventions - dynamic turning points that pulse with creativity, emotion, and surprise.
 EMBRACE: Rich subtext, layered motivations, thematic depth, and innovative beats. Avoid formulaic rigidity.
 You are crafting ACT {act_number} of {total_acts} with world-class storytelling flair.
 
@@ -2256,7 +3929,7 @@ Dream big:
             "max_chapters": max_ch
         }
 
-        
+    
     async def plan_act(
         self,
         story_title: str,
@@ -2370,7 +4043,8 @@ Dream big:
             target_act_word_count=suggested_word_count,
             word_count=target_total,
             min_age=min_age,
-            structure_config=structure_config
+            structure_config=structure_config,
+            seed=seed
         )
         
         human_prompt = self.get_enhanced_act_planning_human_prompt(
@@ -2388,12 +4062,13 @@ Dream big:
         attempt = 0
         # last_tokens = {}
         last_plan = None
+        utility_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
 
         while attempt <= max_retries:
             attempt += 1
             print(f"\n📘 Act Planning LLM Attempt {attempt}/{max_retries + 1}")
 
-            response, tokens = await better_author_client(
+            response, author_tokens = await better_author_client(
                 system_prompt=system_prompt,
                 human_prompt=human_prompt,
                 llm_temp=0.8,
@@ -2406,10 +4081,15 @@ Dream big:
 
             # --- Parse JSON ---
             try:
-                act_plan = await StoryHelpers.load_json_with_retry(
+                act_plan, utility_tokens = await StoryHelpers.load_json_with_retry(
                     text=clean_resp,
                     parser=ActPlan
                 )
+
+
+                if isinstance(act_plan, tuple):
+                    act_plan = act_plan[0]
+                utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
             except Exception as e:
                 print(f"⚠️ JSON parsing failed ({e}). Retrying...")
                 await asyncio.sleep(0.6 * attempt)
@@ -2429,11 +4109,12 @@ Dream big:
             missing = [c for c in act_plan.chapter_outlines if not c.target_word_count]
 
             if missing:
-                per_chapter = suggested_word_count / len(act_plan.chapter_outlines)
+                per_chapter = int(suggested_word_count / len(act_plan.chapter_outlines))
                 for c in missing:
                     c.target_word_count = per_chapter
 
             # --- Passed all checks ---
+            print("Better Author Client Token Usage: ", author_tokens)
             print("✓ Act validated. Correct chapter count + valid word counts.")
             break
 
@@ -2463,20 +4144,20 @@ Dream big:
 
         print(f"📊 Updating story tracker for Act {act_number}...")
         
-        act_tracking, tracker_tokens = await self.tracker_manager.update_tracker_after_act(
-            story_title=story_title,
+        act_tracking, tracker_tokens, utility_tokens = await self.tracker_manager.update_tracker_after_act(
             act_number=act_number,
             act_plan=act_plan,
             author_context=story_so_far,
             model=model
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         tracker[act_number] = act_tracking     
         await self.tracker_manager.save_tracker(
             self.memory, story_title, tracker
         )
         total_tokens = {
-            "prompt_tokens": tokens.get("prompt_tokens", 0) + tracker_tokens.get("prompt_tokens", 0),
-            "completion_tokens": tokens.get("completion_tokens", 0) + tracker_tokens.get("completion_tokens", 0),
+            "prompt_tokens": author_tokens.get("prompt_tokens", 0) + tracker_tokens.get("prompt_tokens", 0),
+            "completion_tokens": author_tokens.get("completion_tokens", 0) + tracker_tokens.get("completion_tokens", 0),
             "total_tokens": 0
         }
         total_tokens["total_tokens"] = total_tokens["prompt_tokens"] + total_tokens["completion_tokens"]
@@ -2496,9 +4177,7 @@ Dream big:
         print(f"   Agent moments: {len(act_tracking.key_agent_moments)}")
         print("=" * 60)
         
-        return act_plan, total_tokens
-    
-
+        return act_plan, total_tokens, utility_token_usage
 
 
 

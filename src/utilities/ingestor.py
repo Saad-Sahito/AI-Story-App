@@ -152,20 +152,22 @@ Scene text:
 Extract structured scene data. Be highly selective with both characters and locations.
 Tag all changes with full Act/Chapter/Scene context."""
 
-        resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        resp, tokens = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         del raw_text, resp
         gc.collect()
 
         try:
-            parsed = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=SceneBundle)
+            parsed, utility_tokens = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=SceneBundle)
+            if isinstance(parsed, tuple):
+                parsed = parsed[0]
             result = parsed.model_dump()
             # print("INGEST SCENE: ", result)
             result["act_id"] = act_id
             result["chapter_id"] = chapter_id
             result["scene_id"] = scene_id
-            return result
+            return result, tokens, utility_tokens
         except Exception as e:
             raise RuntimeError(f"[Scene Ingestor] JSON fixing failed: {e}")
 
@@ -222,15 +224,17 @@ Full chapter summary:
 Update cumulative memory. Extend every progression list with a new "Act {act_id} Chapter {chapter_id}: ..." entry.
 Consolidate ruthlessly but intelligently — keep only what matters long-term."""
 
-        resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        resp, tokens = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         del raw_text, resp
         gc.collect()
 
         try:
-            parsed = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ChapterBundle)
-            return parsed.model_dump()
+            parsed, utility_tokens = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ChapterBundle)
+            if isinstance(parsed, tuple):
+                parsed = parsed[0]
+            return parsed.model_dump(), tokens, utility_tokens
         except Exception as e:
             raise RuntimeError(f"[Chapter Ingestor] JSON fixing failed: {e}")
 
@@ -279,16 +283,18 @@ Synthesize act-level summary.
 Add one final progression entry per entity tagged with "Act {act_id}: ...".
 Prune aggressively but fairly — only enduring characters and locations survive."""
 
-        resp = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
+        resp, tokens = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
         clean_resp = StoryHelpers._strip_code_fences(raw_text)
         del raw_text, resp
         gc.collect()
 
         try:
-            parsed = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ActSummary)
+            parsed, utility_tokens = await StoryHelpers.load_json_with_retry(text=clean_resp, parser=ActSummary)
+            if isinstance(parsed, tuple):
+                parsed = parsed[0]
             result = parsed.model_dump()
             result["act_id"] = act_id
-            return result
+            return result, tokens, utility_tokens
         except Exception as e:
             raise RuntimeError(f"[Act Ingestor] JSON fixing failed: {e}")

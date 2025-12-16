@@ -168,6 +168,8 @@ class SQLiteStore:
                     author_token_usage TEXT,
                     director_token_usage TEXT,
                     writer_token_usage TEXT,
+                    ingestor_token_usage TEXT,
+                    utility_token_usage TEXT,
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id),
@@ -208,7 +210,7 @@ class SQLiteStore:
         """Retrieve shared story data for a given story_id."""
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
-                SELECT story_id, story_title, story_type, total_acts, target_length, last_chapter_id, story_length, last_chapter_id, genre_list, sub_genre_list, themes_list,
+                SELECT story_id, story_title, story_type, total_acts, target_length, story_length, last_chapter_id, last_chapter_id, genre_list, sub_genre_list, themes_list,
                        pov, tense, prose_style,
                        blurb, tone_temp, image_data, public, min_age, author_id, created_at, updated_at
                 FROM shared_story_data
@@ -413,12 +415,13 @@ class SQLiteStore:
 
                 # Post-check
                 post = await conn.execute("SELECT nickname, age, tier FROM users WHERE user_id = ?", (user_id,))
-                post_row = await post.fetchone()
+                # post_row = await post.fetchone()
                 #print(f"[POST] Updated row: {dict(post_row) if post_row else None}")
 
                 if cursor.rowcount == 0:
                     return {"status": "error", "message": "User not found or no changes"}
                 return {"status": "success", "updated": list(to_update.keys())}
+            
         except Exception as e:
             print(f"[EXCEPTION update_user] {e}")
             import traceback
@@ -1118,12 +1121,14 @@ class SQLiteStore:
         author_token_usage = metadata.get("author_token_usage")
         director_token_usage = metadata.get("director_token_usage")
         writer_token_usage = metadata.get("writer_token_usage")
+        ingestor_token_usage = metadata.get("ingestor_token_usage")
+        utility_token_usage = metadata.get("utility_token_usage")
         async with self._get_connection() as conn:            
             # Update story_progress
             cursor = await conn.execute("""
                 SELECT current_act_id, latest_chapter_id, continue_scene_id, 
                     story_word_count, chapter_word_count, complete, 
-                    author_token_usage, director_token_usage, writer_token_usage
+                    author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
                 FROM story_progress
                 WHERE user_id = ? AND story_id = ?
             """, (self.user_id, self.story_id))
@@ -1186,6 +1191,14 @@ class SQLiteStore:
                 writer_token_usage,
                 existing_row["writer_token_usage"] if existing_row else None
             )
+            updated_ingestor_token_usage = process_token_usage(
+                ingestor_token_usage,
+                existing_row["ingestor_token_usage"] if existing_row else None
+            )
+            updated_utility_token_usage = process_token_usage(
+                utility_token_usage,
+                existing_row["utility_token_usage"] if existing_row else None
+            )
 
             if existing_row:
                 await conn.execute("""
@@ -1199,6 +1212,8 @@ class SQLiteStore:
                         author_token_usage = ?,
                         director_token_usage = ?,
                         writer_token_usage = ?,
+                        ingestor_token_usage = ?,
+                        utility_token_usage = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND story_id = ?
                 """, (
@@ -1211,6 +1226,8 @@ class SQLiteStore:
                     updated_author_token_usage,
                     updated_director_token_usage,
                     updated_writer_token_usage,
+                    updated_ingestor_token_usage,
+                    updated_utility_token_usage,
                     self.user_id,
                     self.story_id
                 ))
@@ -1220,8 +1237,8 @@ class SQLiteStore:
                     INSERT INTO story_progress (
                         user_id, story_id, current_act_id, latest_chapter_id, 
                         continue_scene_id, story_word_count, chapter_word_count, 
-                        complete, author_token_usage, director_token_usage, writer_token_usage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        complete, author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     self.user_id,
                     self.story_id,
@@ -1233,7 +1250,9 @@ class SQLiteStore:
                     complete or False,
                     updated_author_token_usage,
                     updated_director_token_usage,
-                    updated_writer_token_usage
+                    updated_writer_token_usage,
+                    updated_ingestor_token_usage,
+                    updated_utility_token_usage
                 ))
             
             await conn.commit()
@@ -1253,6 +1272,8 @@ class SQLiteStore:
         author_token_usage = metadata.get("author_token_usage")
         director_token_usage = metadata.get("director_token_usage")
         writer_token_usage = metadata.get("writer_token_usage")
+        ingestor_token_usage = metadata.get("ingestor_token_usage")
+        utility_token_usage = metadata.get("utility_token_usage")
         
         # Shared fields
         shared_metadata = {
@@ -1262,9 +1283,9 @@ class SQLiteStore:
             "target_length": metadata.get("target_length"),
             "last_chapter_id": chapter_id,
             "genre": metadata.get("genre"),
+            "sub_genre": metadata.get("sub_genre"),
             "themes": metadata.get("themes"),
             "pov": metadata.get("pov"),
-            #"narrative_voice": metadata.get("narrative_voice"),
             "prose_style": metadata.get("prose_style"),
             "tense": metadata.get("tense"),
             "blurb": metadata.get("blurb"),
@@ -1283,7 +1304,7 @@ class SQLiteStore:
             cursor = await conn.execute("""
                 SELECT current_act_id, latest_chapter_id, continue_scene_id, 
                     story_word_count, chapter_word_count, complete, 
-                    author_token_usage, director_token_usage, writer_token_usage
+                    author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
                 FROM story_progress
                 WHERE user_id = ? AND story_id = ?
             """, (self.user_id, self.story_id))
@@ -1346,6 +1367,14 @@ class SQLiteStore:
                 writer_token_usage,
                 existing_row["writer_token_usage"] if existing_row else None
             )
+            updated_ingestor_token_usage = process_token_usage(
+                ingestor_token_usage,
+                existing_row["ingestor_token_usage"] if existing_row else None
+            )
+            updated_utility_token_usage = process_token_usage(
+                utility_token_usage,
+                existing_row["utility_token_usage"] if existing_row else None
+            )
 
             if existing_row:
                 await conn.execute("""
@@ -1359,6 +1388,8 @@ class SQLiteStore:
                         author_token_usage = ?,
                         director_token_usage = ?,
                         writer_token_usage = ?,
+                        ingestor_token_usage = ?,
+                        utility_token_usage = ?,
                         updated_at = CURRENT_TIMESTAMP
                     WHERE user_id = ? AND story_id = ?
                 """, (
@@ -1371,6 +1402,8 @@ class SQLiteStore:
                     updated_author_token_usage,
                     updated_director_token_usage,
                     updated_writer_token_usage,
+                    updated_ingestor_token_usage,
+                    updated_utility_token_usage,
                     self.user_id,
                     self.story_id
                 ))
@@ -1379,8 +1412,8 @@ class SQLiteStore:
                     INSERT INTO story_progress (
                         user_id, story_id, current_act_id, latest_chapter_id, 
                         continue_scene_id, story_word_count, chapter_word_count, 
-                        complete, author_token_usage, director_token_usage, writer_token_usage
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        complete, author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, (
                     self.user_id,
                     self.story_id,
@@ -1392,7 +1425,9 @@ class SQLiteStore:
                     complete or False,
                     updated_author_token_usage,
                     updated_director_token_usage,
-                    updated_writer_token_usage
+                    updated_writer_token_usage,
+                    updated_ingestor_token_usage,
+                    updated_utility_token_usage
                 ))
             
             await conn.commit()
@@ -1409,7 +1444,7 @@ class SQLiteStore:
                 cursor = await conn.execute("""
                     SELECT current_act_id, latest_chapter_id, continue_scene_id, 
                         story_word_count, chapter_word_count, complete, 
-                        author_token_usage, director_token_usage, writer_token_usage
+                        author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
                     FROM story_progress 
                     WHERE user_id = ? AND story_id = ?
                     LIMIT 1
@@ -1430,6 +1465,8 @@ class SQLiteStore:
                     "author_token_usage": 0,
                     "director_token_usage": 0,
                     "writer_token_usage": 0,
+                    "ingestor_token_usage": 0,
+                    "utility_token_usage": 0
                 }
                 
                 if progress_row:
@@ -1441,7 +1478,9 @@ class SQLiteStore:
                         "complete": bool(progress_row["complete"]),
                         "author_token_usage": progress_row["author_token_usage"] if progress_row["author_token_usage"] is not None else 0,
                         "director_token_usage": progress_row["director_token_usage"] if progress_row["director_token_usage"] is not None else 0,
-                        "writer_token_usage": progress_row["writer_token_usage"] if progress_row["writer_token_usage"] is not None else 0
+                        "writer_token_usage": progress_row["writer_token_usage"] if progress_row["writer_token_usage"] is not None else 0,
+                        "ingestor_token_usage": progress_row["ingestor_token_usage"] if progress_row["ingestor_token_usage"] is not None else 0,
+                        "utility_token_usage": progress_row["utility_token_usage"] if progress_row["utility_token_usage"] is not None else 0
                     })
                 
                 return result
@@ -1461,7 +1500,7 @@ class SQLiteStore:
                 cursor = await conn.execute("""
                     SELECT current_act_id, latest_chapter_id, continue_scene_id, 
                         story_word_count, chapter_word_count, complete, rating,
-                        author_token_usage, director_token_usage, writer_token_usage
+                        author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
                     FROM story_progress 
                     WHERE user_id = ? AND story_id = ?
                     LIMIT 1
@@ -1484,10 +1523,11 @@ class SQLiteStore:
                     "author_token_usage": 0,
                     "director_token_usage": 0,
                     "writer_token_usage": 0,
+                    "ingestor_token_usage": 0,
+                    "utility_token_usage": 0,
                     "total_acts": 3,
                     "target_length": 0,
                     "pov": None,
-                   # "narrative_voice": None,
                     "tense": None,
                     "prose_style": None,
                     "rating": 0,
@@ -1496,7 +1536,6 @@ class SQLiteStore:
                     "story_type": "classic",
                     "story_title": None,
                     "tone_temp": None,
-                    #"model": None,
                     "blurb": None,
                     "image_data": None,
                     "public": False,
@@ -1514,6 +1553,8 @@ class SQLiteStore:
                         "author_token_usage": progress_row["author_token_usage"] if progress_row["author_token_usage"] is not None else 0,
                         "director_token_usage": progress_row["director_token_usage"] if progress_row["director_token_usage"] is not None else 0,
                         "writer_token_usage": progress_row["writer_token_usage"] if progress_row["writer_token_usage"] is not None else 0,
+                        "ingestor_token_usage": progress_row["ingestor_token_usage"] if progress_row["ingestor_token_usage"] is not None else 0,
+                        "utility_token_usage": progress_row["utility_token_usage"] if progress_row["utility_token_usage"] is not None else 0,
                         "rating": progress_row["rating"] if progress_row["rating"] is not None else 0
                     })
                 
@@ -1524,7 +1565,6 @@ class SQLiteStore:
                         "last_chapter_id": shared_data["last_chapter_id"] if shared_data["last_chapter_id"] is not None else 0,
                         "pov": shared_data["pov"],
                         "tense": shared_data["tense"],
-                        #"narrative_voice": shared_data["narrative_voice"],
                         "prose_style": shared_data["prose_style"],
                         "genre": shared_data["genre_list"] or [],
                         "sub_genre": shared_data["sub_genre_list"] or [],
@@ -1532,7 +1572,6 @@ class SQLiteStore:
                         "story_type": shared_data["story_type"] or "classic",
                         "story_title": shared_data["story_title"],
                         "tone_temp": shared_data["tone_temp"],
-                        #"model": shared_data["model"],
                         "blurb": shared_data["blurb"],
                         "image_data": shared_data["image_data"],
                         "public": bool(shared_data["public"]),
@@ -1879,7 +1918,7 @@ class SQLiteStore:
         async with self._get_connection() as conn:
             cursor = await conn.execute("""
                 SELECT id, user_id, story_id, current_act_id, latest_chapter_id, 
-                       continue_scene_id, story_word_count, complete, author_token_usage, director_token_usage, writer_token_usage, 
+                       continue_scene_id, story_word_count, complete, author_token_usage, director_token_usage, writer_token_usage, ingestor_token_usage, utility_token_usage
                        created_at, updated_at
                 FROM story_progress
             """)

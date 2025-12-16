@@ -48,7 +48,7 @@ class AnthropicWrapper(BaseWrapper):
         self.usage_key = "usage"
 
     async def ainvoke(self, messages, temperature: float, model: str):
-        self.client = ChatAnthropic(model_name=model, temperature=temperature, api_key=self.api_key, max_tokens_to_sample=7000)
+        self.client = ChatAnthropic(model_name=model, temperature=temperature, api_key=self.api_key, max_tokens_to_sample=12000)
         return await self.client.ainvoke(messages)
 
     def get_token_usage(self, response) -> dict:
@@ -281,14 +281,14 @@ class LLMClient:
         """Blocking call to LLM – returns the full response."""
         # Use GroqWrapper as example; replace with GoogleWrapper if needed
         #wrapper = GoogleWrapper(self.google_api_key)
-        # wrapper = GroqWrapper(self.groq_api_key)
+        wrapper = GroqWrapper(self.groq_api_key)
         #wrapper = XAIWrapper(self.xai_api_key)
-        wrapper = OpenAIWrapper(self.openai_api_key)
+        # wrapper = OpenAIWrapper(self.openai_api_key)
         async with self.sem:
             response = await wrapper.ainvoke([
                 SystemMessage(content=system_prompt),
                 HumanMessage(content=human_prompt)
-            ], temperature=0.1, model="gpt-4o-2024-08-06")
+            ], temperature=0.1, model="llama-3.3-70b-versatile")
         token_usage = wrapper.get_token_usage(response)
         # Validate token usage
         if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
@@ -322,8 +322,7 @@ class LLMClient:
                         HumanMessage(content=human_prompt)
                     ], temperature=llm_temp, model=model)
             token_usage = wrapper.get_token_usage(response)
-            # print(f"Better Author Client used tokens: {token_usage}")
-            # Validate token usage
+
             if not all(isinstance(v, int) and v >= 0 for v in token_usage.values()):
                 print(f"Warning: Invalid token usage values for model {model}: {token_usage}")
 
@@ -352,7 +351,8 @@ class LLMClient:
             # model = "claude-sonnet-4-5-20250929"
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
-            model = "openai/gpt-oss-120b"
+            # model = "openai/gpt-oss-120b"
+            model = "llama-3.3-70b-versatile"
             wrapper = GroqWrapper(self.groq_api_key)
             # model = "gemini-3-pro-preview"
             # wrapper = GoogleWrapper(self.google_api_key)
@@ -428,6 +428,7 @@ class LLMClient:
             # wrapper = XAIWrapper(self.xai_api_key)
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
+            # model = "llama-3.3-70b-versatile"
             model = "openai/gpt-oss-120b"
             wrapper = GroqWrapper(self.groq_api_key)
             async with self.sem:
@@ -463,10 +464,11 @@ class LLMClient:
             # llm_temp = 1
             #model = "claude-3-haiku-20240307"
             #wrapper = XAIWrapper(self.xai_api_key)
-            model = "claude-haiku-4-5-20251001"
-            wrapper = AnthropicWrapper(self.claude_api_key)
-            # model = "openai/gpt-oss-120b"
-            # wrapper = GroqWrapper(self.groq_api_key)
+            # model = "claude-haiku-4-5-20251001"
+            # wrapper = AnthropicWrapper(self.claude_api_key)
+            model = "openai/gpt-oss-120b"
+            # model = "llama-3.3-70b-versatile"
+            wrapper = GroqWrapper(self.groq_api_key)
             async with self.sem:
                     response = await wrapper.ainvoke([
                         SystemMessage(content=system_prompt),
@@ -501,6 +503,7 @@ class LLMClient:
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
             model = "openai/gpt-oss-120b"
+            # model = "llama-3.3-70b-versatile"
             wrapper = GroqWrapper(self.groq_api_key)
             async with self.sem:
                     response = await wrapper.ainvoke([

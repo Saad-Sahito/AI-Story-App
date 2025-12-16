@@ -26,11 +26,14 @@ Style: Professional, marketable, similar to what you'd find in a bookstore.
 
 Output only the blurb—no commentary or formatting."""
         
-
+        try:
+            narr = minimal_plot.narrative_arc
+        except:
+            narr = minimal_plot.narrative_flow
+            
         plot_summary = f"""
 Premise: {minimal_plot.premise}
-Central Question: {minimal_plot.central_question}
-Narrative Arc: {minimal_plot.narrative_arc}
+Narrative Arc: {narr}
 """
         
         response, _ = await utility_client(

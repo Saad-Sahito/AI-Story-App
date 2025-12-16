@@ -15,6 +15,7 @@ import src.story_engines.classic_narrative.agents.shared_scene_planner as scene_
 from src.utilities.image_generation import generate_cover_image
 from src.utilities.blurb_generator import generate_blurb
 from src.utilities.ingestor import Ingestor
+from src.utilities.story_helpers import StoryHelpers
 from config_vars import tier_2_monthly_words_limit, tier_1_monthly_words_limit
 from typing import Optional
 from asyncio import Lock
@@ -479,7 +480,8 @@ class ClassicStorySetup:
         story_plan = await story_author.orchestrate_story_planning(
             user_context=user_context
         )
-        all_tokens = story_plan['tokens']
+        all_tokens = story_plan['author_tokens']
+        utility_token_usage = story_plan['utility_tokens']
         story_seed = story_plan['seed']
         minimal_plot = story_plan['minimal_plot']
         final_plot = story_plan['final_plot']
@@ -492,10 +494,11 @@ class ClassicStorySetup:
         
         # Step 5: Plan Act 1
         print(f"📋 Planning Act 1 for: {final_plot.title}")
-        _, act_tokens = await story_author.plan_act(
+        _, act_tokens, utility_tokens = await story_author.plan_act(
             story_title=final_plot.title,
             act_number=1
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         
         tokens_usage = {
             "prompt_tokens": act_tokens["prompt_tokens"] + all_tokens["prompt_tokens"],
@@ -532,13 +535,13 @@ class ClassicStorySetup:
                 "tone_temp": mapped_tone_temp,
                 "model": model,
                 "author_token_usage": tokens_usage,
+                "utility_token_usage": utility_token_usage,
                 "blurb": blurb,
                 "image_data": image_data_base64,
                 "story_type": story_type,
                 "target_length": story_seed.target_length,
                 "pov": story_seed.pov,
                 "prose_style": story_seed.prose_style,
-                #"narrative_voice": story_seed.style_guide.get("narrative_voice", ""),
                 "tense": "past",
                 "genre": story_seed.genre,
                 "sub_genre": story_seed.sub_genre,
@@ -603,7 +606,7 @@ class ClassicStorySetup:
         if not story_data:
             raise HTTPException(status_code=405, detail="Invalid story ID")
         
-        memory_system = story_data['memory_system']
+        memory_system: StoryMemorySystem = story_data['memory_system']
         progress = await memory_system.get_story_progress()
         
         if not progress:
@@ -760,8 +763,8 @@ class ClassicStorySetup:
         if not story_data:
             raise HTTPException(status_code=405, detail="Invalid story ID")
         
-        memory_system = story_data['memory_system']
-        progress = await memory_system.get_story_progress()
+        memory_system: StoryMemorySystem = story_data['memory_system']
+        progress: dict = await memory_system.get_story_progress()
         
         if not progress:
             print("❌ No story progress found")
@@ -778,20 +781,24 @@ class ClassicStorySetup:
         # target_length = progress.get('target_length', 50000)
         # current_word_count = progress.get('story_word_count', 0)
         latest_chapter = progress.get('latest_chapter_id', 1)
-        
+        utility_token_usage = StoryHelpers._parse_tokens(progress.get("utility_token_usage"))
+
         # act_percentage = current_word_count / target_length if target_length > 0 else 0
         from src.story_engines.classic_narrative.agents.story_author import StoryAuthor
+
         story_author = StoryAuthor(memory_system=memory_system)
         text = await memory_system.get_entire_act_chapters_for_act_ingestion_episodic_story(current_act=current_act, chapters=latest_chapter-1)
         combined_text = '\n'.join(text)
         world_details = await memory_system.get_all_episodic_characters()
         char_details = await memory_system.get_all_episodic_world_elements()
-        ingested = await Ingestor.ingest_act(
+        ingested, ingestor_tokens, utility_tokens = await Ingestor.ingest_act(
             act_id=current_act, 
             all_chapter_summaries=combined_text, 
             final_characters=char_details, 
             final_locations=world_details
             )
+        
+        
         if ingested == "failed":
             print("Act Ingestion failed.")
             return {
@@ -800,6 +807,11 @@ class ClassicStorySetup:
                 "current_act_id": current_act
             }
         else:
+            utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
+            ingestor_token_usage = StoryHelpers._parse_tokens(progress.get("ingestor_token_usage"))
+            
+            ingestor_token_usage = StoryHelpers._add_tokens_to_total(ingestor_token_usage, ingestor_tokens)
+
             await memory_system.add_post_act_bundle(
                 act_bundle=ingested,
                 metadata={
@@ -812,35 +824,22 @@ class ClassicStorySetup:
         next_act = current_act + 1
         print(f"🎬 Transitioning to Act {next_act}")
         
-        _, tokens = await story_author.plan_act(
+        _, author_tokens, utility_tokens = await story_author.plan_act(
             story_title=story_title,
             act_number=next_act
         )
+        utility_token_usage = StoryHelpers._add_tokens_to_total(utility_token_usage, utility_tokens)
         
         # Update progress with new act
         await memory_system.increment_act(new_act_number=next_act)
-
-        def _parse_tokens(value):
-            default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-            if not value:
-                return default
-            try:
-                parsed = json.loads(value) if isinstance(value, str) else value
-                if isinstance(parsed, dict) and all(k in parsed for k in default):
-                    return parsed
-            except:
-                pass
-            return default
         
         # Update token usage
-        author_tokens = _parse_tokens(progress.get("author_token_usage"))
+        author_token_usage = StoryHelpers._parse_tokens(progress.get("author_token_usage"))
         if isinstance(author_tokens, dict):
-            author_tokens["prompt_tokens"] = tokens["prompt_tokens"] + author_tokens["prompt_tokens"]
-            author_tokens["completion_tokens"] = tokens["completion_tokens"] + author_tokens["completion_tokens"]
-            author_tokens["total_tokens"] = tokens["total_tokens"] + author_tokens["total_tokens"]
+            author_token_usage = StoryHelpers._add_tokens_to_total(author_token_usage, author_tokens)
 
         await memory_system.update_story_progress(
-            metadata={"author_token_usage": author_tokens}
+            metadata={"author_token_usage": author_token_usage, "ingestor_token_usage": ingestor_token_usage, "utility_token_usage": utility_token_usage}
         )
 
 
