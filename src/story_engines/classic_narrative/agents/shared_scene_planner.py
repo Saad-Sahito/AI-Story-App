@@ -197,7 +197,7 @@ class ScenePlannerService:
 
     async def _write_scene(self, state: SceneState) -> SceneState:
         mem = state.scene_memory
-        word_count_target = state.scene_target_length
+        word_count_target = int(state.scene_target_length * 1.25)
         
         directive_dict = mem.DirectorInstructions
         
@@ -268,11 +268,10 @@ Target Length: {word_count_target} words
 FINAL MINDSET:
 This is not a draft.
 Every paragraph must justify its existence.
-Nothing ornamental survives.
 
 ANTI-REPETITION LAW:
 - Treat the previous scene as radioactive: no reused imagery, metaphors, sensory domains, or gestures.
-- Within this scene, avoid repeating descriptive verbs or adjectives.
+- Within this scene, avoid repeating descriptive verbs or adjectives, like a typical generative AI text.
 - Dialogue, action, and emotional expression must feel new, not iterated.
 
 OUTPUT FORMAT:
@@ -281,10 +280,11 @@ OUTPUT FORMAT:
 
 
         human_prompt = f"""
-Execute the scene as directed.
-
 DIRECTOR INSTRUCTIONS:
 {mem.DirectorInstructions}
+
+Execute the scene as directed.
+
 
 Character behavior MUST reflect core motivations.
 Relationship tension MUST appear through action and dialogue.
@@ -310,7 +310,7 @@ Write the scene in {state.voice} prose style.
 
             mem.scene_text = clean.scene_text
             mem.word_count = StoryHelpers._count_words_split(clean.scene_text)
-            if mem.word_count == 0:
+            if mem.word_count <= int(word_count_target * 0.25):
                 continue
             print(f"[Target] {word_count_target}w")
             print(f"[WRITE] {mem.word_count}w")
@@ -346,8 +346,8 @@ You are the final editor. Your job is correction, not commentary.
 PRIMARY OBJECTIVES (in order):
 1. Preserve all director-mandated story events.
 2. Enforce continuity with the previous scene.
-3. Eliminate repetition, cliché, and excess.
-4. Hit word count ±12–15%.
+3. Eliminate repetition, cliché, excess, or any text that feels AI generted.
+4. Hit word count ±15%.
 
 HARD LAWS (violations MUST be fixed):
 
@@ -364,6 +364,7 @@ REPETITION BAN
 - No sensory domain, metaphor, gesture, or descriptive language may repeat from the previous scene.
 - Within this scene, avoid repeating content words tied to sensation, emotion, or environment.
 - If anything feels echoed, replace or remove it.
+- The text should feel human-edited not AI generated.
 
 STYLE ENFORCEMENT
 - Strip purple prose. Prefer action over description.
@@ -391,16 +392,10 @@ FORMAT:
 """
 
         
-        word_count_target = state.scene_target_length
+        word_count_target = int(state.scene_target_length * 1.25)
         human_prompt = f"""
-PREVIOUS SCENE (reference only):
-{mem.prev_scene}
-
 DIRECTOR NOTES:
 {mem.DirectorInstructions}
-
-CURRENT SCENE DRAFT:
-{mem.scene_text}
 
 Draft Word Count: {mem.word_count}
 Target Word Count: {word_count_target}
@@ -408,6 +403,14 @@ Target Word Count: {word_count_target}
 Fix violations. Preserve story events. Enforce freshness.
 Ensure writing prose style is {state.voice}.
 Return ONLY the final corrected scene.
+
+
+PREVIOUS SCENE (reference only):
+{mem.prev_scene}
+
+
+CURRENT SCENE DRAFT:
+{mem.scene_text}
 """
 
         while True:
@@ -454,16 +457,17 @@ OUTPUT FORMAT INSTRUCTIONS:
 {SCENE_OUTPUT_JSON_INSTRUCTIONS}
 """
 
-            human_prompt = f"""SCENE TO FIX:
-{mem.scene_text}
-
-ISSUES:
+            human_prompt = f"""ISSUES:
 {chr(10).join(report.issues)}
 
 RECOMMENDATIONS:
 {chr(10).join(report.recommendations)}
 
-Output the age-appropriate version."""
+Output the age-appropriate version.
+
+SCENE TO FIX:
+{mem.scene_text}
+"""
             while True:
                 resp, tokens = await writer_client(system_prompt=system_prompt, human_prompt=human_prompt, llm_temp=0.6)
                 self._add_writer_tokens(state, tokens)

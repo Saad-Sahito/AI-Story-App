@@ -51,6 +51,27 @@ class StoryHelpers:
         return {k: v for k, v in full.items() if k in essential}
     
     @staticmethod
+    def normalize_text(text: str) -> str:
+        """
+        1. Fix mojibake (UTF-8 decoded as Latin-1)
+        2. Decode escaped unicode sequences
+        """
+        # Step 1: fix mojibake
+        try:
+            text = text.encode("latin1").decode("utf-8")
+        except UnicodeError:
+            pass
+
+        # Step 2: decode escaped unicode
+        try:
+            text = bytes(text, "utf-8").decode("unicode_escape")
+        except UnicodeError:
+            pass
+
+        return text
+
+
+    @staticmethod
     def _coerce_character_world_field(val: Any) -> Dict[str, Any]:
         """
         Convert a variety of shapes into Dict[str,str]:

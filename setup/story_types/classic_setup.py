@@ -145,7 +145,7 @@ class ClassicStorySetup:
                                 for attempt in range(max_retries):
                                     try:
                                         await session_data['memory_system'].qdrant_initialize()
-                                        print(f"✅ Qdrant initialized successfully for {key}")
+                                        # print(f"✅ Qdrant initialized successfully for {key}")
                                         break
                                     except Exception as e:
                                         if attempt < max_retries - 1:
@@ -328,7 +328,7 @@ class ClassicStorySetup:
                     pipe.set(key, json.dumps(serializable_data))
                     pipe.expire(key, SESSION_TTL)
                     await pipe.execute()
-                print(f"✅ Writing to Redis key={key}, data={serializable_data}")
+                # print(f"✅ Writing to Redis key={key}, data={serializable_data}")
         except redis.RedisError as e:
             print(f"❌ Redis error in _set_session: {e}")
             raise HTTPException(status_code=500, detail="Failed to store session data")

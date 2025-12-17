@@ -2018,9 +2018,9 @@ Generate plot outline."""
         for bs in backstories[:5]:  # Top 5 characters
             backstory_highlights.append({
                 "name": bs.name,
-                "key_events": bs.formative_events[:200] + "...",  # Snippet
-                "secrets": bs.secrets[:3],
-                "subplot_seeds": bs.subplot_seeds[:2]
+                "key_events": bs.formative_events,
+                "secrets": bs.secrets,
+                "subplot_seeds": bs.subplot_seeds
             })
         
         location_names = [loc.get("name", "Unknown") for loc in world_guide.location_dossiers[:10]]
@@ -2168,8 +2168,7 @@ Write act summaries that feel like a complete story bible - specific, vivid, int
         system_prompt = f"""
 You are a disciplined narrative generator.
 Expand this minimal plot outline into a FULL story blueprint (for a story novel).
-You have full creative freedom within these boundaries, make it unique and compelling.
-Do not add content outside the requested JSON. 
+You have full creative freedom within these boundaries, make it unique and compelling. 
 Use only information provided through variables.
 
 ════════ STORY INPUT ════════
@@ -2217,7 +2216,7 @@ Audience Age: {seed.target_audience_age}
   // Add ONLY fields that meaningfully expand this specific story.
   // Do not copy samples blindly. Invent fields appropriate to { '/'.join(seed.genre) }.
 
-    // Length of Act Summaries List must be {target_act_count}
+  // Length of Act Summaries List must be {target_act_count}
 
 OUTPUT MUST validate against:
 {ExpandedPlotOutline.model_json_schema()}
@@ -2244,6 +2243,7 @@ Ensure:
 - Only valid JSON is returned.
 - Make sure all act summaries are present. This is the final production version.
 
+Your Plot is the Story Bible that will be followed to produce a World Class Novel.
 Generate the clean JSON only.
 """
 
@@ -2420,7 +2420,7 @@ AVAILABLE CHARACTERS:
 {json.dumps([{"name": a.name, "role": a.role, "arc": a.agent_arc} for a in connected_agents], indent=2)}
 
 THEMES: {', '.join(seed.themes)}
-ACTS: {act_count}
+TOTAL ACTS: {act_count}
 
 Create interwoven, genre-appropriate subplots."""
 
@@ -2450,7 +2450,7 @@ Create interwoven, genre-appropriate subplots."""
         """Provide genre-specific subplot guidance"""
         guidance = []
         
-        if any(g in ["Mystery", "Thriller"] for g in genres):
+        if any(g in ["Mystery", "Thriller/Suspense"] for g in genres):
             guidance.append("- Subplots can introduce red herrings or parallel investigations")
             guidance.append("- One subplot should heighten personal stakes for protagonist")
         
@@ -2458,7 +2458,7 @@ Create interwoven, genre-appropriate subplots."""
             guidance.append("- At least one subplot should involve relationship obstacles")
             guidance.append("- Consider rival romance or family approval subplot")
         
-        if any(g in ["Fantasy", "Sci-Fi"] for g in genres):
+        if any(g in ["Fantasy", "Sci-Fi", "Adventure"] for g in genres):
             guidance.append("- Subplots can explore world-building or magic/tech systems")
             guidance.append("- Consider political intrigue or discovery subplots")
         
@@ -3999,10 +3999,10 @@ Dream big:
         percentages_and_guidances = self.get_act_percentages_and_guidance(structure_name, total_acts)
         word_percentage, act_guidance = percentages_and_guidances[act_number - 1]
         
-        if act_number == total_acts:
-            suggested_word_count = remaining_words
-        else:
-            suggested_word_count = int(target_total * word_percentage)
+        # if act_number == total_acts:
+        #     suggested_word_count = remaining_words
+        # else:
+        suggested_word_count = int(target_total * word_percentage)
 
         structure_config = self.calculate_chapter_structure(
             total_story_length=target_total,

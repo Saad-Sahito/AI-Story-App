@@ -3,7 +3,7 @@ allowed_words_list = [
     "kill", "killed", "killing", "murder", "murderer", 
     "stupid", "moron", "dummy", "crazy", 
     "fat", "ugly", "crap", "organ",
-    "ovary", "uterus", "testicle", "menstruation", "womb"
+    "ovary", "uterus", "testicle", "menstruation", "womb", "oral"
 ]
 
 banned_words_list = ['transgender', 'trans', 'queer', 'gay', 'homo', 'homosexual', 'bisexual', 'ladyboy', 'femboy', 'transfeminine', 'transmasculine', 'lesbian', 'tranny', 'pansexual']

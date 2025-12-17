@@ -313,7 +313,7 @@ async def supabase_auth_middleware(request: Request, call_next):
 
     # Store the authenticated user in request.state for use in endpoints
     # Don't try to validate user_id here - let endpoints handle it
-    print(f"✅ Authenticated Supabase user: {supabase_user_id}")
+    # print(f"✅ Authenticated Supabase user: {supabase_user_id}")
     request.state.supabase_user = payload
     
     response = await call_next(request)
@@ -453,7 +453,6 @@ class RatingRequest(BaseModel):
 @app.post("/stories/progress/{user_id}/{story_id}/rating")
 async def api_put_story_rating(user_id: str, story_id: str, request: RatingRequest):
     received_rating = request.rating
-    # Your code here
     return await user_rate_story(user_id=user_id, story_id=story_id, rating=received_rating)
 
 class ImageRequest(BaseModel):

@@ -758,105 +758,84 @@ Conflict: {self.story_context.central_conflict}
 Themes: {', '.join(self.story_context.active_themes.keys())}
 World Rules: {' | '.join(self.story_context.world_rules)}
 
-CHARACTER PSYCHOLOGY (use in scene objectives):
-{chr(10).join(f"• {name}: {drive}" for name, drive in list(self.story_context.character_core_drives.items())[:8])}
+CHARACTER DRIVES:
+{chr(10).join(f"• {name}: {drive}" for name, drive in self.story_context.character_core_drives.items())}
 
-RELATIONSHIP TENSIONS (drive dialogue/conflict):
+RELATIONSHIP TENSIONS:
 {chr(10).join(f"• {name} vs {other}: {tension}" 
-              for name, rels in list(self.story_context.relationship_web.items())[:5]
-              for other, tension in list(rels.items())[:2])}
+              for name, rels in self.story_context.relationship_web.items()
+              for other, tension in rels.items())}
 
 RULES:
-1. ONE DRAMATIC FUNCTION PER SCENE - no repetition in chapter
-2. MINIMAL INTERNAL STATES - show through action/dialogue
-3. PROTAGONIST AGENCY - deliberate actions creating change
-4. IRREVERSIBLE CONSEQUENCES - something must permanently shift
-5. NO REPETITION - varied dramatic functions per scene
-6. GENRE-ADAPTIVE - tone/texture fits {', '.join(self.genre_list)}
-7. DIALOGUE = POWER STRUGGLE - every line wins/loses
+1. One dramatic function per scene (no repetition in chapter)
+2. Show internal states via action/dialogue only
+3. Protagonist must take deliberate, change-creating actions
+4. Every scene has irreversible consequences
+5. Varied dramatic functions across scenes
+6. Tone fits genres: {', '.join(self.genre_list)}
+7. Dialogue is always a power struggle
 
-When creating scene directives:
-- agents_in_scene: Include 'objective' (what they want NOW) + 'current_status' (emotional state)
-- story_events: Concrete actions honoring character motivations
-- state_changes: Character psychology shifts, relationship changes, world impacts
-- context: Include 'thematic_beat' (which theme this scene explores)
+Scene directives must include:
+- agents_in_scene: with objective (current want) + current_status (emotional state)
+- story_events: concrete, motivation-honoring actions
+- state_changes: psychology/relationship/world shifts
+- context: include thematic_beat (theme explored)
 
 Target chapter words: {total_chapter_words}
-
-Full context:
-{ContextFormatter.full_context(self.story_context)}
+Full context: {ContextFormatter.full_context(self.story_context)}
 
 {DIRECTOR_JSON_INSTRUCTIONS}
 """
 
 
-            human_prompt = f"""Convert this anchor into {scenes_per_anchor} concrete, executable scene(s) for a novel.
-ENTIRE CHAPTER ANCHOR POINTS (For Context Reference):
+            human_prompt = f"""Convert this anchor into {scenes_per_anchor} concrete, executable scene(s).
+
+CHAPTER ANCHOR POINTS (context only):
 {json.dumps(anchor_points, indent=2)}
 
-════════════════════════════════════════════════════════════════════════════════
+════════════════════════════════
 ANCHOR TO DRAMATIZE
-════════════════════════════════════════════════════════════════════════════════
-
+════════════════════════════════
 {json.dumps(anchor, indent=2)}
 
-════════════════════════════════════════════════════════════════════════════════
-SCENE SPECIFICATIONS
-════════════════════════════════════════════════════════════════════════════════
+════════════════════════════════
+SPECIFICATIONS
+════════════════════════════════
 
-Target word count per scene: {words_per_scene} words (±15% acceptable)
+Target per scene: {words_per_scene} words (±15%)
+Adjust content based on this target.
 
-Story events requirements:
-- 3-5 concrete, observable actions or lines of dialogue
-- Each must be specific enough that a writer knows EXACTLY what to show
-- If the anchor suggests emotion or thought, convert to: body language, objects, environmental reactions, or dialogue
-- Order events for maximum dramatic impact (not necessarily chronological with anchor)
+Story events:
+- 3–5 specific, observable actions/dialogue lines
+- Convert thoughts/emotions to body language, objects, environment, or dialogue
+- Order for maximum dramatic impact
 
-Context fields to populate:
-- Include only fields relevant to THIS scene's genre/needs
-- Prioritize: location, atmosphere, pacing, emotional_arc
-- Add genre-specific fields as appropriate (clues, magic_effects, combat_details, romantic_tension, etc.)
+Context fields:
+- Mandatory: location, atmosphere, pacing, emotional_arc, thematic_beat, world_rules_active
+- Add genre-relevant fields (e.g., clues, magic_effects, combat_details, romantic_tension)
 
-Agent profiles:
-- All five core fields are MANDATORY: role, objective, current_status, distinctive_voice, relationships
-- Add optional fields that create dramatic specificity (hidden_agenda, physical_tells, secrets_kept, etc.)
+Agents_in_scene (all mandatory):
+- role, gender, objective (now), current_status, distinctive_voice, core_motivation, relationships (tensions in scene)
+- Optional: hidden_agenda, physical_tells, secrets_kept, etc.
 
 State changes:
-- What do characters LEARN (concrete facts, not feelings)?
-- How do relationships SHIFT (observable behavioral changes)?
-- What physical/world changes occur?
+- Concrete facts learned
+- Observable relationship shifts
+- Physical/world changes
 
-CRITICAL: For each agent in agents_in_scene, include:
-- role, gender, objective (what they want NOW)
-- current_status (emotional/physical state)
-- distinctive_voice
-- core_motivation (from character context)
-- relationships (tensions with others in scene - from relationship web)
+Weave in backstories/subplots from anchor context if relevant and characters are present.
 
-For context field, MUST include:
-- thematic_beat: Which theme from {list(self.story_context.active_themes.keys())} this explores
-- world_rules_active: Any constraints from {self.story_context.world_rules} that apply
+Elevate the material:
+- Add pressure/obstacles if flat
+- Add memorable specific details if generic
+- Build breathing room if rushed
+- Choose surprising-yet-logical actions if safe
 
-If Epic Mode Context is available (Backstories/Subplots) inside the Anchor context:
-- weave explicit references to backstories if relevant
-- advance active subplots if characters are present
+Ensure a writer could execute the scene exactly from your details.
 
-════════════════════════════════════════════════════════════════════════════════
-CREATIVE EXPECTATIONS
-════════════════════════════════════════════════════════════════════════════════
+Text-based novel (no screenplay format).
 
-This is your chance to elevate the material:
-- If the anchor is flat, add environmental pressure or obstacles
-- If it's generic, find the specific detail that makes it memorable
-- If it's rushed, break the moment into beats that breathe
-- If it's safe, find the surprising-yet-logical choice
-
-Ask yourself: "Could I write this scene with the details I've provided?"
-If not, add more concrete specificity.
-
-This is a text-based novel not a movie or screenplay.
-
-No markdown. No code fences. No explanations. Just pure JSON.
+Output: Pure JSON only. No markdown, explanations, or fences.
 """
             try:
                 resp, tokens = await director_client(

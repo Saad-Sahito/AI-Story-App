@@ -309,11 +309,11 @@ class LLMClient:
             # model = "grok-4-0709"
             # wrapper = XAIWrapper(self.xai_api_key)
             # model = "claude-sonnet-4-5-20250929"
-            model = "claude-haiku-4-5-20251001"
-            wrapper = AnthropicWrapper(self.claude_api_key)
+            # model = "claude-haiku-4-5-20251001"
+            # wrapper = AnthropicWrapper(self.claude_api_key)
             # model = "openai/gpt-oss-120b"
-            # model = "llama-3.3-70b-versatile"
-            # wrapper = GroqWrapper(self.groq_api_key)
+            model = "llama-3.3-70b-versatile"
+            wrapper = GroqWrapper(self.groq_api_key)
             # model = "gemini-3-pro-preview"
             # wrapper = GoogleWrapper(self.google_api_key)
             async with self.sem:
@@ -351,8 +351,8 @@ class LLMClient:
             # model = "claude-sonnet-4-5-20250929"
             # model = "claude-haiku-4-5-20251001"
             # wrapper = AnthropicWrapper(self.claude_api_key)
-            # model = "openai/gpt-oss-120b"
-            model = "llama-3.3-70b-versatile"
+            model = "openai/gpt-oss-120b"
+            # model = "llama-3.3-70b-versatile"
             wrapper = GroqWrapper(self.groq_api_key)
             # model = "gemini-3-pro-preview"
             # wrapper = GoogleWrapper(self.google_api_key)

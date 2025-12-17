@@ -22,7 +22,7 @@ class EntityDetails(BaseModel):
     name: str = Field(description="Current name of the character or world element")
     previous_names: List[str] = Field(default=[], description="Former names if renamed")
     details: str = Field(description="Concise, scene-relevant description or change summary")
-    significance: Optional[str] = Field(default=None, description="Why this entity/location is important in this scene (if applicable)")
+    significance: Optional[str] = Field(default=None, description="Why this entity/location is important in this scene (if applicable), important facts related to them/it.")
 
 
 class SceneBundle(BaseModel):
@@ -41,8 +41,7 @@ class SceneBundle(BaseModel):
         description="""Key: location identifier. STRICT rules:
         - Prefer BROAD areas (e.g., 'harbor_district', 'capital_city')
         - Specific places ONLY if recurring, plot-central, or thematically vital
-        - Consolidate similar locations
-        - Max 5–8 locations per scene (fewer = better)"""
+        - Consolidate similar locations"""
     )
 
 
@@ -61,7 +60,6 @@ class CharacterMemory(BaseModel):
     current_relationships: Optional[Dict[str, str]] = None
     current_status: Optional[str] = None
     current_location: Optional[str] = None
-    # Fully dynamic beyond this
     model_config = {"extra": "allow"}
 
 
@@ -79,7 +77,6 @@ class LocationMemory(BaseModel):
     current_atmosphere: Optional[str] = None
     connected_to: Optional[List[str]] = None
     thematic_role: Optional[str] = None
-    # Fully dynamic
     model_config = {"extra": "allow"}
 
 
@@ -101,7 +98,7 @@ class ActSummary(BaseModel):
 
 
 class Ingestor:
-
+    
     # ============================================================================
     # SCENE INGESTION – Balanced character & location focus
     # ============================================================================
@@ -115,7 +112,7 @@ class Ingestor:
         known_locations: List[str],
     ) -> Optional[Dict[str, Any]]:
 
-        known_chars = ", ".join(known_characters) if known_characters else "None"
+        known_chars = ", ".join(known_characters) if known_characters else "None yet"
         known_locs = "\n".join([f"  - {loc}" for loc in known_locations]) if known_locations else "None yet"
 
         system_prompt = f"""You are a precision Scene Analyst. Your job is to extract ONLY meaningful characters and locations from the scene with equal rigor.
@@ -134,18 +131,18 @@ LOCATION RULES:
 - Describe exactly why and when the location is significant or when describing it in 'details', dont just mention 'in this scene', but rather precise context, as the scene would be lost afterwards. MUST also mention Act/Chapter/Scene number, with every detail/significance.
 
 
-Existing tracked characters: {known_chars}
-Existing tracked locations:
-{known_locs}
-
 Every progression entry must include Act/Chapter/Scene numbers.
 
 Output VALID JSON only. No markdown.
 
 {SceneBundle.model_json_schema()}"""
 
-        human_prompt = f"""Act {act_id} Chapter {chapter_id} Scene {scene_id}
+        human_prompt = f"""Existing tracked characters: {known_chars}
+Existing tracked locations:
+{known_locs}
 
+
+Act {act_id} Chapter {chapter_id} Scene {scene_id}
 Scene text:
 {scene_text}
 
@@ -205,24 +202,25 @@ Locations:
 - Prefer broad regions; keep specific ones only if recurring or pivotal
 - Target: 8–18 total locations by end of chapter
 
-Previous state (extend progression lists exactly):
+
+Output valid JSON only.
+
+{ChapterBundle.model_json_schema()}"""
+
+        human_prompt = f"""Previous state (extend progression lists exactly):
 Characters:
 {char_ctx}
 
 Locations:
 {loc_ctx}
 
-Output valid JSON only.
 
-{ChapterBundle.model_json_schema()}"""
-
-        human_prompt = f"""Act {act_id} - Chapter {chapter_id}
-
+Act {act_id} - Chapter {chapter_id}
 Full chapter summary:
 {chapter_text}
 
 Update cumulative memory. Extend every progression list with a new "Act {act_id} Chapter {chapter_id}: ..." entry.
-Consolidate ruthlessly but intelligently — keep only what matters long-term."""
+Consolidate ruthlessly but intelligently."""
 
         resp, tokens = await ingestor_client(system_prompt=system_prompt, human_prompt=human_prompt)
         raw_text = StoryHelpers._extract_content(resp)
