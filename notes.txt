@@ -19,7 +19,7 @@ git checkout -b feature-story-types   # created the branch
 # make changes
 git add .
 git commit -m "Fix session bug"
-git push -u origin feature-story-types
+git push -u origin writer-assistant
 
 
 conda activate writervenv
