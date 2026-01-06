@@ -1,0 +1,25 @@
+docker run -d -p 6333:6333 --name qdrant qdrant/qdrant
+
+docker run -d -p 27017:27017 --name mongodb mongo:7.0
+
+uvicorn main:app --reload
+uvicorn main:app --reload --log-level debug
+
+python -m main_nicegui.py
+
+for main
+git add .
+git commit -m "some text"
+git push origin main
+
+
+for branches
+git checkout -b feature-story-types   # created the branch
+
+# make changes
+git add .
+git commit -m "Fix session bug"
+git push -u origin feature-story-types
+
+
+conda activate writervenv
