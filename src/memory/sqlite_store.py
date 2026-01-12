@@ -129,18 +129,19 @@ class SQLiteStore:
                     story_title TEXT,
                     flow_type TEXT,
                     target_medium TEXT,
+                    story_structure TEXT,
                     total_acts INTEGER,
                     target_length INTEGER,
                     story_length INTEGER,
                     last_chapter_id INTEGER,
                     genre_list TEXT,
                     sub_genre_list TEXT,
-                    themes_list TEXT,
+                    themes TEXT,
                     pov TEXT,
                     prose_style TEXT,
                     tense TEXT,
                     blurb TEXT,
-                    tone_temp FLOAT,
+                    tone TEXT,
                     min_age INTEGER,
                     author_type TEXT,
                     latest_phase INTEGER,
@@ -150,11 +151,12 @@ class SQLiteStore:
                     story_word_count INTEGER DEFAULT 0,
                     chapter_word_count INTEGER DEFAULT 0,
                     status TEXT,
+                               user_notes TEXT,
                     author_token_usage TEXT,
                     director_token_usage TEXT,
                     writer_token_usage TEXT,
                     ingestor_token_usage TEXT,
-                    utility_token_usage TEXT,
+                    utility_token_usage TEXT,      
                     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                     UNIQUE(user_id, story_id),
@@ -404,6 +406,7 @@ class SQLiteStore:
                         "story_id": story_id,
                         "flow_type": row["flow_type"] or "Standard",
                         "target_medium": row["target_medium"] or "classic",
+                        "story_structure": row["story_structure"] or "None",
                         "author_type": row["author_type"] or "Basic",
                         "latest_phase": row["latest_phase"] or 0,
                         "min_age": row["min_age"] or 15,
@@ -412,10 +415,11 @@ class SQLiteStore:
                         "tense": row["tense"],
                         "genre": json.loads(row["genre_list"]) if row["genre_list"] else [],
                         "sub_genre": json.loads(row["sub_genre_list"]) if row["sub_genre_list"] else [],
-                        "themes": json.loads(row["themes_list"]) if row["themes_list"] else [],
+                        "themes": row["themes"],
                         "total_acts": row["total_acts"] or 3,
                         "target_length": row["target_length"] or 0,
                         "updated_at": row["updated_at"],
+                        "user_notes": row["user_notes"],
                         "status": row["status"] or "Ongoing"
                     }
 
@@ -431,142 +435,147 @@ class SQLiteStore:
             return {"status": "error", "message": f"❌ Database error: {str(e)}"}
         
     async def update_story_progress(self, metadata: Optional[Dict[str, Any]] = None):
-        print("Updating Story Progress...")
-        print(metadata)
+        """
+        Update or create story progress entry.
+        Merges token usage counters when updating existing record.
+        """
         metadata = metadata or {}
-
         async with self._get_connection() as conn:
+            # 1. Fetch existing row if any
             cursor = await conn.execute("""
-                SELECT * FROM story_progress
+                SELECT * FROM story_progress 
                 WHERE user_id = ? AND story_id = ?
             """, (self.user_id, self.story_id))
             
             existing_row = await cursor.fetchone()
-            if not existing_row:
-                # Assuming row should exist; if insert logic is elsewhere, you may want to handle creation here.
-                raise ValueError("Story progress row does not exist for this user/story")
+            
+            # Convert sqlite3.Row → regular dict immediately (safest approach)
+            existing = dict(existing_row) if existing_row else {}
 
-            # Helper to merge token usage (accumulative per user)
-            def process_token_usage(new_value: Optional[dict], existing_value: Optional[str]):
+            # 2. Token usage merging helper
+            def merge_tokens(key: str, existing_json: Optional[str]) -> str:
                 default = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
                 
+                # Parse existing value or use default
                 try:
-                    existing = json.loads(existing_value) if existing_value else default
-                    if not isinstance(existing, dict):
-                        existing = default
-                except json.JSONDecodeError:
-                    existing = default
+                    current = json.loads(existing_json) if existing_json else default
+                except (json.JSONDecodeError, TypeError):
+                    current = default
+
+                new_usage = metadata.get(key)
+                if not new_usage:
+                    return json.dumps(current)
+
+                # Merge
+                updated = {
+                    "prompt_tokens": current.get("prompt_tokens", 0) + new_usage.get("prompt_tokens", 0),
+                    "completion_tokens": current.get("completion_tokens", 0) + new_usage.get("completion_tokens", 0),
+                }
+                updated["total_tokens"] = updated["prompt_tokens"] + updated["completion_tokens"]
                 
-                if new_value is not None:
-                    total = {
-                        "prompt_tokens": existing["prompt_tokens"] + new_value.get("prompt_tokens", 0),
-                        "completion_tokens": existing["completion_tokens"] + new_value.get("completion_tokens", 0),
-                    }
-                    total["total_tokens"] = total["prompt_tokens"] + total["completion_tokens"]
-                    return json.dumps(total)
-                return json.dumps(existing)
+                return json.dumps(updated)
 
-            # Determine new values (use metadata if provided, otherwise keep existing)
-            story_title = metadata.get("story_title", existing_row["story_title"])
-            flow_type = metadata.get("flow_type", existing_row["flow_type"])
-            target_medium = metadata.get("target_medium", existing_row["target_medium"])
-            total_acts = metadata.get("total_acts", existing_row["total_acts"])
-            target_length = metadata.get("target_length", existing_row["target_length"])
-            story_length = metadata.get("story_length", existing_row["story_length"])
-            last_chapter_id = metadata.get("last_chapter_id", existing_row["last_chapter_id"])
-            genre = metadata.get("genre", json.loads(existing_row["genre_list"] or "[]"))
-            sub_genre = metadata.get("sub_genre", json.loads(existing_row["sub_genre_list"] or "[]"))
-            themes = metadata.get("themes", json.loads(existing_row["themes_list"] or "[]"))
-            pov = metadata.get("pov", existing_row["pov"])
-            prose_style = metadata.get("prose_style", existing_row["prose_style"])
-            tense = metadata.get("tense", existing_row["tense"])
-            blurb = metadata.get("blurb", existing_row["blurb"])
-            tone_temp = metadata.get("tone_temp", existing_row["tone_temp"])
-            min_age = metadata.get("min_age", existing_row["min_age"])
+            # 3. Value resolution helper
+            def get_val(key: str, default: Any = None) -> Any:
+                return metadata.get(key, existing.get(key, default))
 
-            author_type = metadata.get("author_type", existing_row["author_type"])
-            latest_phase = metadata.get("latest_phase", existing_row["latest_phase"])
-            current_act_id = metadata.get("current_act_id", existing_row["current_act_id"])
-            latest_chapter_id = metadata.get("latest_chapter_id", existing_row["latest_chapter_id"])
-            continue_scene_id = metadata.get("continue_scene_id", existing_row["continue_scene_id"])
-            story_word_count = metadata.get("story_word_count", existing_row["story_word_count"])
-            chapter_word_count = metadata.get("chapter_word_count", existing_row["chapter_word_count"])
-            status = metadata.get("status", existing_row["status"])
+            # Logic for monotonic phase update
+            new_phase = metadata.get("latest_phase")
+            existing_phase = existing.get("latest_phase")
+            if new_phase is not None and existing_phase is not None:
+                # Only update if the new phase is a higher number
+                resolved_phase = max(new_phase, existing_phase)
+            else:
+                resolved_phase = new_phase if new_phase is not None else existing_phase
 
-            updated_author_token_usage = process_token_usage(metadata.get("author_token_usage"), existing_row["author_token_usage"])
-            updated_director_token_usage = process_token_usage(metadata.get("director_token_usage"), existing_row["director_token_usage"])
-            updated_writer_token_usage = process_token_usage(metadata.get("writer_token_usage"), existing_row["writer_token_usage"])
-            updated_ingestor_token_usage = process_token_usage(metadata.get("ingestor_token_usage"), existing_row["ingestor_token_usage"])
-            updated_utility_token_usage = process_token_usage(metadata.get("utility_token_usage"), existing_row["utility_token_usage"])
-
-            await conn.execute("""
-                UPDATE story_progress
-                SET story_title = ?,
-                    flow_type = ?,
-                    target_medium = ?,
-                    total_acts = ?,
-                    target_length = ?,
-                    story_length = ?,
-                    last_chapter_id = ?,
-                    genre_list = ?,
-                    sub_genre_list = ?,
-                    themes_list = ?,
-                    pov = ?,
-                    prose_style = ?,
-                    tense = ?,
-                    blurb = ?,
-                    tone_temp = ?,
-                    min_age = ?,
-                    author_type = ?,
-                    latest_phase = ?,
-                    current_act_id = ?,
-                    latest_chapter_id = ?,
-                    continue_scene_id = ?,
-                    story_word_count = ?,
-                    chapter_word_count = ?,
-                    status = ?,
-                    author_token_usage = ?,
-                    director_token_usage = ?,
-                    writer_token_usage = ?,
-                    ingestor_token_usage = ?,
-                    utility_token_usage = ?,
-                    updated_at = CURRENT_TIMESTAMP
-                WHERE user_id = ? AND story_id = ?
-            """, (
-                story_title,
-                flow_type,
-                target_medium,
-                total_acts,
-                target_length,
-                story_length,
-                last_chapter_id,
-                json.dumps(genre),
-                json.dumps(sub_genre),
-                json.dumps(themes),
-                pov,
-                prose_style,
-                tense,
-                blurb,
-                tone_temp,
-                min_age,
-                author_type,
-                latest_phase,
-                current_act_id,
-                latest_chapter_id,
-                continue_scene_id,
-                story_word_count,
-                chapter_word_count,
-                status,
-                updated_author_token_usage,
-                updated_director_token_usage,
-                updated_writer_token_usage,
-                updated_ingestor_token_usage,
-                updated_utility_token_usage,
+            # 4. Prepare parameters
+            params = (
                 self.user_id,
-                self.story_id
-            ))
+                self.story_id,
+                get_val("story_title"),
+                get_val("flow_type"),
+                get_val("target_medium"),
+                get_val("story_structure"),
+                get_val("total_acts"),
+                get_val("target_length"),
+                get_val("story_length"),
+                get_val("last_chapter_id"),
+                # Lists - careful with existing vs new
+                json.dumps(metadata.get("genre") or json.loads(existing.get("genre_list", "[]"))),
+                json.dumps(metadata.get("sub_genre") or json.loads(existing.get("sub_genre_list", "[]"))),
+                get_val("themes"),
+                get_val("pov"),
+                get_val("prose_style"),
+                get_val("tense"),
+                get_val("blurb"),
+                get_val("tone", ""),
+                get_val("min_age"),
+                get_val("author_type"),
+                resolved_phase,
+                get_val("current_act_id"),
+                get_val("latest_chapter_id"),
+                get_val("continue_scene_id"),
+                get_val("story_word_count", 0),
+                get_val("chapter_word_count", 0),
+                get_val("status", "draft"),
+                get_val("user_notes", ""),
+                # Token usage columns - always merge
+                merge_tokens("author_token_usage", existing.get("author_token_usage")),
+                merge_tokens("director_token_usage", existing.get("director_token_usage")),
+                merge_tokens("writer_token_usage", existing.get("writer_token_usage")),
+                merge_tokens("ingestor_token_usage", existing.get("ingestor_token_usage")),
+                merge_tokens("utility_token_usage", existing.get("utility_token_usage")),
+            )
+            # 5. UPSERT
+            await conn.execute("""
+                INSERT INTO story_progress (
+                    user_id, story_id, story_title, flow_type, target_medium, story_structure, 
+                    total_acts, target_length, story_length, last_chapter_id, 
+                    genre_list, sub_genre_list, themes, pov, prose_style, tense, 
+                    blurb, tone, min_age, author_type, latest_phase, current_act_id, 
+                    latest_chapter_id, continue_scene_id, story_word_count, chapter_word_count, 
+                    status, user_notes, author_token_usage, director_token_usage, writer_token_usage, 
+                    ingestor_token_usage, utility_token_usage
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(user_id, story_id) DO UPDATE SET
+                    story_title           = excluded.story_title,
+                    flow_type             = excluded.flow_type,
+                    target_medium         = excluded.target_medium,
+                    story_structure       = excluded.story_structure,
+                    total_acts            = excluded.total_acts,
+                    target_length         = excluded.target_length,
+                    story_length          = excluded.story_length,
+                    last_chapter_id       = excluded.last_chapter_id,
+                    genre_list            = excluded.genre_list,
+                    sub_genre_list        = excluded.sub_genre_list,
+                    themes           = excluded.themes,
+                    pov                   = excluded.pov,
+                    prose_style           = excluded.prose_style,
+                    tense                 = excluded.tense,
+                    blurb                 = excluded.blurb,
+                    tone             = excluded.tone,
+                    min_age               = excluded.min_age,
+                    author_type           = excluded.author_type,
+                    latest_phase          = excluded.latest_phase,
+                    current_act_id        = excluded.current_act_id,
+                    latest_chapter_id     = excluded.latest_chapter_id,
+                    continue_scene_id     = excluded.continue_scene_id,
+                    story_word_count      = excluded.story_word_count,
+                    chapter_word_count    = excluded.chapter_word_count,
+                    status                = excluded.status,
+                               user_notes = excluded.user_notes,
+                    author_token_usage    = excluded.author_token_usage,
+                    director_token_usage  = excluded.director_token_usage,
+                    writer_token_usage    = excluded.writer_token_usage,
+                    ingestor_token_usage  = excluded.ingestor_token_usage,
+                    utility_token_usage   = excluded.utility_token_usage,
+                    updated_at            = CURRENT_TIMESTAMP
+                               
+            """, params)
 
             await conn.commit()
+
+            print("Story progress updated/created successfully")
 
     async def get_story_progress(self) -> Optional[Dict[str, Any]]:
         """
@@ -609,13 +618,15 @@ class SQLiteStore:
                     "prose_style": row["prose_style"],
                     "genre": json.loads(row["genre_list"]) if row["genre_list"] else [],
                     "sub_genre": json.loads(row["sub_genre_list"]) if row["sub_genre_list"] else [],
-                    "themes": json.loads(row["themes_list"]) if row["themes_list"] else [],
+                    "themes": row["themes"],
                     "flow_type": row["flow_type"] or "novel",
                     "target_medium": row["target_medium"] or "classic",
+                    "story_structure": row["story_structure"] or "None",
                     "story_title": row["story_title"],
-                    "tone_temp": row["tone_temp"],
+                    "tone": row["tone"],
                     "blurb": row["blurb"],
-                    "min_age": row["min_age"] or 15
+                    "min_age": row["min_age"] or 15,
+                    "user_notes": row["user_notes"]
                 }
                 
                 return result

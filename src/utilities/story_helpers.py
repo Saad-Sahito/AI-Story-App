@@ -249,12 +249,6 @@ class StoryHelpers:
             except Exception as e:
                 last_exc = e
 
-            # Remove this line entirely — dangerous and caused the crash!
-            # try:
-            #     return parser(text_or_obj)
-            # except Exception as e:
-            #     last_exc = e
-
             raise last_exc or ValueError("No parser method succeeded")
         
         utility_token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
@@ -348,7 +342,7 @@ CRITICAL RULES:
 
 {format_instructions}
 
-Fix the broken JSON below and return ONLY the corrected version.
+Fix the broken JSON and return ONLY the corrected version.
 """
 
         human_prompt = f"""{f"Error, please fix this:{str(exc)}" if exc else "Unknown parsing error"}

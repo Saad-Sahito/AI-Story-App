@@ -10,7 +10,8 @@ from typing import Any, Dict, List, Optional, Tuple, Literal
 from src.utilities.story_helpers import StoryHelpers
 from src.setup.shared_redis_pool import get_redis_client
 from src.plot_engine.story_author import StoryAuthor
-from src.plot_engine.basic_author import SnowflakeWorkflow
+from src.plot_engine.snowflake_author import SnowflakeWorkflow
+from src.plot_engine.story_metadata import MetaDataGenerator
 from src.memory.memory_system import StoryMemorySystem
 from contextlib import asynccontextmanager
 
@@ -113,6 +114,7 @@ class MainSetup:
                                         await session_data['memory_system'].qdrant_initialize()
                                         session_data['author'] = StoryAuthor()
                                         session_data['basic_author'] = SnowflakeWorkflow()
+                                        session_data['metadata'] = MetaDataGenerator()
                                         session_data['user_input_queue'] = asyncio.Queue()
                                         async with client.pipeline() as pipe:
                                             pipe.expire(key, SESSION_TTL)
@@ -152,6 +154,7 @@ class MainSetup:
                             
                             session_data['author'] = StoryAuthor()
                             session_data['basic_author'] = SnowflakeWorkflow()
+                            session_data['metadata'] = MetaDataGenerator()
                             session_data['user_input_queue'] = asyncio.Queue()
                             session_data["memory_system_initialized"] = True
                             
@@ -174,6 +177,7 @@ class MainSetup:
                         await session_data['memory_system'].qdrant_initialize()
                         session_data['author'] = StoryAuthor()
                         session_data['basic_author'] = SnowflakeWorkflow()
+                        session_data['metadata'] = MetaDataGenerator()
                         session_data['user_input_queue'] = asyncio.Queue()
                     
                     async with client.pipeline() as pipe:
@@ -229,6 +233,7 @@ class MainSetup:
                                                     await story_session['memory_system'].qdrant_initialize()
                                                     story_session['author'] = StoryAuthor()
                                                     story_session['basic_author'] = SnowflakeWorkflow()
+                                                    story_session['metadata'] = MetaDataGenerator()
                                                     story_session['user_input_queue'] = asyncio.Queue()
                                                     story_session["memory_system_initialized"] = True
                                                     
@@ -250,6 +255,7 @@ class MainSetup:
                                     await story_session['memory_system'].qdrant_initialize()
                                     story_session['author'] = StoryAuthor()
                                     story_session['basic_author'] = SnowflakeWorkflow()
+                                    story_session['metadata'] = MetaDataGenerator()
                                     story_session['user_input_queue'] = asyncio.Queue()
                                 
                                 user_session["stories"][story_id_from_key] = story_session
@@ -296,6 +302,8 @@ class MainSetup:
                         del serializable_data['author']
                     if 'basic_author' in serializable_data:
                         del serializable_data['basic_author']
+                    if 'metadata' in serializable_data:
+                        del serializable_data['metadata']
                     if 'user_input_queue' in serializable_data:
                         del serializable_data['user_input_queue']
                 else:
@@ -318,6 +326,8 @@ class MainSetup:
                                 del story_copy['author']
                             if 'basic_author' in story_copy:
                                 del story_copy['basic_author']
+                            if 'metadata' in story_copy:
+                                del story_copy['metadata']
                             if 'user_input_queue' in story_copy:
                                 del story_copy['user_input_queue']
                             story_copy['memory_system_initialized'] = story_data.get("memory_system_initialized", True)
@@ -384,6 +394,118 @@ class MainSetup:
         await memory_system.qdrant_initialize()
         await self.setup_user_session(user_id=user_id, story_id=story_id, memory_system=memory_system)
         return {"status": "success", "message": f"Story initialized for user: {user_id}, story: {story_id}", "story_id": story_id}
+    
+    async def get_metadata(self, user_id: str, story_id: str):
+        user_data = await self._get_session(user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        story_data = user_data["stories"].get(story_id.strip())
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+
+        try:
+            progress = await story_data["memory_system"].get_story_progress()
+            metadata = {
+                "story_title": progress['story_title'],
+                "total_acts": progress['total_acts'],
+                "target_length": progress['target_length'],
+                "genre": progress['genre'],
+                "sub_genre": progress['sub_genre'],
+                "themes": progress['themes'],
+                "min_age": progress['min_age'],
+                "story_structure": progress['story_structure'],
+                "tone": progress['tone'],
+                "user_notes": progress['user_notes']
+                }
+            print(metadata)
+            return {"status": "success", "data": metadata}
+        except:
+            print("error metadata fetch")
+            return {"status": "error"}
+
+    async def generate_metadata(self, user_id: str, story_id: str, context: str, past_metadata: dict):
+        # Get user session - _get_session handles its own locking
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+        
+        metadata_form, author_tokens, utility_tokens = await story_data["metadata"].generate_metadata(
+            context=context,
+            past_metadata=past_metadata
+        )
+
+        # Update story progress in memory system
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "story_title": metadata_form.story_title,
+                "total_acts": metadata_form.total_acts,
+                "author_token_usage": author_tokens,
+                "utility_token_usage": utility_tokens,
+                "target_length": metadata_form.target_length,
+                "genre": metadata_form.genre,
+                "sub_genre": metadata_form.sub_genre,
+                "themes": metadata_form.themes,
+                "min_age": metadata_form.target_audience_age,
+                "story_structure": metadata_form.story_structure
+            }
+        )
+        
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params", {}),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+        
+        return {
+            "status": "success", "data": metadata_form
+        }
+    
+    async def save_metadata(self, user_id: str, story_id: str, metadata: dict):
+        # Get user session - _get_session handles its own locking
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+        
+        # Update story progress in memory system
+        print(metadata)
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "story_title": metadata['story_title'],
+                "total_acts": metadata['total_acts'],
+                "tone": metadata['tone'],
+                "target_length": metadata['target_length'],
+                "genre": metadata['genre'],
+                "sub_genre": metadata['sub_genre'],
+                "themes": metadata['themes'],
+                "min_age": metadata['min_age'],
+                "story_structure": metadata['story_structure'],
+                "user_notes": metadata['user_notes']
+            }
+        )
+        
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params", {}),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+        
+        return {
+            "status": "success"
+        }
     
 
 #---------------------------------------------Story Author Calls------------------------------------------------------------
@@ -476,8 +598,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -509,8 +629,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -549,8 +667,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -643,8 +759,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         compact_plot_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "compact_plot", "story_id": story_id}
         )
@@ -686,8 +800,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         world_foundation_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "world_foundation", "story_id": story_id}
         )
@@ -729,8 +841,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -769,8 +879,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -817,8 +925,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -870,8 +976,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -931,8 +1035,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -982,8 +1084,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -1029,8 +1129,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -1100,8 +1198,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -1150,8 +1246,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         seed_str = await story_data["memory_system"].get_long_term_document(
             metadata={"type": "story_seed", "story_id": story_id}
         )
@@ -1261,8 +1355,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data["memory_system"].add_long_term_document(
             text=StoryHelpers.compress_json(world_foundation),
             metadata={"type": "world_foundation", "story_id": story_id}
@@ -1290,8 +1382,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data["memory_system"].add_long_term_document(
             text=StoryHelpers.compress_json(compact_plot),
             metadata={"type": "compact_plot", "story_id": story_id}
@@ -1319,8 +1409,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json([json.dumps(a) for a in narrative_agents]),
             metadata={"type": "narrative_agents", "story_id": story_id}
@@ -1348,8 +1436,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
        
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(conflict_matrix)),
             metadata={"type": "conflict_matrix", "story_id": story_id}
@@ -1377,8 +1463,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json([json.dumps(a) for a in connected_agents]),
             metadata={"type": "connected_agents", "story_id": story_id}
@@ -1405,8 +1489,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(integrated_world)),
             metadata={"type": "integrated_world", "story_id": story_id}
@@ -1433,8 +1515,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(minimal_plot)),
             metadata={"type": "minimal_plot", "story_id": story_id}
@@ -1461,8 +1541,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(conflict_matrix)),
             metadata={"type": "conflict_matrix", "story_id": story_id}
@@ -1489,8 +1567,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(expanded_plot)),
             metadata={"type": "expanded_plot", "story_id": story_id}
@@ -1517,8 +1593,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data["memory_system"].add_long_term_document(
             text=StoryHelpers.compress_json([json.dumps(b) for b in backstories]),
             metadata={"type": "character_backstories", "story_id": story_id}
@@ -1545,8 +1619,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(world_guide)),
             metadata={"type": "world_guide", "story_id": story_id}
@@ -1573,8 +1645,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(subplot_arch)),
             metadata={"type": "subplot_architecture", "story_id": story_id}
@@ -1601,8 +1671,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(expanded_plot)),
             metadata={"type": "expanded_plot", "story_id": story_id}
@@ -1628,8 +1696,6 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         
-        progress = await story_data["memory_system"].get_story_progress()
-
         await story_data['memory_system'].add_long_term_document(
             text=StoryHelpers.compress_json(json.dumps(story_tracker)),
             metadata={"type": "story_tracker", "story_id": story_id}
@@ -1648,9 +1714,9 @@ class MainSetup:
 
 
 
-#---------------------------------------------Basic Author Calls------------------------------------------------------------
-    # Phase 1
-    async def step_1_one_sentence(self, user_id: str, story_id: str, user_context: str, target_medium: str):
+#---------------------------------------------SNOWFLAKE: Basic Author Calls------------------------------------------------------------
+    # Generate
+    async def snowflake_one_sentence_generation(self, user_id: str, story_id: str, one_sentence_form: str):
         """
         Create single sentence describing the story, Phase 1.
         """        
@@ -1662,12 +1728,12 @@ class MainSetup:
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
 
-        one_sentence_form, author_tokens, utility_tokens= await story_data["basic_author"].step_1_one_sentence(
-            user_context, target_medium
+        one_sentence_form, author_tokens, utility_tokens= await story_data["basic_author"].step_1_one_sentence_generate(
+            one_sentence_form
         )
         await story_data["memory_system"].add_long_term_document(
             text=StoryHelpers.compress_json(one_sentence_form.model_dump()),
-            metadata={"type": "step_1_one_sentence", "story_id": story_id}
+            metadata={"type": "one_sentence_form", "story_id": story_id}
         )
         # Update story progress in memory system
         await story_data["memory_system"].update_story_progress(
@@ -1675,10 +1741,6 @@ class MainSetup:
                 "latest_phase": 1,
                 "author_token_usage": author_tokens,
                 "utility_token_usage": utility_tokens,
-                "target_medium": target_medium,
-                "genre": one_sentence_form.genre,
-                "sub_genre": one_sentence_form.sub_genre,
-                "themes": one_sentence_form.themes,
                 "status": "Ongoing",
                 "author_type": "Basic",
                 "flow_type": "Not relevant"
@@ -1704,8 +1766,96 @@ class MainSetup:
             "status": "success", "data": one_sentence_form
         }
     
-    # Phase 2
-    async def step_2_one_paragraph(self, user_id: str, story_id: str, tone: str):
+    # Save
+    async def snowflake_one_sentence_save(self, user_id: str, story_id: str, one_sentence_form: str):
+        """
+        Change single sentence describing the story, Phase 1.
+        """    
+        print(one_sentence_form)    
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+
+        await story_data["memory_system"].add_long_term_document(
+            text=one_sentence_form,
+            metadata={"type": "one_sentence_form", "story_id": story_id}
+        )
+        # Update story progress in memory system
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "latest_phase": 1
+            }
+        )
+        from src.memory.user_management import append_story
+        await append_story(
+            user_id=user_id,
+            story_id=story_id
+        )
+        
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params"),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+        
+        return {
+            "status": "success"
+            }
+    
+    # Feedback
+    async def snowflake_one_sentence_feedback(self, user_id: str, story_id: str, one_sentence_form: str):
+        """
+        Create single sentence describing the story, Phase 1.
+        """        
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+
+        one_sentence_form_feedback, author_tokens= await story_data["basic_author"].step_1_one_sentence_feedback(
+            one_sentence_form
+        )
+        await story_data["memory_system"].add_long_term_document(
+            text=StoryHelpers.compress_json(one_sentence_form_feedback),
+            metadata={"type": "one_sentence_form_feedback", "story_id": story_id}
+        )
+        # Update story progress in memory system
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "latest_phase": 1,
+                "author_token_usage": author_tokens,
+            }
+        )
+        
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params", {}),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+        from src.memory.user_management import append_story
+        await append_story(
+            user_id=user_id,
+            story_id=story_id
+        )
+        return {
+            "status": "success", "data": one_sentence_form_feedback
+        }
+    
+    # Generate
+    async def snowflake_one_paragraph_generation(self, user_id: str, story_id: str, one_paragraph_form: str):
         """
         Create single paragraph describing the story, Phase 2.
         """        
@@ -1716,18 +1866,15 @@ class MainSetup:
         story_data = user_data["stories"].get(story_id)
         if not story_data:
             raise HTTPException(status_code=455, detail="Invalid story ID")
-        
-        one_sentence_form_str = await story_data["memory_system"].get_long_term_document(
-            metadata={"type": "step_1_one_sentence", "story_id": story_id}
-        )
-        one_sentence_form = json.loads(one_sentence_form_str)
-        one_sentence_form['tone'] = tone
-        one_paragraph_form, author_tokens, utility_tokens = await story_data["basic_author"].step_2_one_paragraph(
-            one_sentence_context=one_sentence_form
+
+        one_sentence_form = await story_data["memory_system"].get_long_term_document(metadata={"type": "one_sentence_form", "story_id": story_id})
+        one_sentence_form = json.loads(one_sentence_form)
+        one_paragraph_form, author_tokens, utility_tokens= await story_data["basic_author"].step_2_one_paragraph_generate(
+            one_sentence_context=one_sentence_form, user_one_paragraph=one_paragraph_form
         )
         await story_data["memory_system"].add_long_term_document(
             text=StoryHelpers.compress_json(one_paragraph_form.model_dump()),
-            metadata={"type": "step_2_one_paragraph", "story_id": story_id}
+            metadata={"type": "one_paragraph_form", "story_id": story_id}
         )
         # Update story progress in memory system
         await story_data["memory_system"].update_story_progress(
@@ -1735,10 +1882,6 @@ class MainSetup:
                 "latest_phase": 2,
                 "author_token_usage": author_tokens,
                 "utility_token_usage": utility_tokens,
-                "target_medium": one_paragraph_form.target_medium,
-                "genre": one_paragraph_form.genre,
-                "sub_genre": one_paragraph_form.sub_genre,
-                "themes": one_paragraph_form.themes,
             }
         )
         
@@ -1753,6 +1896,84 @@ class MainSetup:
         
         return {
             "status": "success", "data": one_paragraph_form
+        }
+    
+    # Save
+    async def snowflake_one_paragraph_save(self, user_id: str, story_id: str, one_paragraph_form: str):
+        """
+        Change single paragraph describing the story, Phase 2.
+        """    
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+
+        await story_data["memory_system"].add_long_term_document(
+            text=one_paragraph_form,
+            metadata={"type": "one_paragraph_form", "story_id": story_id}
+        )
+        # Update story progress in memory system
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "latest_phase": 2
+            }
+        )
+        
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params"),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+        
+        return {
+            "status": "success"
+            }
+    
+    # Feedback
+    async def snowflake_one_paragraph_feedback(self, user_id: str, story_id: str, one_paragraph_form: str):     
+        user_data = await self._get_session(user_id=user_id)
+        if not user_data:
+            raise HTTPException(status_code=433, detail="Invalid user ID")
+        
+        story_data = user_data["stories"].get(story_id)
+        if not story_data:
+            raise HTTPException(status_code=455, detail="Invalid story ID")
+
+        one_sentence_form = await story_data["memory_system"].get_long_term_document(metadata={"type": "one_sentence_form", "story_id": story_id})
+        one_sentence_form = json.loads(one_sentence_form)
+
+        one_paragraph_form_feedback, author_tokens= await story_data["basic_author"].step_2_one_paragraph_feedback(
+            one_paragraph_form=one_paragraph_form, one_senetence_form=one_sentence_form
+        )
+        await story_data["memory_system"].add_long_term_document(
+            text=StoryHelpers.compress_json(one_paragraph_form_feedback),
+            metadata={"type": "one_paragraph_form_feedback", "story_id": story_id}
+        )
+        # Update story progress in memory system
+        await story_data["memory_system"].update_story_progress(
+            metadata={
+                "latest_phase": 2,
+                "author_token_usage": author_tokens,
+            }
+        )
+        
+        serializable_story_data = {
+            "memory_system_params": story_data.get("memory_system_params", {}),
+            "last_active": time.time(),
+        }
+        user_data["stories"][story_id] = serializable_story_data
+        
+        await self._set_session(user_id, story_id, serializable_story_data)
+        await self._set_session(user_id, data=user_data)
+
+        return {
+            "status": "success", "data": one_paragraph_form_feedback
         }
     
     # Phase 3
@@ -2171,7 +2392,8 @@ class MainSetup:
             raise HTTPException(status_code=455, detail="Invalid story ID")
         try:
             progress = await story_data["memory_system"].get_story_progress()
-            story_data = await story_data['memory_system'].get_long_term_document(metadata={"type": type, "story_title": progress['story_title']})
+            story_data = await story_data['memory_system'].get_long_term_document(metadata={"type": type, "story_id": story_id})
+            print(story_data)
             return {"status": "success", "data": json.loads(story_data)}
         except:
             return {"status": "error"}

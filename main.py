@@ -371,7 +371,6 @@ class ContinueStoryRequest(BaseModel):
 
 @app.post("/stories/{story_id}")
 async def api_continue_story(request: ContinueStoryRequest):
-    print(request.story_id)
     return await mainsetup.continue_story(user_id=request.user_id, story_id=request.story_id)
 
 
@@ -383,6 +382,12 @@ class UserStoryLastPhaseRequest(BaseModel):
     user_id: str
     story_id: str
     last_phase: int
+
+class DictStrRequest(BaseModel):
+    user_id: str
+    story_id: str
+    document_dict: dict
+    document_str: str
 
 class DocumentRequest(BaseModel):
     user_id: str
@@ -575,100 +580,84 @@ async def api_change_expand_plot_with_enhancements(request: DocumentRequest):
 
 
 #---------------------------------------------Basic Author Calls------------------------------------------------------------
-#---------------------------CREATION: Story Phase Methods----------------------
-class OneSentenceGenerationRequest(BaseModel):
+@app.post("/generate/snowflake/one_sentence")
+async def api_generate_snowflake_one_sentence(request: StringRequest):
+    return await mainsetup.snowflake_one_sentence_generation(
+        user_id=request.user_id,
+        story_id=request.story_id,
+        one_sentence_form=request.document_str
+        )
+
+@app.post("/save/snowflake/one_sentence")
+async def api_save_snowflake_one_sentence(request: StringRequest):
+    return await mainsetup.snowflake_one_sentence_save(
+        user_id=request.user_id,
+        story_id=request.story_id,
+        one_sentence_form=request.document_str
+        )
+
+@app.post("/feedback/snowflake/one_sentence")
+async def api_feedback_snowflake_one_sentence(request: StringRequest):
+    return await mainsetup.snowflake_one_sentence_feedback(
+        user_id=request.user_id,
+        story_id=request.story_id,
+        one_sentence_form=request.document_str
+        )
+
+
+@app.post("/generate/snowflake/one_paragraph")
+async def api_generate_snowflake_one_paragraph(request: StringRequest):
+    return await mainsetup.snowflake_one_paragraph_generation(
+        user_id=request.user_id,
+        story_id=request.story_id,
+        one_paragraph_form=request.document_str
+        )
+
+@app.post("/save/snowflake/one_paragraph")
+async def api_save_snowflake_one_paragraph(request: StringRequest):
+    return await mainsetup.snowflake_one_paragraph_save(
+        user_id=request.user_id,
+        story_id=request.story_id,
+        one_paragraph_form=request.document_str
+        )
+
+@app.post("/feedback/snowflake/one_paragraph")
+async def api_feedback_snowflake_one_paragraph(request: StringRequest):
+    return await mainsetup.snowflake_one_paragraph_feedback(
+        user_id=request.user_id,
+        story_id=request.story_id,
+        one_paragraph_form=request.document_str
+        )
+
+
+
+
+
+
+
+
+
+@app.get("/stories/metadata/{user_id}/{story_id}")
+async def api_get_story_metadata(user_id: str, story_id: str):
+    return await mainsetup.get_metadata(user_id=user_id, story_id=story_id)
+
+class DocumentRequest(BaseModel):
     user_id: str
     story_id: str
-    user_context: str
-    target_medium: str
+    document_dict: dict
 
-@app.post("/creation/one_sentence_generation")
-async def api_one_sentence_generation(request: OneSentenceGenerationRequest):
-    return await mainsetup.one_sentence_generation(
-        user_id=request.user_id,
-        story_id=request.story_id,
-        user_context=request.user_context,
-        target_medium=request.target_medium
-        )
+@app.post("/stories/metadata/{user_id}/{story_id}/save")
+async def api_save_story_metadata(request: DocumentRequest):
+    return await mainsetup.save_metadata(user_id=request.user_id, story_id=request.story_id, metadata=request.document_dict)
 
-class OneParagraphGenerationRequest(BaseModel):
+class DictStrRequest(BaseModel):
     user_id: str
     story_id: str
-    tone: str
-
-@app.post("/creation/one_paragraph_generation")
-async def api_one_paragraph_generation(request: OneParagraphGenerationRequest):
-    return await mainsetup.one_paragraph_generation(
-        user_id=request.user_id,
-        story_id=request.story_id,
-        tone=request.tone
-        )
-
-class OnePageGenerationRequest(BaseModel):
-    user_id: str
-    story_id: str
-    target_audience_age: int
-    target_length: int
-
-@app.post("/creation/one_page_generation")
-async def api_one_page_generation(request: OnePageGenerationRequest):
-    return await mainsetup.one_page_generation(
-        user_id=request.user_id,
-        story_id=request.story_id,
-        target_audience_age=request.target_audience_age,
-        target_length=request.target_length
-        )
-
-@app.post("/creation/protagonist_generation")
-async def api_protagonist_generation(request: UserStoryRequest):
-    return await mainsetup.protagonist_generation(user_id=request.user_id, story_id=request.story_id)
-
-#---------------------------CHANGE: Story Phase Methods----------------------
-@app.post("/change/one_sentence_generation")
-async def api_change_one_sentence_generation(request: DocumentRequest):
-    return await mainsetup.change_one_sentence_generation(
-        user_id=request.user_id,
-        story_id=request.story_id,
-        one_sentence_form=request.document_dict
-        )
-
-@app.post("/change/one_paragraph_generation")
-async def api_change_one_paragraph_generation(request: DocumentRequest):
-    return await mainsetup.change_one_paragraph_generation(
-        user_id=request.user_id,
-        story_id=request.story_id,
-        one_paragraph_form=request.document_dict
-        )
-
-@app.post("/change/one_page_generation")
-async def api_change_one_page_generation(request: DocumentRequest):
-    return await mainsetup.change_one_page_generation(
-        user_id=request.user_id,
-        story_id=request.story_id,
-        one_page_form=request.document_dict
-        )
-
-@app.post("/change/protagonist_generation")
-async def api_change_protagonist_generation(request: DocumentRequest):
-    return await mainsetup.change_protagonist_generation(
-        user_id=request.user_id, 
-        story_id=request.story_id, 
-        protagonist_form=request.document_dict
-        )
-
-
-
-
-
-
-
-@app.post("/stories/progress/{user_id}/{story_id}/update")
-async def api_update_story_progress(request: DocumentRequest):
-    return await mainsetup.update_story_progress_for_user(user_id=request.user_id, story_id=request.story_id, metadata=request.document_dict)
-
-@app.get("/stories/progress/{user_id}/{story_id}/update-request")
-async def api_update_story_progress(user_id: str, story_id: str, story_context: str):
-    return await mainsetup.update_request_story_progress_for_user(user_id=user_id, story_id=story_id, story_context=story_context)
+    document_dict: dict
+    document_str: str
+@app.post("/stories/metadata/{user_id}/{story_id}/generate")
+async def api_update_story_metadata(request: DictStrRequest):
+    return await mainsetup.generate_metadata(user_id=request.user_id, story_id=request.story_id, context=request.document_str, past_metadata=request.document_dict)
 
 @app.get("/stories/progress/{user_id}/{story_id}")
 async def api_get_story_progress(user_id: str, story_id: str):

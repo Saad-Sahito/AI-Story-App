@@ -12,37 +12,8 @@ class FlexibleBase(BaseModel):
     model_config = ConfigDict(extra="allow")
 
 
-class OneSentenceForm(FlexibleBase):
-    one_sentence: str
-    genre: List[str]
-    sub_genre: List[str]
-    themes: List[str]
-    target_medium: str
-
-
-class OneParagraphForm(FlexibleBase):
-    one_paragraph: str
-    genre: List[str]
-    sub_genre: List[str]
-    themes: List[str]
-    tone: str
-    target_medium: str
-    story_structure: str
-
-
-class OnePageForm(FlexibleBase):
-    one_page: str
-    genre: List[str]
-    sub_genre: List[str]
-    themes: List[str]
-    tone: str
-    target_medium: str
-    story_structure: str
-    setting: str
-    target_audience_age: int
-    target_length: int
-    act_count: int
-    title: str
+class OneTextForm(BaseModel):
+    text: str
 
 
 class CharacterSpecifications(FlexibleBase):
@@ -138,18 +109,15 @@ class SnowflakeWorkflow:
     def __init__(self):
         pass
         
-    async def step_1_one_sentence(self, user_context: str, target_medium: str) -> Tuple[OneSentenceForm, dict, dict]:
+    async def step_1_one_sentence_generate(self, one_sentence_form: str) -> Tuple[OneTextForm, dict, dict]:
         """Step 1: One-sentence summary"""
         system_prompt = f"""You are the beginning of a snow-flake method workflow for creating story plots.
-Create one sentence describing the plot for the user given story context/intent and the given target medium.
-For the sentence predict the most likely genre, sub-genre and themes of the story.
+Rewrite one sentence describing the plot for the user given one-sentence.
 
 OUTPUT: Valid JSON. No markdown fences.
-{OneSentenceForm.model_json_schema()}"""
+{OneTextForm.model_json_schema()}"""
 
-        human_prompt = f"""User Context: {user_context}
-
-Target Medium: {target_medium}
+        human_prompt = f"""User's One Sentence to improve: {one_sentence_form}
 """
 
         response, author_tokens = await better_author_client(
@@ -164,27 +132,51 @@ Target Medium: {target_medium}
         try:
             outline, utility_tokens = await StoryHelpers.load_json_with_retry(
                 text=clean_resp,
-                parser=OneSentenceForm
+                parser=OneTextForm
             )
             if isinstance(outline, tuple):
                 outline = outline[0]
         except Exception as e:
             print(f"⚠️ Parsing failed ({e}).")
             raise
-        outline.target_medium = target_medium
         print("Created One Sentence story...")
         return outline, author_tokens, utility_tokens
     
-    async def step_2_one_paragraph(self, one_sentence_context: dict) -> Tuple[OneParagraphForm, dict, dict]:
+    async def step_1_one_sentence_feedback(self, one_sentence_form: str) -> Tuple[OneTextForm, dict]:
+        """Step 1: One-sentence summary"""
+        system_prompt = f"""You are an honest reviewer for a snowflake method based AI writer assistant app, review the one sentence, that the user wrote and give honest feedback that includes strengths, weaknesses, etc.
+output in markdown format. No tables just bullet points, no artificial lines.
+Be as concise as you can.
+        """
+
+        human_prompt = f"""User's One Sentence to review: {one_sentence_form}
+"""
+
+        response, author_tokens = await better_author_client(
+            system_prompt=system_prompt,
+            human_prompt=human_prompt,
+            llm_temp=1.2
+        )
+
+        clean_resp = StoryHelpers._extract_content(response)
+        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+
+
+        print("Created One Sentence story...")
+        return clean_resp, author_tokens
+    
+    async def step_2_one_paragraph_generate(self, one_sentence_context: str, user_one_paragraph: str = None) -> Tuple[OneTextForm, dict, dict]:
         """Step 2: Expand to one paragraph"""
         system_prompt = f"""You are part of a snow-flake method workflow for creating story plots.
-Create one paragraph describing the plot for the given initial sentence describing the story and other specs given along.
+Create/re-write one paragraph describing the plot for the given user paragraph describing the story and the given one sentence for the story.
 
 Keep the given parameters under story context constant.
 OUTPUT: Valid JSON. No markdown fences.
-{OneParagraphForm.model_json_schema()}"""
+{OneTextForm.model_json_schema()}"""
 
-        human_prompt = f"""Story Context: {json.dumps(one_sentence_context, indent=2)}
+        human_prompt = f"""Story One Sentence: {one_sentence_context}
+
+{f"User Paragraph to rewrite: {user_one_paragraph}" if user_one_paragraph else "Create One Paragraph for the following one sentence."}
 """
 
         response, author_tokens = await better_author_client(
@@ -199,17 +191,41 @@ OUTPUT: Valid JSON. No markdown fences.
         try:
             outline, utility_tokens = await StoryHelpers.load_json_with_retry(
                 text=clean_resp,
-                parser=OneParagraphForm
+                parser=OneTextForm
             )
             if isinstance(outline, tuple):
                 outline = outline[0]
         except Exception as e:
             print(f"⚠️ Parsing failed ({e}).")
             raise
-        outline.target_medium = one_sentence_context['target_medium']
-        outline.tone = one_sentence_context.get('tone', 'balanced')
+
         print("Created One Paragraph story...")
         return outline, author_tokens, utility_tokens
+    
+    async def step_2_one_paragraph_feedback(self, one_paragraph_form: str, one_senetence_form: str) -> Tuple[OneTextForm, dict]:
+        """Step 2: Expand to one paragraph"""
+        system_prompt = f"""You are an honest reviewer for a snowflake method based AI writer assistant app, review the one Paragraph, that the user wrote and give honest feedback that includes strengths, weaknesses, etc.
+output in markdown format. No tables just bullet points, no artificial lines.
+Be as concise as you can.
+        """
+
+        human_prompt = f"""Story One Sentence for reference: {one_senetence_form}
+
+User's One Paragraph to review: {one_paragraph_form}
+"""
+
+        response, author_tokens = await better_author_client(
+            system_prompt=system_prompt,
+            human_prompt=human_prompt,
+            llm_temp=1.2
+        )
+
+        clean_resp = StoryHelpers._extract_content(response)
+        clean_resp = StoryHelpers._strip_code_fences(clean_resp)
+
+
+        print("Created One Sentence story...")
+        return clean_resp, author_tokens
     
     async def step_3_character_summaries(self, one_paragraph_context: dict) -> Tuple[CharacterList, dict, dict]:
         """Step 3: Create major character summaries"""
@@ -246,14 +262,14 @@ OUTPUT: Valid JSON. No markdown fences.
         print("Created character summaries...")
         return characters, tokens, utility_tokens
     
-    async def step_4_one_page_plot(self, one_paragraph_context: dict) -> Tuple[OnePageForm, dict, dict]:
+    async def step_4_one_page_plot(self, one_paragraph_context: dict) -> Tuple[OneTextForm, dict, dict]:
         """Step 4: Expand to one-page plot summary"""
         system_prompt = f"""You are part of a snow-flake method workflow for creating story plots.
 Create one page describing the plot for the given paragraph describing the story and other specs given along.
 
 Dont change the given parameters under story context, keep them the same.
 OUTPUT: Valid JSON. No markdown fences.
-{OnePageForm.model_json_schema()}"""
+{OneTextForm.model_json_schema()}"""
 
         human_prompt = f"""Story Context: {json.dumps(one_paragraph_context, indent=2)}
 """
@@ -270,17 +286,14 @@ OUTPUT: Valid JSON. No markdown fences.
         try:
             outline, utility_tokens = await StoryHelpers.load_json_with_retry(
                 text=clean_resp,
-                parser=OnePageForm
+                parser=OneTextForm
             )
             if isinstance(outline, tuple):
                 outline = outline[0]
         except Exception as e:
             print(f"⚠️ Parsing failed ({e}).")
             raise
-        outline.target_medium = one_paragraph_context['target_medium']
-        outline.tone = one_paragraph_context['tone']
-        outline.target_audience_age = int(one_paragraph_context['target_audience_age'])
-        outline.target_length = int(one_paragraph_context['target_length'])
+
         print("Created One page story...")
         return outline, author_tokens, utility_tokens
     
